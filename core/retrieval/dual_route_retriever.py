@@ -30,7 +30,7 @@ class DualRouteRetriever:
         self.graph_route_weight = float(self.config.get("graph_route_weight", 0.35))
         self.cross_route_bonus = float(self.config.get("cross_route_bonus", 0.08))
         self.dynamic_route_weighting = bool(
-            self.config.get("dynamic_route_weighting", True)
+            self.config.get("dynamic_route_weighting", False)
         )
 
     async def search(

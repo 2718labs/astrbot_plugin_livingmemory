@@ -102,7 +102,7 @@ LivingMemory 的默认配置已经适合大多数场景。真正需要调整的�
 | `graph_memory.graph_route_weight` | `0.35` | 图路权重 |
 | `graph_memory.cross_route_bonus` | `0.08` | 同时命中文档路和图路时的加分 |
 | `graph_memory.expansion_hops` | `1` | 图谱邻居扩展跳数 |
-| `graph_memory.dynamic_route_weighting` | `true` | 根据查询意图动态调整路由权重 |
+| `graph_memory.dynamic_route_weighting` | `false` | 实验性：根据查询意图动态调整路由权重；需显式开启 |
 | `graph_memory.atom_enabled` | `true` | 启用记忆原子化 |
 
 关系型问题较多时，可以提高图路权重或把 `expansion_hops` 调到 `2`。如果你的数据库很大，二跳扩展会增加查询开销，建议先观察 WebUI 召回调试结果。

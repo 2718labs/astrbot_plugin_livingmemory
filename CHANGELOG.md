@@ -7,6 +7,9 @@
 
 ## [Unreleased]
 
+### 变更
+- **动态路由调权改为显式启用**：`graph_memory.dynamic_route_weighting` 默认值由 `true` 改为 `false`；已有配置显式开启时行为不变
+
 ## [2.6.0-beta.3] - 2026-08-14
 
 ### 性能

@@ -262,7 +262,7 @@ class GraphMemoryConfig(BaseModel):
         default=0.4, ge=0.0, le=1.0, description="二跳图扩展候选权重"
     )
     dynamic_route_weighting: bool = Field(
-        default=True, description="是否按查询意图动态调整文档路和图路权重"
+        default=False, description="是否按查询意图动态调整文档路和图路权重"
     )
     max_topics_per_memory: int = Field(
         default=6, ge=1, le=20, description="单条记忆最多索引主题数"

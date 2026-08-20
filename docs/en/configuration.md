@@ -102,7 +102,7 @@ The write tool is powerful and depends on model discipline. Start with active re
 | `graph_memory.graph_route_weight` | `0.35` | Graph-route weight |
 | `graph_memory.cross_route_bonus` | `0.08` | Bonus when both routes hit the same memory |
 | `graph_memory.expansion_hops` | `1` | Graph neighbor expansion hops |
-| `graph_memory.dynamic_route_weighting` | `true` | Adjusts route weights based on query intent |
+| `graph_memory.dynamic_route_weighting` | `false` | Experimental: adjusts route weights by query intent; opt-in only |
 | `graph_memory.atom_enabled` | `true` | Enables memory atomization |
 
 For relationship-heavy use, increase graph-route weight or set `expansion_hops` to `2`. If the database is large, second-hop expansion adds query cost, so use the WebUI recall debugger to inspect results first.

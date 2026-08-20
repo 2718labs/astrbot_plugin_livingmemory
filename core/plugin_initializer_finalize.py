@@ -159,7 +159,7 @@ class InitializerFinalizeMixin:
                     "graph_memory.second_hop_weight", 0.4
                 ),
                 "dynamic_route_weighting": self.config_manager.get(
-                    "graph_memory.dynamic_route_weighting", True
+                    "graph_memory.dynamic_route_weighting", False
                 ),
                 "graph_max_topics": self.config_manager.get(
                     "graph_memory.max_topics_per_memory", 6

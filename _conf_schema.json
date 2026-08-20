@@ -384,9 +384,9 @@
             },
             "dynamic_route_weighting": {
                 "description": "动态路由权重",
-                "hint": "根据查询中的关系、时间、定义类意图，自动调整文档路和图路权重。",
+                "hint": "实验性功能。根据查询中的关系、时间、定义类意图，自动调整文档路和图路权重。",
                 "type": "bool",
-                "default": true
+                "default": false
             },
             "max_topics_per_memory": {
                 "description": "单记忆最大主题数",

@@ -22,6 +22,7 @@ def test_config_manager_loads_defaults() -> None:
     assert manager.get("recall_engine.memory_type_filter") == "all"
     assert manager.get("recall_engine.recent_context_max_age_seconds") == 7200
     assert manager.get("fusion_strategy.rrf_k") == 60
+    assert manager.get("graph_memory.dynamic_route_weighting") is False
     assert manager.get("session_manager.max_sessions") == 100
     assert manager.get("session_manager.max_messages_per_session") == 1000
     assert manager.get("session_manager.cleanup_batch_size") == 50
