@@ -1,3 +1,6 @@
+> [!IMPORTANT]
+> **这是 LivingMemory 的增强 fork。** 本项目由 [2718labs](https://github.com/2718labs) 基于[原版 LivingMemory](https://github.com/lxfight-s-Astrbot-Plugins/astrbot_plugin_livingmemory)继续开发，目标是重建“总结 → 处理与存储 → 事实与图谱 → 召回与注入”整条记忆链路。当前优先修复记忆质量、数据结构和真实召回问题；聚合、矛盾消解、rerank 与动态路线选择等新增能力暂不进入主线。项目仍处于改造阶段，具体实施顺序见 [S0–S6 执行路线图](docs/livingmemory-roadmap/README.md)；fork 自身的实际变更请查看 [CHANGELOG_FORK.md](CHANGELOG_FORK.md)，原项目更新请查看 [CHANGELOG.md](CHANGELOG.md)。
+
 <div align="center">
 
 <p><strong>中文</strong> &nbsp;/&nbsp; <a href="README_en.md">English</a> &nbsp;/&nbsp; <a href="README_ru.md">Русский</a></p>
