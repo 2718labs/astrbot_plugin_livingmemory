@@ -9,6 +9,8 @@ from datetime import datetime
 import json
 from astrbot.api import logger
 
+from .memory_facts import fact_texts
+
 
 def _memory_injection_content(content: Any, metadata: Any) -> str:
     """Use the personality channel for injection while preserving legacy data."""
@@ -24,9 +26,7 @@ def _memory_injection_content(content: Any, metadata: Any) -> str:
         if metadata.get("summary_schema_version") == "v2":
             key_facts = metadata.get("key_facts")
             if isinstance(key_facts, list):
-                facts = [
-                    str(fact).strip() for fact in key_facts[:5] if str(fact).strip()
-                ]
+                facts = fact_texts(key_facts, limit=5)
                 for separator in ("；", "; "):
                     suffix = " | " + separator.join(facts)
                     if facts and raw_content.endswith(suffix):
@@ -54,7 +54,7 @@ def _memory_metadata_rows(metadata: dict) -> list[str]:
 
     key_facts = metadata.get("key_facts", [])
     if key_facts and isinstance(key_facts, list) and len(key_facts) > 0:
-        facts_str = "; ".join(str(f) for f in key_facts if f)
+        facts_str = "; ".join(fact_texts(key_facts))
         if facts_str:
             rows.append(f"Key facts: {facts_str}")
 

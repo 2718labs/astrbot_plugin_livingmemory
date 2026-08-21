@@ -108,7 +108,7 @@ Sfuture（独立愿景，不进入当前执行链）
 | 阶段 | 目标 | 主要问题 | 核心模块 | 前置 | 状态 | 文档 |
 |---|---|---|---|---|---|---|
 | S0 | 先严格检查原始回答，再逐 fact 决定 `store / skip`，由程序推导窗口的 `store / skip / invalid`，并建立真实链路基线 | I05、I15、I16 | reflection、processor、parser、eval fixtures | T0A/T0B | Done | [S0](S0.md) |
-| S1 | 将 S0 的获准 fact 从临时文本投影升级为 LM 风格的唯一对象契约，并移除长篇第一人称总结真源 | I03、I04、I05、I09、I15、I17、F03 | summary schema、fact model、processor、source window | S0 | Planned | [S1](S1.md) |
+| S1 | 将 S0 的获准 fact 从临时文本投影升级为 LM 风格的唯一对象契约，并移除长篇第一人称总结真源 | I03、I04、I05、I09、I15、I17、F03 | summary schema、fact model、processor、source window | S0 | Done | [S1](S1.md) |
 | S2 | 让所有新写入入口生成同一 parent/fact 结构和事实级索引 | I03、I04、I06、I17 | build pipeline、fact storage/index、rebuild | S1 | Planned | [S2](S2.md) |
 | S3 | 消除全组合噪声，只保存有来源证据的图关系，修复图谱查看入口，并固定双路满信号 bug 的回归样本 | I01、I02、I06、I09、I18、I19、F03 | graph extractor/store/manager、resolver、rebuild、dual-route eval、WebUI/Page API | S2 | Planned | [S3](S3.md) |
 | S4 | 在 canonical fact 与 Atom 之间选定唯一生产事实层 | I08、I12、I17、F02 | fact/Atom model、store、retriever、lifecycle、memory engine | S2、S3 | Decision gate | [S4](S4.md) |

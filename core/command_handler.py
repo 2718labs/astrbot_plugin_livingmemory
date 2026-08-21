@@ -4,6 +4,7 @@
 """
 
 import os
+import inspect
 from collections.abc import AsyncGenerator
 from datetime import datetime
 
@@ -16,6 +17,8 @@ from .managers.conversation_manager import ConversationManager
 from .managers.memory_engine import MemoryEngine
 from .memory_scope import is_event_memory_allowed, resolve_memory_scope
 from .memory_source import serialize_source_messages
+from .models.memory_contract import build_source_descriptor
+from .models.conversation_models import Message
 from .validators.index_validator import IndexValidator
 
 
@@ -435,10 +438,27 @@ class CommandHandler:
                 )
                 return
 
+            get_topic_candidates = getattr(
+                self.memory_engine, "get_topic_candidates", None
+            )
+            candidate_result = (
+                get_topic_candidates(memory_scope)
+                if callable(get_topic_candidates)
+                else []
+            )
+            topic_candidates = (
+                await candidate_result
+                if inspect.isawaitable(candidate_result)
+                else candidate_result
+            )
+            if not isinstance(topic_candidates, list):
+                topic_candidates = []
             result = await self._memory_processor.process_conversation_result(
                 messages=history_messages,
                 is_group_chat=is_group_chat,
                 persona_id=persona_id,
+                topic_candidates=topic_candidates,
+                source_scope=memory_scope,
             )
 
             if result.status == "invalid":
@@ -454,45 +474,46 @@ class CommandHandler:
                 yield event.plain_result(t("summarize.skipped", count=actual_count))
                 return
 
-            content = result.content
-            metadata = result.metadata
-            importance = result.importance
-
-            atoms = self._memory_processor.classify_atoms_from_metadata(
-                metadata=metadata,
-                parent_importance=importance,
-                session_id=memory_scope,
-                persona_id=persona_id,
+            records = result.iter_records()
+            source_threshold = float(
+                self.config_manager.get(
+                    "reflection_engine.source_retention_importance_threshold",
+                    0.8,
+                )
             )
-
-            metadata["source_window"] = {
-                "session_id": session_id,
-                "start_index": last_summarized_index,
-                "end_index": actual_count,
-                "message_count": actual_count - last_summarized_index,
-                "triggered_by": "manual",
-            }
-            metadata["source_session_id"] = session_id
-
-            await self.memory_engine.add_memory(
-                content=content,
-                session_id=memory_scope,
-                persona_id=persona_id,
-                importance=importance,
-                metadata=metadata,
-                atoms=atoms,
-                source_messages=(
-                    serialize_source_messages(history_messages)
-                    if importance
-                    >= float(
-                        self.config_manager.get(
-                            "reflection_engine.source_retention_importance_threshold",
-                            0.8,
-                        )
+            for record in records:
+                source_window = record.metadata.setdefault("source_window", {})
+                if not source_window.get("fingerprint") and all(
+                    isinstance(message, Message) for message in history_messages
+                ):
+                    source_window.update(
+                        build_source_descriptor(history_messages, scope=memory_scope)
                     )
-                    else None
-                ),
-            )
+                source_window["triggered_by"] = "manual"
+                source_window["processing_window"] = {
+                    "start_index": last_summarized_index,
+                    "end_index": actual_count,
+                }
+                record.metadata["source_session_id"] = session_id
+                atoms = self._memory_processor.classify_atoms_from_metadata(
+                    metadata=record.metadata,
+                    parent_importance=record.importance,
+                    session_id=memory_scope,
+                    persona_id=persona_id,
+                )
+                await self.memory_engine.add_memory(
+                    content=record.content,
+                    session_id=memory_scope,
+                    persona_id=persona_id,
+                    importance=record.importance,
+                    metadata=record.metadata,
+                    atoms=atoms,
+                    source_messages=(
+                        serialize_source_messages(history_messages)
+                        if record.importance >= source_threshold
+                        else None
+                    ),
+                )
 
             await self.conversation_manager.update_session_metadata(
                 session_id, "last_summarized_index", actual_count
@@ -501,7 +522,15 @@ class CommandHandler:
                 session_id, "pending_summary", None
             )
 
-            topics = ", ".join(metadata.get("topics", [])) or t("common.none")
+            importance = max(record.importance for record in records)
+            topic_names = list(
+                dict.fromkeys(
+                    topic
+                    for record in records
+                    for topic in record.metadata.get("topics", [])
+                )
+            )
+            topics = ", ".join(topic_names) or t("common.none")
             yield event.plain_result(
                 t(
                     "summarize.success",

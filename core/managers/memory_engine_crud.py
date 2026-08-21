@@ -7,7 +7,8 @@ import asyncio
 import json
 from typing import Any
 from ..utils.number_utils import clamp_float, safe_float
-from ..processors.atom_classifier import classify_atoms
+from ..models.memory_contract import concept_key, normalize_concept_name, topic_id
+from ..processors.atom_classifier import classify_metadata_atoms
 from ..retrieval.hybrid_retriever import HybridResult
 from astrbot.api import logger
 from ..memory_transfer import memory_import_key
@@ -17,6 +18,67 @@ import time
 class MemoryEngineCrudMixin:
     """MemoryEngine 拆分模块：MemoryEngineCrudMixin"""
     async def add_memory(
+        self,
+        content: str,
+        session_id: str | None = None,
+        persona_id: str | None = None,
+        importance: float = 0.5,
+        metadata: dict[str, Any] | None = None,
+        atoms: list | None = None,
+        preserve_create_time: bool = False,
+        source_messages: list[dict[str, Any]] | None = None,
+    ) -> int:
+        """Add a memory, reusing an active v3 record for the same source unit."""
+        idempotency_key = str((metadata or {}).get("idempotency_key") or "").strip()
+        if not idempotency_key:
+            return await self._add_memory_unchecked(
+                content=content,
+                session_id=session_id,
+                persona_id=persona_id,
+                importance=importance,
+                metadata=metadata,
+                atoms=atoms,
+                preserve_create_time=preserve_create_time,
+                source_messages=source_messages,
+            )
+
+        async with self._idempotency_lock:
+            existing_id = await self._find_active_idempotent_memory(idempotency_key)
+            if existing_id is not None:
+                logger.info(
+                    "[MemoryEngine] 复用同一来源单元的 active 记忆: "
+                    f"key={idempotency_key}, memory_id={existing_id}"
+                )
+                return existing_id
+            return await self._add_memory_unchecked(
+                content=content,
+                session_id=session_id,
+                persona_id=persona_id,
+                importance=importance,
+                metadata=metadata,
+                atoms=atoms,
+                preserve_create_time=preserve_create_time,
+                source_messages=source_messages,
+            )
+
+    async def _find_active_idempotent_memory(self, key: str) -> int | None:
+        if self.db_connection is None:
+            return None
+        cursor = await self.db_connection.execute(
+            """
+            SELECT id
+            FROM documents
+            WHERE json_extract(metadata, '$.idempotency_key') = ?
+              AND COALESCE(json_extract(metadata, '$.status'), 'active') = 'active'
+            ORDER BY id ASC
+            LIMIT 1
+            """,
+            (key,),
+        )
+        row = await cursor.fetchone()
+        return int(row["id"] if hasattr(row, "keys") else row[0]) if row else None
+
+    async def _add_memory_unchecked(
         self,
         content: str,
         session_id: str | None = None,
@@ -377,6 +439,56 @@ class MemoryEngineCrudMixin:
             )
         return keys
 
+    async def get_topic_candidates(
+        self, scope: str, limit: int = 50
+    ) -> list[dict[str, str]]:
+        """Return exact reusable v3 topic concepts from active records in scope."""
+        if self.db_connection is None or not str(scope or "").strip():
+            return []
+        cursor = await self.db_connection.execute(
+            """
+            SELECT metadata
+            FROM documents
+            WHERE json_extract(metadata, '$.session_id') = ?
+              AND COALESCE(json_extract(metadata, '$.status'), 'active') = 'active'
+            ORDER BY CAST(json_extract(metadata, '$.create_time') AS REAL) DESC, id DESC
+            LIMIT ?
+            """,
+            (scope, max(limit * 4, limit)),
+        )
+        rows = await cursor.fetchall()
+        candidates: dict[str, dict[str, str]] = {}
+        for row in rows:
+            metadata = self._safe_json_dict(row["metadata"])
+            refs = metadata.get("topic_refs")
+            if isinstance(refs, list):
+                for ref in refs:
+                    if not isinstance(ref, dict):
+                        continue
+                    name = normalize_concept_name(
+                        str(ref.get("name") or ref.get("final_name") or "")
+                    )
+                    if not name:
+                        continue
+                    candidates.setdefault(
+                        concept_key(name),
+                        {
+                            "topic_id": str(ref.get("topic_id") or topic_id(scope, name)),
+                            "name": name,
+                        },
+                    )
+            if not refs and isinstance(metadata.get("topics"), list):
+                for raw_name in metadata["topics"]:
+                    name = normalize_concept_name(str(raw_name or ""))
+                    if name:
+                        candidates.setdefault(
+                            concept_key(name),
+                            {"topic_id": topic_id(scope, name), "name": name},
+                        )
+            if len(candidates) >= limit:
+                break
+        return list(candidates.values())[:limit]
+
     async def search_memories(
         self,
         query: str,
@@ -651,20 +763,10 @@ class MemoryEngineCrudMixin:
 
         session_id = replacement_metadata.get("session_id")
         persona_id = replacement_metadata.get("persona_id")
-        raw_key_facts = replacement_metadata.get("key_facts")
-        raw_topics = replacement_metadata.get("topics")
-        raw_participants = replacement_metadata.get("participants")
-        key_facts = raw_key_facts if isinstance(raw_key_facts, list) else []
-        topics = raw_topics if isinstance(raw_topics, list) else []
-        participants = (
-            raw_participants if isinstance(raw_participants, list) else []
-        )
         atoms = []
         if self.atom_enabled:
-            atoms = classify_atoms(
-                key_facts=key_facts,
-                topics=topics,
-                participants=participants,
+            atoms = classify_metadata_atoms(
+                metadata=replacement_metadata,
                 parent_importance=normalized_importance,
                 session_id=session_id,
                 persona_id=persona_id,

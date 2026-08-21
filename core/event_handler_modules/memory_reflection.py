@@ -4,6 +4,7 @@
 """
 
 import asyncio
+import inspect
 from typing import TYPE_CHECKING, Any
 
 from astrbot.api import logger
@@ -13,6 +14,8 @@ from astrbot.api.provider import LLMResponse
 
 from ..memory_scope import is_event_memory_allowed, resolve_memory_scope
 from ..memory_source import serialize_source_messages
+from ..models.memory_contract import build_source_descriptor
+from ..models.conversation_models import Message
 from ..utils import get_persona_id
 
 _DEFAULT_MEMORY_SCOPE = object()
@@ -388,10 +391,27 @@ class MemoryReflection:
                     logger.info(
                         f"[{session_id}] 调用 MemoryProcessor 处理 {len(history_messages)} 条消息"
                     )
+                    get_topic_candidates = getattr(
+                        self.memory_engine, "get_topic_candidates", None
+                    )
+                    candidate_result = (
+                        get_topic_candidates(memory_scope)
+                        if callable(get_topic_candidates)
+                        else []
+                    )
+                    topic_candidates = (
+                        await candidate_result
+                        if inspect.isawaitable(candidate_result)
+                        else candidate_result
+                    )
+                    if not isinstance(topic_candidates, list):
+                        topic_candidates = []
                     result = await self.memory_processor.process_conversation_result(
                         messages=history_messages,
                         is_group_chat=is_group_chat,
                         persona_id=persona_id,
+                        topic_candidates=topic_candidates,
+                        source_scope=memory_scope,
                     )
 
                     if result.status == "invalid":
@@ -409,37 +429,33 @@ class MemoryReflection:
                             f"[{session_id}] 本窗口没有需要长期保存的事实，"
                             f"跳过候选={result.skipped_fact_count}"
                         )
-                        content = ""
-                        metadata = {}
-                        importance = 0.0
-                        atoms = []
+                        records = ()
                     else:
-                        content = result.content
-                        metadata = result.metadata
-                        importance = result.importance
-
-                        atoms = self.memory_processor.classify_atoms_from_metadata(
-                            metadata=metadata,
-                            parent_importance=importance,
-                            session_id=memory_scope,
-                            persona_id=persona_id,
-                        )
-
-                        # 补充 source_window 元数据，记录本次总结的消息范围
-                        metadata["source_window"] = {
-                            "session_id": session_id,
-                            "start_index": start_index,
-                            "end_index": end_index,
-                            "message_count": end_index - start_index,
-                        }
-                        metadata["source_session_id"] = session_id
+                        records = result.iter_records()
+                        for record in records:
+                            source_window = record.metadata.setdefault(
+                                "source_window", {}
+                            )
+                            if not source_window.get("fingerprint") and all(
+                                isinstance(message, Message)
+                                for message in history_messages
+                            ):
+                                source_window.update(
+                                    build_source_descriptor(
+                                        history_messages, scope=memory_scope
+                                    )
+                                )
+                            source_window["triggered_by"] = "automatic"
+                            source_window["processing_window"] = {
+                                "start_index": start_index,
+                                "end_index": end_index,
+                            }
+                            record.metadata["source_session_id"] = session_id
 
                         logger.info(
-                            f"[{session_id}] 已生成可写入记忆, "
+                            f"[{session_id}] 已生成 {len(records)} 条可写入记忆, "
                             f"获准事实={result.stored_fact_count}, "
-                            f"跳过事实={result.skipped_fact_count}, "
-                            f"主题={metadata.get('topics', [])}, "
-                            f"重要性={importance:.2f}"
+                            f"跳过事实={result.skipped_fact_count}"
                         )
 
                 except Exception as e:
@@ -461,23 +477,30 @@ class MemoryReflection:
                             0.8,
                         )
                     )
-                    source_messages = (
-                        serialize_source_messages(history_messages)
-                        if importance >= source_threshold
-                        else None
-                    )
-                    await self.memory_engine.add_memory(
-                        content=content,
-                        session_id=memory_scope,
-                        persona_id=persona_id,
-                        importance=importance,
-                        metadata=metadata,
-                        atoms=atoms,
-                        source_messages=source_messages,
-                    )
+                    for record in records:
+                        atoms = self.memory_processor.classify_atoms_from_metadata(
+                            metadata=record.metadata,
+                            parent_importance=record.importance,
+                            session_id=memory_scope,
+                            persona_id=persona_id,
+                        )
+                        source_messages = (
+                            serialize_source_messages(history_messages)
+                            if record.importance >= source_threshold
+                            else None
+                        )
+                        await self.memory_engine.add_memory(
+                            content=record.content,
+                            session_id=memory_scope,
+                            persona_id=persona_id,
+                            importance=record.importance,
+                            metadata=record.metadata,
+                            atoms=atoms,
+                            source_messages=source_messages,
+                        )
 
                     logger.info(
-                        f"[{session_id}] 成功存储对话记忆（{len(history_messages)}条消息，重要性={importance:.2f}）"
+                        f"[{session_id}] 成功存储 {len(records)} 条对话记忆"
                     )
 
                 # 成功：更新已总结的位置，清除待处理记录

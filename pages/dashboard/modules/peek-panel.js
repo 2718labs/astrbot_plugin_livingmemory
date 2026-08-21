@@ -14,6 +14,13 @@ import {
   metaItem
 } from "./utils.js";
 
+function factText(value) {
+  if (value && typeof value === "object" && typeof value.fact === "string") {
+    return value.fact;
+  }
+  return String(value == null ? "" : value);
+}
+
 export class PeekPanel {
   constructor(state, apiClient) {
     this.state = state;
@@ -129,6 +136,7 @@ export class PeekPanel {
     const topics = detail.topics || [];
     const editHistory = detail.update_history || [];
     const sourceMessages = Array.isArray(detail.source_messages) ? detail.source_messages : [];
+    const isV3 = detail.metadata && detail.metadata.memory_schema_version === "v3";
     const consolidatedFrom = Array.isArray(detail.consolidated_from)
       ? detail.consolidated_from
       : (detail.metadata && Array.isArray(detail.metadata.consolidated_from))
@@ -150,8 +158,10 @@ export class PeekPanel {
 
     // 操作按钮
     html += '<div class="memory-detail-actions">';
-    html += '<button class="btn btn-sm btn-secondary" id="peek-edit-btn"><i data-lucide="square-pen" aria-hidden="true"></i><span>' + window.t("detail.editBtn") + '</span></button>';
-    if (sourceMessages.length >= 2) {
+    if (!isV3) {
+      html += '<button class="btn btn-sm btn-secondary" id="peek-edit-btn"><i data-lucide="square-pen" aria-hidden="true"></i><span>' + window.t("detail.editBtn") + '</span></button>';
+    }
+    if (!isV3 && sourceMessages.length >= 2) {
       html += '<button class="btn btn-sm btn-secondary" id="peek-resummarize-btn"><i data-lucide="refresh-cw" aria-hidden="true"></i><span>' + window.t("detail.resummarizeBtn") + '</span></button>';
     }
     html += '<button class="btn btn-sm btn-danger" id="peek-delete-btn"><i data-lucide="trash-2" aria-hidden="true"></i><span>' + window.t("detail.deleteBtn") + '</span></button>';
@@ -201,7 +211,7 @@ export class PeekPanel {
     // 关键事实
     if (keyFacts.length) {
       html += '<div class="peek-section"><div class="peek-section-title">' + window.t("detail.keyFacts") + '</div><div class="peek-fact-list">';
-      keyFacts.forEach(f => { html += '<div class="peek-fact-item">' + esc(String(f)) + '</div>'; });
+      keyFacts.forEach(f => { html += '<div class="peek-fact-item">' + esc(factText(f)) + '</div>'; });
       html += '</div></div>';
     }
 
@@ -272,7 +282,9 @@ export class PeekPanel {
     const type = detail.memory_type || "GENERAL";
     const status = detail.status || "active";
     const topics = Array.isArray(detail.topics) ? detail.topics : [];
-    const keyFacts = Array.isArray(detail.key_facts) ? detail.key_facts : [];
+    const keyFacts = Array.isArray(detail.key_facts)
+      ? detail.key_facts.map(factText)
+      : [];
 
     let html = "";
 

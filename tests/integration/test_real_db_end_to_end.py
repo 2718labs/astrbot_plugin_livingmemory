@@ -81,35 +81,47 @@ class _DeterministicLLMProvider:
         prompt_text = (prompt or "").lower()
 
         if "running" in prompt_text:
-            summary = (
-                "I remember the user mentioned running and wants to keep the habit."
-            )
+            summary = "Tester went running yesterday."
             topics = ["health", "habit"]
-            facts = ["user talked about running"]
+            facts = ["Tester went running yesterday."]
             sentiment = "positive"
             importance = 0.82
         elif "headphone" in prompt_text:
-            summary = "I remember the user is considering noise-cancelling headphones."
+            summary = "Tester is considering noise-cancelling headphones."
             topics = ["shopping", "audio"]
-            facts = ["user asked about headphones"]
+            facts = ["Tester asked about noise-cancelling headphones."]
             sentiment = "neutral"
             importance = 0.75
         else:
-            summary = "I remember the recent conversation and user preferences."
+            summary = "Tester discussed a reusable preference."
             topics = ["general"]
-            facts = ["recent discussion happened"]
+            facts = ["Tester discussed a reusable preference."]
             sentiment = "neutral"
             importance = 0.7
 
         payload = {
-            "summary": summary,
-            "topics": topics,
-            "key_facts": [
-                {"fact": fact, "action": "store", "importance": importance}
-                for fact in facts
-            ],
-            "sentiment": sentiment,
-            "importance": importance,
+            "memories": [
+                {
+                    "summary": summary,
+                    "topics": topics,
+                    "key_facts": [
+                        {
+                            "fact": fact,
+                            "action": "store",
+                            "topics": topics,
+                            "participants": ["Tester"],
+                            "time": None,
+                            "importance": importance,
+                            "source": "user_explicit",
+                            "source_indexes": [1],
+                            "persona_reaction": None,
+                        }
+                        for fact in facts
+                    ],
+                    "sentiment": sentiment,
+                    "importance": importance,
+                }
+            ]
         }
         return LLMResponse(role="assistant", completion_text=json.dumps(payload))
 

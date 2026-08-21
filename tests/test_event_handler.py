@@ -13,6 +13,7 @@ from astrbot_plugin_livingmemory.core.event_handler import EventHandler
 from astrbot_plugin_livingmemory.core.managers.memory_engine import MemoryEngine
 from astrbot_plugin_livingmemory.core.models.memory_processing import (
     MemoryProcessingResult,
+    MemoryWriteRecord,
 )
 
 from astrbot.api.platform import MessageType
@@ -550,10 +551,77 @@ async def test_storage_task_writes_source_window(
     assert [item["content"] for item in captured_source] == ["hello", "hi"]
     assert "source_window" in captured_metadata
     sw = captured_metadata["source_window"]
-    assert sw["session_id"] == "s1"
-    assert sw["start_index"] == 0
-    assert sw["end_index"] == 2
+    assert sw["scope"] == "livingmemory:user:test:u1"
+    assert sw["first_message_id"] == 1
+    assert sw["last_message_id"] == 2
     assert sw["message_count"] == 2
+    assert sw["processing_window"] == {"start_index": 0, "end_index": 2}
+    assert sw["fingerprint"].startswith("src_")
+
+
+@pytest.mark.asyncio
+async def test_storage_task_writes_every_s1_memory_record(
+    handler, memory_engine
+):
+    from astrbot_plugin_livingmemory.core.models.conversation_models import Message
+
+    messages = [
+        Message(
+            id=1,
+            session_id="s1",
+            role="user",
+            content="两件独立的事",
+            sender_id="u1",
+        )
+    ]
+    records = [
+        MemoryWriteRecord(
+            content="first",
+            metadata={
+                "topics": ["A"],
+                "source_window": {"fingerprint": "src_same"},
+                "idempotency_key": "idem_a",
+            },
+            importance=0.8,
+        ),
+        MemoryWriteRecord(
+            content="second",
+            metadata={
+                "topics": ["B"],
+                "source_window": {"fingerprint": "src_same"},
+                "idempotency_key": "idem_b",
+            },
+            importance=0.7,
+        ),
+    ]
+    handler._memory_reflection.memory_processor.process_conversation_result.return_value = MemoryProcessingResult(
+        status="store",
+        content="first",
+        metadata=records[0].metadata,
+        importance=0.8,
+        stored_fact_count=2,
+        records=records,
+    )
+    memory_engine.add_memory.reset_mock()
+
+    await handler._memory_reflection._storage_task(
+        session_id="s1",
+        history_messages=messages,
+        persona_id="p1",
+        start_index=0,
+        end_index=1,
+        retry_count=0,
+        memory_scope="scope:s1",
+    )
+
+    assert memory_engine.add_memory.await_count == 2
+    assert [
+        call.kwargs["content"] for call in memory_engine.add_memory.await_args_list
+    ] == ["first", "second"]
+    assert all(
+        call.kwargs["metadata"]["source_window"]["triggered_by"] == "automatic"
+        for call in memory_engine.add_memory.await_args_list
+    )
 
 
 @pytest.mark.asyncio

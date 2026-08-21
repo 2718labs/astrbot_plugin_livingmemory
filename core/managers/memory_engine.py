@@ -117,6 +117,7 @@ class MemoryEngine(MemoryEngineWriteOpsMixin, MemoryEngineCrudMixin, MemoryEngin
 
         # 后台任务跟踪
         self._pending_tasks: set[asyncio.Task] = set()
+        self._idempotency_lock = asyncio.Lock()
 
         # 初始化组件(在initialize中完成)
         self.text_processor = None

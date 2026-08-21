@@ -191,6 +191,59 @@ async def test_memory_engine_add_search_get_delete(tmp_path: Path):
 
 
 @pytest.mark.asyncio
+async def test_s1_idempotency_reuses_active_record_and_topic_candidate(tmp_path: Path):
+    faiss = _FakeFaissDB()
+    engine = MemoryEngine(
+        db_path=str(tmp_path / "s1_idempotency.db"),
+        faiss_db=faiss,
+        config={"fallback_enabled": True},
+    )
+    await engine.initialize()
+    metadata = {
+        "idempotency_key": "idem_same_source_unit",
+        "memory_schema_version": "v3",
+        "topic_refs": [
+            {
+                "topic_id": "topic_plugin",
+                "name": "插件开发",
+                "raw_name": "插件开发",
+                "decision": "created",
+            }
+        ],
+    }
+
+    first_id = await engine.add_memory(
+        content="张三正在开发记忆插件",
+        session_id="scope:s1",
+        metadata=metadata,
+    )
+    stored_metadata = faiss.docs[first_id]["metadata"]
+    await engine.db_connection.execute(
+        "INSERT INTO documents (id, doc_id, text, metadata, created_at, updated_at) "
+        "VALUES (?, ?, ?, ?, datetime('now'), datetime('now'))",
+        (
+            first_id,
+            f"uuid-{first_id}",
+            "张三正在开发记忆插件",
+            json.dumps(stored_metadata, ensure_ascii=False),
+        ),
+    )
+    await engine.db_connection.commit()
+
+    retried_id = await engine.add_memory(
+        content="记忆插件正在由张三开发",
+        session_id="scope:s1",
+        metadata=metadata,
+    )
+    candidates = await engine.get_topic_candidates("scope:s1")
+
+    assert retried_id == first_id
+    assert len(faiss.docs) == 1
+    assert candidates == [{"topic_id": "topic_plugin", "name": "插件开发"}]
+    await engine.close()
+
+
+@pytest.mark.asyncio
 async def test_memory_source_is_separate_transferred_and_deleted(tmp_path: Path):
     engine = MemoryEngine(
         db_path=str(tmp_path / "memory_source.db"),

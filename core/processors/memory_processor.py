@@ -3,6 +3,7 @@
 """
 
 import asyncio
+import json
 import random
 import re
 from datetime import datetime
@@ -48,6 +49,7 @@ class MemoryProcessor(MemoryProcessorParseMixin, MemoryProcessorBuildMixin):
         self.context = context
         self._llm_provider = llm_provider
         self.config = config or {}
+        self._topic_catalog: dict[str, dict[str, dict[str, str]]] = {}
 
         # 加载提示词模板
         self._load_prompts()
@@ -122,27 +124,25 @@ class MemoryProcessor(MemoryProcessorParseMixin, MemoryProcessorBuildMixin):
 
     @staticmethod
     def _build_admission_output_contract(is_group_chat: bool) -> str:
-        """Return the non-overridable S0 output contract."""
-        participants = (
-            '\n- 群聊顶层还必须包含字符串数组 "participants"。'
-            if is_group_chat
-            else ""
-        )
+        """Return the non-overridable S1 memory-unit contract."""
         return (
-            "## 必须遵守的逐事实准入格式\n"
-            "- 只输出一个 JSON object。\n"
-            '- 顶层必须包含 "summary"、"topics"、"key_facts"、'
-            '"sentiment"、"importance"。\n'
+            "## 必须遵守的 S1 记忆产物格式\n"
+            '- 只输出一个 JSON object，顶层只能包含数组 "memories"。\n'
+            "- 同一窗口按可独立复用的中心拆分；可以输出零条、一条或多条 memory。\n"
+            '- 每条 memory 必须包含 "summary"、"topics"、"key_facts"、'
+            '"sentiment"、"importance"。summary 只写一句中性概览。\n'
             '- "key_facts" 必须是对象数组，每项必须包含非空字符串 "fact"、'
-            '值为 "store" 或 "skip" 的 "action"、0.0 到 1.0 的数字 '
-            '"importance"；"reason" 可选。\n'
+            '"action"、"topics"、"participants"、"time"、"importance"、'
+            '"source"、"source_indexes" 和 "persona_reaction"；"reason" 可选。\n'
+            '- source_indexes 使用对话中的 [M1]、[M2] 编号且至少一项；time 无时间时为 null，'
+            '有时间时为 {"raw","normalized","precision"}；persona_reaction 无价值时为 null。\n'
             "- 每条 fact 独立判断：稳定身份、偏好、关系、计划、反复问题或"
             "明确要求记住的内容用 store；寒暄、一次性玩笑、临时报错过程、"
             "即时状态和重复内容用 skip。\n"
-            "- 顶层 summary、topics、importance 只能概括 store facts；"
-            "没有 store fact 时分别输出空字符串、空数组和 0.0。\n"
-            "- 不要输出顶层 memory_action；窗口结果由程序根据 facts 推导。"
-            f"{participants}"
+            "- topics 和 participants 必须分别属于当前 fact，不能把整段聊天的标签复制给每条 fact。\n"
+            "- fact 必须写明主体并可脱离摘要独立理解；不要使用‘她/他/那个/后来’作为无来源指代。\n"
+            "- reaction 只写当前人格当时很短的情绪/想法，不复述 fact，不作为人物事实。\n"
+            "- 不要输出顶层 memory_action；程序会过滤 skip facts 并派生最终 summary。"
         )
 
     def _load_prompts_fallback(self) -> None:
@@ -166,13 +166,13 @@ class MemoryProcessor(MemoryProcessorParseMixin, MemoryProcessorBuildMixin):
 {conversation}
 
 输出格式:
-{"summary": "仅概括 store facts", "topics": ["主题"], "key_facts": [{"fact": "事实", "action": "store", "importance": 0.5}], "sentiment": "neutral", "importance": 0.5}
+{"memories": [{"summary": "中性概览", "topics": ["主题"], "key_facts": [{"fact": "事实", "action": "store", "topics": ["主题"], "participants": ["参与者"], "time": null, "importance": 0.5, "source": "user_explicit", "source_indexes": [1], "persona_reaction": null}], "sentiment": "neutral", "importance": 0.5}]}
 """
             self.group_chat_prompt = """分析以下群聊对话并生成JSON格式的记忆:
 {conversation}
 
 输出格式:
-{"summary": "仅概括 store facts", "topics": ["主题"], "key_facts": [{"fact": "事实", "action": "store", "importance": 0.5}], "participants": ["参与者"], "sentiment": "neutral", "importance": 0.5}
+{"memories": [{"summary": "中性概览", "topics": ["主题"], "key_facts": [{"fact": "事实", "action": "store", "topics": ["主题"], "participants": ["参与者"], "time": null, "importance": 0.5, "source": "user_explicit", "source_indexes": [1], "persona_reaction": null}], "sentiment": "neutral", "importance": 0.5}]}
 """
 
     async def _build_system_prompt_with_persona(self, persona_id: str | None) -> str:
@@ -394,21 +394,14 @@ class MemoryProcessor(MemoryProcessorParseMixin, MemoryProcessorBuildMixin):
         self, response_text: str, is_group_chat: bool
     ) -> str:
         """Ask the LLM once to reformat its own response without new facts."""
-        participants_rule = (
-            '\n- 顶层必须包含字符串数组字段 "participants"。'
-            if is_group_chat
-            else ""
-        )
         prompt = (
             "下面是一次记忆提取的原始回答。只把它整理成合法 JSON；"
             "不得新增、删除、合并、拆分或改写任何 fact，也不得改变 action 和 importance 的含义。\n"
             "要求：\n"
-            '- 顶层必须包含 "summary"、"topics"、"key_facts"、'
-            '"sentiment"、"importance"。\n'
-            '- "key_facts" 必须是数组，每项必须包含非空字符串 "fact"、'
-            '值为 "store" 或 "skip" 的 "action"、0.0 到 1.0 的数字 '
-            '"importance"；"reason" 可选。'
-            f"{participants_rule}\n"
+            '- 顶层只能包含数组 "memories"；每条 memory 必须包含 summary、topics、'
+            'key_facts、sentiment、importance。\n'
+            '- 每条 key_fact 必须包含 fact、action、topics、participants、time、importance、'
+            'source、source_indexes、persona_reaction；reason 可选。\n'
             "如果原回答缺少某个事实判断所需的信息，不要猜测或补造；保留缺失，"
             "让后续校验拒绝。只输出 JSON，不要解释。\n\n"
             f"原始回答：\n{response_text}"
@@ -421,6 +414,8 @@ class MemoryProcessor(MemoryProcessorParseMixin, MemoryProcessorBuildMixin):
         messages: list[Message],
         is_group_chat: bool = False,
         persona_id: str | None = None,
+        topic_candidates: list[dict[str, Any] | str] | None = None,
+        source_scope: str | None = None,
     ) -> MemoryProcessingResult:
         """
         处理对话历史，返回 store / skip / invalid 三态结果。
@@ -445,6 +440,14 @@ class MemoryProcessor(MemoryProcessorParseMixin, MemoryProcessorBuildMixin):
         prompt = self._get_chat_prompt(is_group_chat).replace(
             "{conversation}", conversation_text
         ).replace("{current_date}", current_date)
+        candidates_payload = json.dumps(
+            topic_candidates or [], ensure_ascii=False, separators=(",", ":")
+        )
+        prompt += (
+            "\n\n## 当前 scope 可复用的 topic 候选\n"
+            f"{candidates_payload}\n"
+            "只有确认是同一概念时才复用候选名称；不要做近义词合并。"
+        )
         prompt = f"{prompt}\n\n{self._build_admission_output_contract(is_group_chat)}"
 
         # 3. 调用LLM生成结构化记忆
@@ -497,10 +500,10 @@ class MemoryProcessor(MemoryProcessorParseMixin, MemoryProcessorBuildMixin):
                         error=str(second_error),
                     )
 
-            # 4.5 逐 fact 准入，并只向旧消费者投影获准文本。
+            # 4.5 逐 fact 准入，并保留每个单中心 memory unit。
             try:
-                admitted_data, stored_count, skipped_count = (
-                    self._prepare_admitted_projection(structured_data)
+                admitted_units, stored_count, skipped_count = (
+                    self._prepare_admitted_units(structured_data)
                 )
             except InvalidMemoryOutputError as quality_error:
                 logger.warning(f"[MemoryProcessor] 候选事实不合格: {quality_error}")
@@ -509,7 +512,7 @@ class MemoryProcessor(MemoryProcessorParseMixin, MemoryProcessorBuildMixin):
                     error=str(quality_error),
                 )
 
-            if admitted_data is None:
+            if not admitted_units:
                 logger.info(
                     f"[MemoryProcessor] 本窗口没有获准保存的事实，跳过 {skipped_count} 条候选"
                 )
@@ -519,42 +522,43 @@ class MemoryProcessor(MemoryProcessorParseMixin, MemoryProcessorBuildMixin):
                     skipped_fact_count=skipped_count,
                 )
 
-            structured_data = admitted_data
-            structured_data["_quality"] = "normal"
+            try:
+                records = self._build_v3_storage_records(
+                    admitted_units=admitted_units,
+                    messages=messages,
+                    is_group_chat=is_group_chat,
+                    topic_candidates=topic_candidates,
+                    source_scope=source_scope,
+                )
+            except InvalidMemoryOutputError as quality_error:
+                logger.warning(f"[MemoryProcessor] 事实来源或时间不合格: {quality_error}")
+                return MemoryProcessingResult(
+                    status="invalid",
+                    error=str(quality_error),
+                )
 
-            # 5. 构建存储格式
-            fallback_excerpt = (
-                conversation_text[:200] + "..."
-                if len(conversation_text) > 200
-                else conversation_text
-            )
-            content, metadata = self._build_storage_format(
-                fallback_excerpt, structured_data, is_group_chat
-            )
-            metadata["participant_identities"] = self._extract_participant_identities(
-                messages
-            )
-            content = self._apply_source_time_tags(content, metadata, messages)
-            metadata["summary_quality"] = "normal"
-
-            importance = float(structured_data.get("importance", 0.5))
+            for record in records:
+                record.content = self._apply_source_time_tags(
+                    record.content, record.metadata, messages
+                )
+            first = records[0]
 
             logger.info(
-                f"[MemoryProcessor]  成功生成结构化记忆: 摘要={structured_data.get('summary', '')[:50]}..., "
-                f"主题={structured_data.get('topics', [])}, "
-                f"重要性={importance}, 类型={conversation_type}"
+                f"[MemoryProcessor] 成功生成 {len(records)} 条单中心记忆，"
+                f"获准事实={stored_count}, 类型={conversation_type}"
             )
             logger.debug(
-                f"[MemoryProcessor] 生成的记忆内容（前200字符）:\n{content[:200]}"
+                f"[MemoryProcessor] 首条记忆内容（前200字符）:\n{first.content[:200]}"
             )
 
             return MemoryProcessingResult(
                 status="store",
-                content=content,
-                metadata=metadata,
-                importance=importance,
+                content=first.content,
+                metadata=first.metadata,
+                importance=first.importance,
                 stored_fact_count=stored_count,
                 skipped_fact_count=skipped_count,
+                records=records,
             )
 
         except Exception as e:
@@ -578,6 +582,11 @@ class MemoryProcessor(MemoryProcessorParseMixin, MemoryProcessorBuildMixin):
             raise MemoryAdmissionSkipped("本窗口没有需要长期保存的事实")
         if result.status == "invalid":
             raise InvalidMemoryOutputError(result.error or "记忆总结结果不合格")
+        records = result.iter_records()
+        if len(records) != 1:
+            raise InvalidMemoryOutputError(
+                "该兼容接口只能返回一条记忆；请改用 process_conversation_result"
+            )
         return result.content, result.metadata, result.importance
 
     def _apply_source_time_tags(
@@ -619,7 +628,7 @@ class MemoryProcessor(MemoryProcessorParseMixin, MemoryProcessorBuildMixin):
         """
 
         formatted_lines = []
-        for i, msg in enumerate(messages):
+        for i, msg in enumerate(messages, 1):
             logger.debug(
                 f"[_format_conversation] 消息#{i}: "
                 f"sender_id={msg.sender_id}, sender_name={msg.sender_name}, "
@@ -628,7 +637,7 @@ class MemoryProcessor(MemoryProcessorParseMixin, MemoryProcessorBuildMixin):
 
             content_text = self._message_content_to_text(msg.content)
             sender_info = self._format_sender_info(msg)
-            formatted_line = f"{sender_info} {content_text}".rstrip()
+            formatted_line = f"[M{i}] {sender_info} {content_text}".rstrip()
             formatted_lines.append(formatted_line)
             if msg.group_id:
                 logger.debug(

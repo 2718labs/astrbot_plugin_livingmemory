@@ -110,25 +110,24 @@ def _make_group_messages():
     ]
 
 
-_VALID_JSON_RESPONSE = """{
-    "summary": "张三提醒我明天下午三点开会，我确认了会议安排",
+_VALID_JSON_RESPONSE = """{"memories": [{
+    "summary": "张三明天下午三点开会",
     "topics": ["会议提醒"],
-    "key_facts": [{"fact": "张三安排明天下午三点开会", "action": "store", "importance": 0.8}],
+    "key_facts": [{"fact": "张三安排明天下午三点开会", "action": "store", "topics": ["会议提醒"], "participants": ["张三"], "time": null, "importance": 0.8, "source": "user_explicit", "source_indexes": [1], "persona_reaction": null}],
     "sentiment": "neutral",
     "importance": 0.8
-}"""
+}]}"""
 
-_VALID_GROUP_JSON_RESPONSE = """{
+_VALID_GROUP_JSON_RESPONSE = """{"memories": [{
     "summary": "群聊讨论了 AI 工具的使用效果，张三和李四都参与了讨论",
     "topics": ["AI工具", "工作效率"],
     "key_facts": [
-        {"fact": "张三认为 ChatGPT 效率提升 30%", "action": "store", "importance": 0.75},
-        {"fact": "李四认为需要仔细审查 AI 生成代码", "action": "store", "importance": 0.7}
+        {"fact": "张三认为 ChatGPT 效率提升 30%", "action": "store", "topics": ["AI工具", "工作效率"], "participants": ["张三"], "time": null, "importance": 0.75, "source": "user_explicit", "source_indexes": [1], "persona_reaction": null},
+        {"fact": "李四认为需要仔细审查 AI 生成代码", "action": "store", "topics": ["AI工具"], "participants": ["李四"], "time": null, "importance": 0.7, "source": "user_explicit", "source_indexes": [2], "persona_reaction": null}
     ],
-    "participants": ["张三", "李四"],
     "sentiment": "positive",
     "importance": 0.75
-}"""
+}]}"""
 
 
 # ─────────────────────────────────────────────────────────────────────────────

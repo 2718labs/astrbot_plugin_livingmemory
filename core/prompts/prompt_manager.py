@@ -36,8 +36,8 @@ PROMPT_REGISTRY: dict[str, dict[str, Any]] = {
         "name_en": "Group Chat Memory Prompt",
         "description": "群聊场景下总结对话历史、提取结构化记忆的提示词模板",
         "description_en": "Template for summarizing group chat history and extracting structured memories",
-        "usage_note": "⚠️ 必须要求 LLM 输出 JSON；key_facts 每项包含 fact/action(store|skip)/importance，并保留 participants。格式错误将拒绝写入。",
-        "usage_note_en": "⚠️ MUST output JSON; every key_facts item needs fact/action(store|skip)/importance, with participants retained. Invalid output is rejected.",
+        "usage_note": "⚠️ JSON 顶层输出 memories；每个 fact 必须包含准入决定、独立 topic/participant、来源编号及可选时间/人格反应。格式错误将拒绝写入。",
+        "usage_note_en": "⚠️ JSON output uses top-level memories; each fact needs admission, its own topic/participants, source indexes, and optional time/persona reaction.",
         "category": "memory_processing",
         "file": "group_chat_prompt.txt",
         "variables": ["{conversation}", "{current_date}"],
@@ -48,8 +48,8 @@ PROMPT_REGISTRY: dict[str, dict[str, Any]] = {
         "name_en": "Private Chat Memory Prompt",
         "description": "私聊场景下总结对话历史、提取结构化记忆的提示词模板",
         "description_en": "Template for summarizing private chat history and extracting structured memories",
-        "usage_note": "⚠️ 必须要求 LLM 输出 JSON；key_facts 每项包含 fact/action(store|skip)/importance。格式错误将拒绝写入。",
-        "usage_note_en": "⚠️ MUST output JSON; every key_facts item needs fact/action(store|skip)/importance. Invalid output is rejected.",
+        "usage_note": "⚠️ JSON 顶层输出 memories；每个 fact 必须包含准入决定、独立 topic/participant、来源编号及可选时间/人格反应。格式错误将拒绝写入。",
+        "usage_note_en": "⚠️ JSON output uses top-level memories; each fact needs admission, its own topic/participants, source indexes, and optional time/persona reaction.",
         "category": "memory_processing",
         "file": "private_chat_prompt.txt",
         "variables": ["{conversation}", "{current_date}"],
@@ -66,11 +66,10 @@ PROMPT_REGISTRY: dict[str, dict[str, Any]] = {
         "file": "memory_system_prompt_base.txt",
         "variables": ["{current_date}"],
         "default": (
-            "你正在总结对话记忆。请严格按照JSON格式输出。\n"
+            "你正在提取可独立复用的对话事实。请严格按照 JSON 格式输出，"
+            "不写第一人称长篇总结。\n"
             "当前日期时间: {current_date}\n"
-            "重要: 请将对话中出现的相对时间表达（如\u201c今天\u201d、\u201c明天\u201d、"
-            "\u201c昨天\u201d、\u201c下周\u201d、\u201c上个月\u201d等）转换为具体日期后再写入记忆，"
-            "以便未来查阅时仍能准确理解时间信息。"
+            "重要: 相对时间必须保留原始说法并按直接来源消息时间换算；程序会再次校验。"
         ),
     },
     "memory_system_prompt_with_persona": {
@@ -88,18 +87,11 @@ PROMPT_REGISTRY: dict[str, dict[str, Any]] = {
             "{base_prompt}\n\n"
             "## 你的人格设定\n"
             "{persona_prompt}\n\n"
-            "## 记忆总结要求\n"
-            "在总结对话记忆时,你需要:\n"
-            "1. **保持你的人格特色**: 使用符合上述人格设定的语气、用词习惯和表达方式\n"
-            "2. **第一人称视角**: 以“我”的视角回顾对话,不要说“bot”、“助手”等第三人称\n"
-            "3. **体现你的关注点**: 根据你的人格特点,侧重记录你会关注的信息\n"
-            "4. **自然真实**: 让记忆读起来像是你本人在回忆这段对话,而不是机械的客观描述\n"
-            "5. **时间转换**: 将对话中的相对时间（今天、明天、下周等）"
-            "转换为具体日期（当前日期: {current_date}）\n\n"
-            "例如:\n"
-            "- 如果你是活泼可爱的性格,记忆中可以使用“呀”、“呢”、“~”等语气词\n"
-            "- 如果你是专业严谨的性格,记忆应该用词准确、逻辑清晰、格式规范\n"
-            "- 如果你是幽默风趣的性格,记忆中可以包含轻松的表达和有趣的观察"
+            "## 记忆提取要求\n"
+            "事实和 summary 必须中性、完整、自包含，不得使用人格化口吻重写事实。\n"
+            "人格设定只用于每条 fact 可选的 persona_reaction：emotion 和 thought "
+            "各最多一小句；不复述 fact、不编造反应，没有价值时写 null。\n"
+            "相对时间按直接来源消息时间换算（当前日期: {current_date}），程序会再次校验。"
         ),
     },
     "memory_injection_header": {

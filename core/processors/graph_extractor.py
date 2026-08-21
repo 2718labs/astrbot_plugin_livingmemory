@@ -5,6 +5,8 @@ from __future__ import annotations
 import hashlib
 from typing import Any
 
+from ..utils.memory_facts import fact_texts_from_metadata
+
 from ..models.graph_models import ExtractedGraph, GraphEdge, GraphEntry, GraphNode
 from .entity_resolver import EntityResolver
 
@@ -102,7 +104,7 @@ class GraphExtractor:
         )[: self.max_topics]
         participants = self._participant_nodes(metadata)
         key_facts = EntityResolver.dedupe_preserve_order(
-            [str(item) for item in metadata.get("key_facts", []) if item]
+            fact_texts_from_metadata(metadata, limit=self.max_facts)
         )[: self.max_facts]
 
         if not key_facts and summary:

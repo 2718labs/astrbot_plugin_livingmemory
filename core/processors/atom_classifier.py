@@ -5,8 +5,10 @@ from __future__ import annotations
 import re
 import time
 from datetime import datetime, timedelta
+from typing import Any
 
 from ..models.memory_atom import AtomType, DecayType, MemoryAtom, compute_ttl
+from ..utils.memory_facts import fact_objects, fact_texts
 
 # ---------- classification patterns (Chinese-focused, extensible) ----------
 
@@ -183,6 +185,48 @@ def classify_atoms(
     return atoms
 
 
+def classify_metadata_atoms(
+    metadata: dict[str, Any],
+    parent_importance: float = 0.5,
+    session_id: str | None = None,
+    persona_id: str | None = None,
+) -> list[MemoryAtom]:
+    """Classify legacy strings or v3 facts without leaking document entities."""
+    raw_facts = metadata.get("key_facts", [])
+    v3_facts = fact_objects(raw_facts)
+    if not v3_facts:
+        return classify_atoms(
+            key_facts=fact_texts(raw_facts),
+            topics=metadata.get("topics", []),
+            participants=metadata.get("participants", []),
+            parent_importance=parent_importance,
+            session_id=session_id,
+            persona_id=persona_id,
+        )
+
+    atoms: list[MemoryAtom] = []
+    for fact in v3_facts:
+        classified = classify_atoms(
+            key_facts=fact_texts([fact]),
+            topics=fact.get("topics") or [],
+            participants=fact.get("participants") or [],
+            parent_importance=float(fact.get("importance", parent_importance)),
+            session_id=session_id,
+            persona_id=persona_id,
+        )
+        for atom in classified:
+            atom.metadata.update(
+                {
+                    "fact_id": fact.get("fact_id"),
+                    "parent_id": fact.get("parent_id"),
+                    "source_message_ids": fact.get("source_message_ids", []),
+                    "time": fact.get("time"),
+                }
+            )
+        atoms.extend(classified)
+    return atoms
+
+
 def _classify_single(text: str) -> tuple[AtomType, float, float | None]:
     """Classify a single fact string and return (type, confidence, event_time)."""
     has_time = bool(_TIME_INDICATORS.search(text))
@@ -217,4 +261,10 @@ def _classify_single(text: str) -> tuple[AtomType, float, float | None]:
     return AtomType.UNKNOWN, 0.60, None
 
 
-__all__ = ["classify_atoms", "AtomType", "DecayType", "MemoryAtom"]
+__all__ = [
+    "classify_atoms",
+    "classify_metadata_atoms",
+    "AtomType",
+    "DecayType",
+    "MemoryAtom",
+]

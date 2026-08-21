@@ -3,8 +3,26 @@
 import json
 from typing import Any
 
+from ..models.conversation_models import Message
 from ..models.memory_atom import MemoryAtom
-from .atom_classifier import classify_atoms
+from ..models.memory_contract import (
+    MEMORY_GENERATION_VERSION,
+    MEMORY_SCHEMA_VERSION,
+    build_source_descriptor,
+    concept_key,
+    memory_idempotency_key,
+    normalize_concept_name,
+    parent_memory_id,
+    participant_id,
+    source_ids_for_indexes,
+    source_messages_for_indexes,
+    stable_fact_id,
+    topic_id,
+    validate_and_normalize_time,
+)
+from ..models.memory_processing import InvalidMemoryOutputError, MemoryWriteRecord
+from ..utils.memory_facts import fact_texts, unique_strings
+from .atom_classifier import classify_metadata_atoms
 
 
 class MemoryProcessorBuildMixin:
@@ -33,8 +51,8 @@ class MemoryProcessorBuildMixin:
         # 自动总结链路在调用本方法前已经把 summary/key_facts 投影成获准事实；
         # 显式记忆工具仍可传入摘要和事实，沿用原有富文本兼容格式。
         rich_parts = [summary] if summary else []
-        fact_texts = [str(f).strip() for f in key_facts[:5] if str(f).strip()]
-        remaining_facts = [fact for fact in fact_texts if fact != summary]
+        projected_facts = fact_texts(key_facts, limit=5)
+        remaining_facts = [fact for fact in projected_facts if fact != summary]
         if remaining_facts:
             rich_parts.append("；".join(remaining_facts))
         rich_content = " | ".join(rich_parts)
@@ -68,6 +86,235 @@ class MemoryProcessorBuildMixin:
 
         return content, metadata
 
+    def _build_v3_storage_records(
+        self,
+        admitted_units: list[tuple[int, dict[str, Any]]],
+        messages: list[Message],
+        is_group_chat: bool,
+        topic_candidates: list[dict[str, Any] | str] | None = None,
+        source_scope: str | None = None,
+    ) -> list[MemoryWriteRecord]:
+        """Create one authoritative v3 record for each admitted centre."""
+        scope = str(source_scope or messages[0].session_id or "").strip()
+        source_window = build_source_descriptor(messages, scope=scope)
+        candidate_topics: dict[str, dict[str, str]] = {}
+        for candidate in topic_candidates or []:
+            if isinstance(candidate, dict):
+                name = normalize_concept_name(
+                    str(candidate.get("name") or candidate.get("final_name") or "")
+                )
+                candidate_id = str(candidate.get("topic_id") or "").strip()
+            else:
+                name = normalize_concept_name(str(candidate))
+                candidate_id = ""
+            if name:
+                candidate_topics[concept_key(name)] = {
+                    "name": name,
+                    "topic_id": candidate_id or topic_id(scope, name),
+                }
+
+        catalog = self._topic_catalog.setdefault(scope, {})
+        for key, item in candidate_topics.items():
+            catalog.setdefault(key, item)
+
+        identities = self._extract_participant_identities(messages)
+        identity_lookup: dict[str, dict[str, Any]] = {}
+        for identity in identities:
+            aliases = [
+                identity.get("display_name"),
+                identity.get("sender_id"),
+                *(identity.get("aliases") or []),
+            ]
+            for alias in aliases:
+                key = concept_key(str(alias or ""))
+                if key:
+                    identity_lookup[key] = identity
+
+        def _resolve_topic(raw_name: str) -> dict[str, str]:
+            raw = normalize_concept_name(raw_name)
+            key = concept_key(raw)
+            existing = catalog.get(key)
+            if existing:
+                final_name = existing["name"]
+                resolved_id = existing["topic_id"]
+                decision = "reused"
+            else:
+                final_name = raw
+                resolved_id = topic_id(scope, final_name)
+                decision = "created"
+                catalog[key] = {"name": final_name, "topic_id": resolved_id}
+            return {
+                "topic_id": resolved_id,
+                "raw_name": raw,
+                "name": final_name,
+                "decision": decision,
+            }
+
+        def _resolve_participant(raw_name: str) -> dict[str, Any]:
+            name = normalize_concept_name(raw_name)
+            identity = identity_lookup.get(concept_key(name))
+            if identity:
+                return {
+                    "participant_id": str(identity["identity_key"]),
+                    "name": str(identity["display_name"]),
+                    "identity_key": str(identity["identity_key"]),
+                    "source": "message_sender",
+                }
+            return {
+                "participant_id": participant_id(scope, name),
+                "name": name,
+                "identity_key": None,
+                "source": "mentioned",
+            }
+
+        records: list[MemoryWriteRecord] = []
+        seen_unit_keys: dict[str, int] = {}
+        for original_unit_index, unit in admitted_units:
+            prepared_facts: list[dict[str, Any]] = []
+            for candidate in unit["key_facts"]:
+                indexes = candidate["source_indexes"]
+                try:
+                    direct_ids = source_ids_for_indexes(messages, indexes)
+                    direct_messages = source_messages_for_indexes(messages, indexes)
+                    normalized_time = validate_and_normalize_time(
+                        candidate["time"], direct_messages
+                    )
+                except ValueError as exc:
+                    raise InvalidMemoryOutputError(str(exc)) from exc
+                topic_refs = [_resolve_topic(name) for name in candidate["topics"]]
+                participant_refs = [
+                    _resolve_participant(name) for name in candidate["participants"]
+                ]
+                prepared_facts.append(
+                    {
+                        "fact": candidate["fact"],
+                        "topics": unique_strings(ref["name"] for ref in topic_refs),
+                        "topic_refs": topic_refs,
+                        "participants": unique_strings(
+                            ref["name"] for ref in participant_refs
+                        ),
+                        "participant_refs": participant_refs,
+                        "time": normalized_time,
+                        "importance": candidate["importance"],
+                        "source": candidate["source"],
+                        "source_message_ids": direct_ids,
+                        "persona_reaction": candidate["persona_reaction"],
+                    }
+                )
+
+            unit_key: dict[str, Any] = {
+                "source_message_ids": sorted(
+                    {
+                        str(source_id)
+                        for fact in prepared_facts
+                        for source_id in fact["source_message_ids"]
+                    }
+                ),
+                "topic_ids": sorted(
+                    {
+                        ref["topic_id"]
+                        for fact in prepared_facts
+                        for ref in fact["topic_refs"]
+                    }
+                ),
+                "participant_ids": sorted(
+                    {
+                        ref["participant_id"]
+                        for fact in prepared_facts
+                        for ref in fact["participant_refs"]
+                    }
+                ),
+                "times": sorted(
+                    {
+                        str(fact["time"]["normalized"])
+                        for fact in prepared_facts
+                        if fact["time"]
+                    }
+                ),
+            }
+            serialized_unit_key = json.dumps(
+                unit_key, ensure_ascii=False, sort_keys=True
+            )
+            occurrence = seen_unit_keys.get(serialized_unit_key, 0)
+            seen_unit_keys[serialized_unit_key] = occurrence + 1
+            if occurrence:
+                unit_key["occurrence"] = occurrence
+                unit_key["source_order"] = original_unit_index
+
+            parent_id = parent_memory_id(source_window["fingerprint"], unit_key)
+            signature_counts: dict[str, int] = {}
+            for fact in prepared_facts:
+                fact_key: dict[str, Any] = {
+                    "source_message_ids": [str(item) for item in fact["source_message_ids"]],
+                    "topic_ids": [ref["topic_id"] for ref in fact["topic_refs"]],
+                    "participant_ids": [
+                        ref["participant_id"] for ref in fact["participant_refs"]
+                    ],
+                    "time": fact["time"],
+                    "source": fact["source"],
+                }
+                serialized_fact_key = json.dumps(
+                    fact_key, ensure_ascii=False, sort_keys=True
+                )
+                fact_occurrence = signature_counts.get(serialized_fact_key, 0)
+                signature_counts[serialized_fact_key] = fact_occurrence + 1
+                if fact_occurrence:
+                    fact_key["occurrence"] = fact_occurrence
+                fact["parent_id"] = parent_id
+                fact["fact_id"] = stable_fact_id(parent_id, fact_key)
+
+            texts = [fact["fact"] for fact in prepared_facts]
+            summary = texts[0]
+            content = "；".join(texts)
+            document_topic_refs: list[dict[str, str]] = []
+            document_participant_refs: list[dict[str, Any]] = []
+            for fact in prepared_facts:
+                for ref in fact["topic_refs"]:
+                    if ref["topic_id"] not in {
+                        item["topic_id"] for item in document_topic_refs
+                    }:
+                        document_topic_refs.append(ref)
+                for ref in fact["participant_refs"]:
+                    if ref["participant_id"] not in {
+                        item["participant_id"] for item in document_participant_refs
+                    }:
+                        document_participant_refs.append(ref)
+
+            metadata: dict[str, Any] = {
+                "memory_schema_version": MEMORY_SCHEMA_VERSION,
+                "summary_schema_version": MEMORY_SCHEMA_VERSION,
+                "generation_version": MEMORY_GENERATION_VERSION,
+                "parent_id": parent_id,
+                "idempotency_key": memory_idempotency_key(
+                    source_window["fingerprint"], unit_key
+                ),
+                "summary": summary,
+                "canonical_summary": summary,
+                "topics": [item["name"] for item in document_topic_refs],
+                "topic_refs": document_topic_refs,
+                "participants": [
+                    item["name"] for item in document_participant_refs
+                ],
+                "participant_refs": document_participant_refs,
+                "participant_identities": identities,
+                "key_facts": prepared_facts,
+                "sentiment": unit["sentiment"],
+                "interaction_type": (
+                    "group_chat" if is_group_chat else "private_chat"
+                ),
+                "source_window": dict(source_window),
+                "source_session_id": scope,
+                "summary_quality": "normal",
+            }
+            records.append(
+                MemoryWriteRecord(
+                    content=content,
+                    metadata=metadata,
+                    importance=max(fact["importance"] for fact in prepared_facts),
+                )
+            )
+        return records
+
     def classify_atoms_from_metadata(
         self,
         metadata: dict[str, Any],
@@ -82,15 +329,10 @@ class MemoryProcessorBuildMixin:
         """
         if not self.config.get("atom_enabled", True):
             return []
-        key_facts: list[str] = metadata.get("key_facts", [])
-        if not key_facts:
+        if not metadata.get("key_facts"):
             return []
-        topics = metadata.get("topics", [])
-        participants = metadata.get("participants", [])
-        atoms = classify_atoms(
-            key_facts=key_facts,
-            topics=topics,
-            participants=participants,
+        atoms = classify_metadata_atoms(
+            metadata=metadata,
             parent_importance=parent_importance,
             session_id=session_id,
             persona_id=persona_id,

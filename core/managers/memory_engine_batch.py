@@ -6,7 +6,7 @@ MemoryEngine 的 MemoryEngineBatchMixin 拆分模块
 from typing import Any
 import asyncio
 from ..utils.number_utils import clamp_float, safe_float
-from ..processors.atom_classifier import classify_atoms
+from ..processors.atom_classifier import classify_metadata_atoms
 import json
 from astrbot.api import logger
 from pathlib import Path
@@ -322,10 +322,8 @@ class MemoryEngineBatchMixin:
             await self.bm25_retriever.add_document(memory_id, content, metadata)
             fts_inserted = True
 
-            atoms = classify_atoms(
-                key_facts=list(metadata.get("key_facts") or []),
-                topics=list(metadata.get("topics") or []),
-                participants=list(metadata.get("participants") or []),
+            atoms = classify_metadata_atoms(
+                metadata=metadata,
                 parent_importance=clamp_float(
                     metadata.get("importance"), default=0.5
                 ),

@@ -41,61 +41,85 @@ class MemoryProcessorParseMixin:
         """Validate the raw schema without filling missing required fields."""
         if not isinstance(data, dict):
             raise InvalidMemoryOutputError("顶层必须是 JSON object")
-        if "memory_action" in data:
-            raise InvalidMemoryOutputError("不得输出顶层 memory_action")
+        if set(data) != {"memories"}:
+            extras = sorted(set(data).difference({"memories"}))
+            if "memory_action" in extras:
+                raise InvalidMemoryOutputError("不得输出顶层 memory_action")
+            detail = f": {', '.join(extras)}" if extras else ""
+            raise InvalidMemoryOutputError(
+                f'顶层只能包含 "memories"{detail}'
+            )
+        raw_units = data["memories"]
+        if not isinstance(raw_units, list):
+            raise InvalidMemoryOutputError("memories 必须是数组")
+        if len(raw_units) > 5:
+            raise InvalidMemoryOutputError("memories 最多允许 5 条")
+        return {
+            "memories": [
+                self._validate_memory_unit(item, index, is_group_chat)
+                for index, item in enumerate(raw_units)
+            ]
+        }
 
+    def _validate_memory_unit(
+        self, item: Any, unit_index: int, is_group_chat: bool
+    ) -> dict[str, Any]:
+        label = f"memories[{unit_index}]"
+        if not isinstance(item, dict):
+            raise InvalidMemoryOutputError(f"{label} 必须是 object")
         required = {"summary", "topics", "key_facts", "sentiment", "importance"}
-        if is_group_chat:
-            required.add("participants")
-        missing = sorted(required.difference(data))
+        missing = sorted(required.difference(item))
         if missing:
-            raise InvalidMemoryOutputError(f"缺少必填字段: {', '.join(missing)}")
-
-        summary = data["summary"]
+            raise InvalidMemoryOutputError(
+                f"{label} 缺少字段: {', '.join(missing)}"
+            )
+        summary = item["summary"]
         if not isinstance(summary, str):
-            raise InvalidMemoryOutputError("summary 必须是字符串")
-
-        topics = self._strict_string_list(data["topics"], "topics", max_items=5)
-        sentiment = data["sentiment"]
+            raise InvalidMemoryOutputError(f"{label}.summary 必须是字符串")
+        topics = self._strict_string_list(
+            item["topics"], f"{label}.topics", max_items=5
+        )
+        sentiment = item["sentiment"]
         if sentiment not in {"positive", "neutral", "negative"}:
             raise InvalidMemoryOutputError(
-                "sentiment 必须是 positive、neutral 或 negative"
+                f"{label}.sentiment 必须是 positive、neutral 或 negative"
             )
-        importance = self._strict_importance(data["importance"], "importance")
-
-        raw_facts = data["key_facts"]
+        importance = self._strict_importance(
+            item["importance"], f"{label}.importance"
+        )
+        raw_facts = item["key_facts"]
         if not isinstance(raw_facts, list):
-            raise InvalidMemoryOutputError("key_facts 必须是数组")
+            raise InvalidMemoryOutputError(f"{label}.key_facts 必须是数组")
         if len(raw_facts) > 5:
-            raise InvalidMemoryOutputError("key_facts 最多允许 5 条")
-        facts = [
-            self._validate_candidate_fact(item, index)
-            for index, item in enumerate(raw_facts)
-        ]
-
-        normalized: dict[str, Any] = {
-            **data,
+            raise InvalidMemoryOutputError(f"{label}.key_facts 最多允许 5 条")
+        return {
             "summary": summary.strip(),
             "topics": topics,
-            "key_facts": facts,
+            "key_facts": [
+                self._validate_candidate_fact(fact, unit_index, fact_index)
+                for fact_index, fact in enumerate(raw_facts)
+            ],
             "sentiment": sentiment,
             "importance": importance,
         }
-        if "canonical_summary" in data:
-            if not isinstance(data["canonical_summary"], str):
-                raise InvalidMemoryOutputError("canonical_summary 必须是字符串")
-            normalized["canonical_summary"] = data["canonical_summary"].strip()
-        if is_group_chat:
-            normalized["participants"] = self._strict_string_list(
-                data["participants"], "participants"
-            )
-        return normalized
 
-    def _validate_candidate_fact(self, item: Any, index: int) -> dict[str, Any]:
-        label = f"key_facts[{index}]"
+    def _validate_candidate_fact(
+        self, item: Any, unit_index: int, fact_index: int
+    ) -> dict[str, Any]:
+        label = f"memories[{unit_index}].key_facts[{fact_index}]"
         if not isinstance(item, dict):
             raise InvalidMemoryOutputError(f"{label} 必须是 object")
-        missing = {"fact", "action", "importance"}.difference(item)
+        missing = {
+            "fact",
+            "action",
+            "topics",
+            "participants",
+            "time",
+            "importance",
+            "source",
+            "source_indexes",
+            "persona_reaction",
+        }.difference(item)
         if missing:
             raise InvalidMemoryOutputError(
                 f"{label} 缺少字段: {', '.join(sorted(missing))}"
@@ -110,16 +134,94 @@ class MemoryProcessorParseMixin:
         importance = self._strict_importance(
             item["importance"], f"{label}.importance"
         )
+        topics = self._strict_string_list(
+            item["topics"], f"{label}.topics", max_items=5
+        )
+        participants = self._strict_string_list(
+            item["participants"], f"{label}.participants", max_items=10
+        )
+        source = item["source"]
+        if source not in {
+            "user_explicit",
+            "assistant_explicit",
+            "assistant_observed",
+            "group_consensus",
+            "inferred",
+        }:
+            raise InvalidMemoryOutputError(f"{label}.source 取值不合法")
+        source_indexes = item["source_indexes"]
+        if not isinstance(source_indexes, list) or not source_indexes:
+            raise InvalidMemoryOutputError(
+                f"{label}.source_indexes 必须是非空整数数组"
+            )
+        normalized_indexes: list[int] = []
+        for source_index in source_indexes:
+            if isinstance(source_index, bool) or not isinstance(source_index, int):
+                raise InvalidMemoryOutputError(
+                    f"{label}.source_indexes 必须是非空整数数组"
+                )
+            if source_index not in normalized_indexes:
+                normalized_indexes.append(source_index)
+
+        time_value = self._validate_fact_time_shape(item["time"], f"{label}.time")
+        reaction = self._validate_persona_reaction(
+            item["persona_reaction"], f"{label}.persona_reaction"
+        )
         if "reason" in item and not isinstance(item["reason"], str):
             raise InvalidMemoryOutputError(f"{label}.reason 必须是字符串")
 
         normalized = dict(item)
         normalized["fact"] = fact.strip()
         normalized["action"] = action
+        normalized["topics"] = topics
+        normalized["participants"] = participants
+        normalized["time"] = time_value
         normalized["importance"] = importance
+        normalized["source"] = source
+        normalized["source_indexes"] = normalized_indexes
+        normalized["persona_reaction"] = reaction
         if "reason" in normalized:
             normalized["reason"] = normalized["reason"].strip()
         return normalized
+
+    @staticmethod
+    def _validate_fact_time_shape(value: Any, label: str) -> dict[str, str] | None:
+        if value is None:
+            return None
+        if not isinstance(value, dict):
+            raise InvalidMemoryOutputError(f"{label} 必须是 object 或 null")
+        if set(value) != {"raw", "normalized", "precision"}:
+            raise InvalidMemoryOutputError(
+                f"{label} 必须且只能包含 raw、normalized、precision"
+            )
+        normalized: dict[str, str] = {}
+        for field in ("raw", "normalized", "precision"):
+            item = value[field]
+            if not isinstance(item, str) or not item.strip():
+                raise InvalidMemoryOutputError(f"{label}.{field} 必须是非空字符串")
+            normalized[field] = item.strip()
+        return normalized
+
+    @staticmethod
+    def _validate_persona_reaction(
+        value: Any, label: str
+    ) -> dict[str, str] | None:
+        if value is None:
+            return None
+        if not isinstance(value, dict) or set(value) != {"emotion", "thought"}:
+            raise InvalidMemoryOutputError(
+                f"{label} 必须是只含 emotion/thought 的 object 或 null"
+            )
+        reaction: dict[str, str] = {}
+        for field in ("emotion", "thought"):
+            item = value[field]
+            if not isinstance(item, str):
+                raise InvalidMemoryOutputError(f"{label}.{field} 必须是字符串")
+            text = item.strip()
+            if len(text) > 80:
+                raise InvalidMemoryOutputError(f"{label}.{field} 最多 80 个字符")
+            reaction[field] = text
+        return reaction if any(reaction.values()) else None
 
     @staticmethod
     def _strict_string_list(
@@ -147,11 +249,12 @@ class MemoryProcessorParseMixin:
             raise InvalidMemoryOutputError(f"{field} 必须在 0.0 到 1.0 之间")
         return importance
 
-    def _prepare_admitted_projection(
+    def _prepare_admitted_units(
         self, structured_data: dict[str, Any]
-    ) -> tuple[dict[str, Any] | None, int, int]:
-        """Filter candidate facts and project admitted text to current consumers."""
-        stored_facts: list[dict[str, Any]] = []
+    ) -> tuple[list[tuple[int, dict[str, Any]]], int, int]:
+        """Filter candidate facts while retaining their single-centre unit."""
+        admitted_units: list[tuple[int, dict[str, Any]]] = []
+        stored_count = 0
         skipped_count = 0
         invalid_terms = {
             "对话记录",
@@ -168,25 +271,31 @@ class MemoryProcessorParseMixin:
             "群成员说",
         )
 
-        for candidate in structured_data["key_facts"]:
-            if candidate["action"] == "skip" or candidate["importance"] <= 0.2:
-                skipped_count += 1
+        for unit_index, unit in enumerate(structured_data["memories"]):
+            stored_facts: list[dict[str, Any]] = []
+            for candidate in unit["key_facts"]:
+                if candidate["action"] == "skip" or candidate["importance"] <= 0.2:
+                    skipped_count += 1
+                    continue
+                fact = candidate["fact"]
+                if fact in invalid_terms or any(
+                    term in fact for term in generic_subjects
+                ):
+                    raise InvalidMemoryOutputError(f"store fact 内容不合格: {fact}")
+                if fact.startswith(("她", "他", "他们", "她们", "那个", "这件事", "后来")):
+                    raise InvalidMemoryOutputError(f"store fact 缺少独立主体: {fact}")
+                stored_facts.append(candidate)
+            if not stored_facts:
                 continue
-            fact = candidate["fact"]
-            if fact in invalid_terms or any(term in fact for term in generic_subjects):
-                raise InvalidMemoryOutputError(f"store fact 内容不合格: {fact}")
-            stored_facts.append(candidate)
+            admitted = dict(unit)
+            admitted["key_facts"] = stored_facts
+            admitted["importance"] = max(
+                candidate["importance"] for candidate in stored_facts
+            )
+            admitted_units.append((unit_index, admitted))
+            stored_count += len(stored_facts)
 
-        if not stored_facts:
-            return None, 0, skipped_count
-
-        fact_texts = [item["fact"] for item in stored_facts]
-        projected = dict(structured_data)
-        projected["summary"] = fact_texts[0]
-        projected["canonical_summary"] = "；".join(fact_texts)
-        projected["key_facts"] = fact_texts
-        projected["importance"] = max(item["importance"] for item in stored_facts)
-        return projected, len(stored_facts), skipped_count
+        return admitted_units, stored_count, skipped_count
 
     def _normalize_parsed_data(self, data: dict, is_group_chat: bool) -> dict[str, Any]:
         """

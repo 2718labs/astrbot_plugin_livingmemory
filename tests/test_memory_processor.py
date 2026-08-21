@@ -45,21 +45,34 @@ def _memory_json(
         fact, action, fact_importance = (
             item if isinstance(item, tuple) else (item, "store", importance)
         )
+        candidate_participants = [
+            name for name in (participants or []) if name in fact
+        ]
+        if not candidate_participants and "张三" in fact:
+            candidate_participants = ["张三"]
         key_facts.append(
-            {"fact": fact, "action": action, "importance": fact_importance}
+            {
+                "fact": fact,
+                "action": action,
+                "topics": list(topics or []),
+                "participants": candidate_participants,
+                "time": None,
+                "importance": fact_importance,
+                "source": "user_explicit",
+                "source_indexes": [1],
+                "persona_reaction": None,
+            }
         )
-    payload = {
+    memory = {
         "summary": summary,
         "topics": topics or [],
         "key_facts": key_facts,
         "sentiment": sentiment,
         "importance": importance,
     }
-    if participants is not None:
-        payload["participants"] = participants
     if canonical_summary is not None:
-        payload["canonical_summary"] = canonical_summary
-    return json.dumps(payload, ensure_ascii=False)
+        memory["canonical_summary"] = canonical_summary
+    return json.dumps({"memories": [memory]}, ensure_ascii=False)
 
 
 def _make_messages():
@@ -133,7 +146,9 @@ async def test_process_conversation_accepts_one_format_repair():
     result = await processor.process_conversation_result(_make_messages())
 
     assert result.status == "store"
-    assert result.metadata["key_facts"] == ["张三周三参加科目二考试"]
+    assert [item["fact"] for item in result.metadata["key_facts"]] == [
+        "张三周三参加科目二考试"
+    ]
     assert llm.text_chat.await_count == 2
 
 
@@ -162,9 +177,9 @@ def test_strict_format_gate_accepts_complete_fence_and_rejects_missing_action():
 
     parsed = processor._parse_llm_response(f"```json\n{valid}\n```", False)
 
-    assert parsed["key_facts"][0]["action"] == "store"
+    assert parsed["memories"][0]["key_facts"][0]["action"] == "store"
     invalid = json.loads(valid)
-    del invalid["key_facts"][0]["action"]
+    del invalid["memories"][0]["key_facts"][0]["action"]
     with pytest.raises(ValueError, match="action"):
         processor._parse_llm_response(json.dumps(invalid, ensure_ascii=False), False)
 
@@ -251,7 +266,9 @@ async def test_mixed_fact_admission_excludes_skipped_text_from_storage():
     assert result.stored_fact_count == 1
     assert result.skipped_fact_count == 1
     assert result.content == "张三明天下午三点开会"
-    assert result.metadata["key_facts"] == ["张三明天下午三点开会"]
+    assert [item["fact"] for item in result.metadata["key_facts"]] == [
+        "张三明天下午三点开会"
+    ]
     assert "随口说有点饿" not in json.dumps(result.metadata, ensure_ascii=False)
     assert "这段原始总结" not in json.dumps(result.metadata, ensure_ascii=False)
 
@@ -306,8 +323,7 @@ async def test_admitted_facts_form_current_canonical_projection():
         persona_id=None,
     )
 
-    assert "明天下午三点开会" in metadata["canonical_summary"]
-    assert "张三需要准备PPT" in metadata["canonical_summary"]
+    assert metadata["canonical_summary"] == "明天下午三点开会"
     assert "旧式第一人称总结" not in metadata["canonical_summary"]
     assert "明天下午三点开会" in content
     assert "张三需要准备PPT" in content
@@ -349,12 +365,13 @@ async def test_empty_llm_summary_does_not_hide_an_admitted_fact():
     )
 
     assert metadata.get("summary_quality") == "normal"
-    assert metadata["persona_summary"] == "张三明天下午三点参加会议"
+    assert metadata["summary"] == "张三明天下午三点参加会议"
+    assert "persona_summary" not in metadata
 
 
 @pytest.mark.asyncio
 async def test_empty_candidate_list_is_a_valid_skip():
-    llm = _DummyLLMProvider(_memory_json(summary="", topics=[], importance=0.0))
+    llm = _DummyLLMProvider(json.dumps({"memories": []}, ensure_ascii=False))
     processor = MemoryProcessor(llm_provider=llm, context=None)
 
     result = await processor.process_conversation_result(
@@ -577,14 +594,12 @@ async def test_process_group_chat_extracts_participants():
     )
 
     assert "participants" in metadata
-    assert "张三" in metadata["participants"]
-    assert "李四" in metadata["participants"]
-    assert "王五" in metadata["participants"]
+    assert metadata["participants"] == ["张三"]
 
 
 @pytest.mark.asyncio
-async def test_process_group_chat_dual_channel_summary():
-    """群聊路径也应生成双通道摘要（canonical_summary + persona_summary）。"""
+async def test_process_group_chat_uses_neutral_derived_summary():
+    """群聊 v3 只保留由 facts 派生的中性 summary。"""
     llm = _DummyLLMProvider(
         _memory_json(
             "张三建议公司内部部署私有化 LLM",
@@ -603,9 +618,8 @@ async def test_process_group_chat_dual_channel_summary():
     )
 
     assert "canonical_summary" in metadata
-    assert "persona_summary" in metadata
-    assert metadata.get("summary_schema_version") == "v2"
-    # canonical_summary 应包含 key_facts
+    assert "persona_summary" not in metadata
+    assert metadata.get("summary_schema_version") == "v3"
     assert "私有化 LLM" in metadata["canonical_summary"]
     assert "私有化 LLM" in content
     assert "数据安全" in content
@@ -613,13 +627,15 @@ async def test_process_group_chat_dual_channel_summary():
 
 @pytest.mark.asyncio
 async def test_process_group_chat_missing_participants_is_invalid():
-    llm = _DummyLLMProvider(
+    payload = json.loads(
         _memory_json(
             ("张三确认参加周五会议", "store", 0.5),
             topics=["会议"],
             importance=0.5,
         )
     )
+    del payload["memories"][0]["key_facts"][0]["participants"]
+    llm = _DummyLLMProvider(json.dumps(payload, ensure_ascii=False))
     processor = MemoryProcessor(llm_provider=llm, context=None)
 
     result = await processor.process_conversation_result(
@@ -634,8 +650,8 @@ async def test_process_group_chat_missing_participants_is_invalid():
 
 
 @pytest.mark.asyncio
-async def test_process_private_chat_no_participants_field():
-    """私聊路径不应在 metadata 中包含 participants 字段。"""
+async def test_process_private_chat_keeps_fact_participant_binding():
+    """私聊 v3 同样保留 fact 自身的 participant 绑定。"""
     llm = _DummyLLMProvider(
         _memory_json("张三明天下午三点开会", topics=["会议"])
     )
@@ -647,7 +663,7 @@ async def test_process_private_chat_no_participants_field():
         persona_id=None,
     )
 
-    assert "participants" not in metadata
+    assert metadata["participants"] == ["张三"]
     assert metadata["interaction_type"] == "private_chat"
 
 
@@ -690,7 +706,7 @@ async def test_process_group_chat_long_content():
 
     assert isinstance(content, str) and len(content) > 0
     assert metadata["interaction_type"] == "group_chat"
-    assert len(metadata["participants"]) == 5
+    assert metadata["participants"] == ["成员0", "成员1"]
     assert 0.0 <= importance <= 1.0
 
 
@@ -759,4 +775,194 @@ def test_format_conversation_uses_placeholder_for_image_only_group_message():
 
     assert "张三" in formatted
     assert "[图片消息]" in formatted
-    assert "image_url" not in formatted
+
+
+# ── S1 v3 output contract ───────────────────────────────────────────────────
+
+
+def _unit_from_json(value: str) -> dict:
+    return json.loads(value)["memories"][0]
+
+
+@pytest.mark.asyncio
+async def test_s1_mixed_window_splits_into_multiple_single_center_records():
+    driving = _unit_from_json(
+        _memory_json(
+            "张三周三参加科目二考试",
+            topics=["驾考"],
+            importance=0.8,
+        )
+    )
+    music = _unit_from_json(
+        _memory_json(
+            "张三长期喜欢爵士乐",
+            topics=["音乐偏好"],
+            importance=0.7,
+        )
+    )
+    llm = _DummyLLMProvider(
+        json.dumps({"memories": [driving, music]}, ensure_ascii=False)
+    )
+    processor = MemoryProcessor(llm_provider=llm, context=None)
+
+    result = await processor.process_conversation_result(_make_messages())
+
+    records = result.iter_records()
+    assert result.status == "store"
+    assert len(records) == 2
+    assert [record.content for record in records] == [
+        "张三周三参加科目二考试",
+        "张三长期喜欢爵士乐",
+    ]
+    assert records[0].metadata["parent_id"] != records[1].metadata["parent_id"]
+    assert records[0].metadata["idempotency_key"] != records[1].metadata["idempotency_key"]
+    for record in records:
+        fact = record.metadata["key_facts"][0]
+        assert isinstance(fact, dict)
+        assert fact["parent_id"] == record.metadata["parent_id"]
+        assert fact["fact_id"].startswith("fact_")
+        assert "action" not in fact
+        assert "reason" not in fact
+        assert "persona_summary" not in record.metadata
+
+
+@pytest.mark.asyncio
+async def test_s1_source_retry_keeps_parent_fact_and_idempotency_ids_stable():
+    first = _unit_from_json(
+        _memory_json("张三长期喜欢爵士乐", topics=["音乐偏好"])
+    )
+    second = json.loads(json.dumps(first, ensure_ascii=False))
+    second["key_facts"][0]["fact"] = "爵士乐是张三长期稳定的音乐偏好"
+    llm = _DummyLLMProvider(
+        [
+            json.dumps({"memories": [first]}, ensure_ascii=False),
+            json.dumps({"memories": [second]}, ensure_ascii=False),
+        ]
+    )
+    processor = MemoryProcessor(llm_provider=llm, context=None)
+    messages = _make_messages()
+
+    first_result = await processor.process_conversation_result(messages)
+    second_result = await processor.process_conversation_result(messages)
+
+    first_meta = first_result.metadata
+    second_meta = second_result.metadata
+    assert first_meta["source_window"]["fingerprint"] == second_meta["source_window"]["fingerprint"]
+    assert first_meta["parent_id"] == second_meta["parent_id"]
+    assert first_meta["idempotency_key"] == second_meta["idempotency_key"]
+    assert first_meta["key_facts"][0]["fact_id"] == second_meta["key_facts"][0]["fact_id"]
+
+
+@pytest.mark.asyncio
+async def test_s1_fact_source_time_and_reaction_are_bound_to_the_fact():
+    messages = _make_messages()
+    messages[0].content = "我周三参加科目二考试"
+    messages[0].timestamp = datetime(2026, 8, 20, 9, 0).timestamp()
+    unit = _unit_from_json(
+        _memory_json("张三周三参加科目二考试", topics=["驾考"])
+    )
+    fact = unit["key_facts"][0]
+    fact["time"] = {
+        "raw": "周三",
+        "normalized": "2026-08-26",
+        "precision": "day",
+    }
+    fact["persona_reaction"] = {
+        "emotion": "有些替他紧张",
+        "thought": "希望他顺利通过",
+    }
+    llm = _DummyLLMProvider(
+        json.dumps({"memories": [unit]}, ensure_ascii=False)
+    )
+    processor = MemoryProcessor(llm_provider=llm, context=None)
+
+    result = await processor.process_conversation_result(messages)
+
+    stored_fact = result.metadata["key_facts"][0]
+    assert stored_fact["source_message_ids"] == [1]
+    assert stored_fact["time"] == fact["time"]
+    assert stored_fact["persona_reaction"] == fact["persona_reaction"]
+    assert result.metadata["source_window"]["first_message_id"] == 1
+    assert result.metadata["source_window"]["last_message_id"] == 2
+    assert result.metadata["source_window"]["message_count"] == 2
+
+
+@pytest.mark.asyncio
+async def test_s1_incorrect_relative_time_is_rejected_after_one_repair():
+    messages = _make_messages()
+    messages[0].content = "我周三参加科目二考试"
+    messages[0].timestamp = datetime(2026, 8, 20, 9, 0).timestamp()
+    unit = _unit_from_json(
+        _memory_json("张三周三参加科目二考试", topics=["驾考"])
+    )
+    unit["key_facts"][0]["time"] = {
+        "raw": "周三",
+        "normalized": "2026-08-27",
+        "precision": "day",
+    }
+    response = json.dumps({"memories": [unit]}, ensure_ascii=False)
+    processor = MemoryProcessor(
+        llm_provider=_DummyLLMProvider([response, response]), context=None
+    )
+
+    result = await processor.process_conversation_result(messages)
+
+    assert result.status == "invalid"
+    assert "expected 2026-08-26" in (result.error or "")
+
+
+@pytest.mark.asyncio
+async def test_s1_topic_candidate_is_reused_with_same_stable_id():
+    unit = _unit_from_json(
+        _memory_json("张三正在开发记忆插件", topics=["插件开发"])
+    )
+    processor = MemoryProcessor(
+        llm_provider=_DummyLLMProvider(
+            json.dumps({"memories": [unit]}, ensure_ascii=False)
+        ),
+        context=None,
+    )
+
+    result = await processor.process_conversation_result(
+        _make_messages(),
+        topic_candidates=[{"topic_id": "topic_existing", "name": "插件开发"}],
+    )
+
+    topic_ref = result.metadata["key_facts"][0]["topic_refs"][0]
+    assert topic_ref == {
+        "topic_id": "topic_existing",
+        "raw_name": "插件开发",
+        "name": "插件开发",
+        "decision": "reused",
+    }
+
+
+def test_s1_atom_projection_uses_each_fact_own_entities():
+    processor = MemoryProcessor(context=None)
+    metadata = {
+        "key_facts": [
+            {
+                "fact": "张三周五发布版本",
+                "topics": ["发布"],
+                "participants": ["张三"],
+                "importance": 0.8,
+                "fact_id": "fact_1",
+                "parent_id": "memory_1",
+            },
+            {
+                "fact": "李四长期喜欢爵士乐",
+                "topics": ["音乐偏好"],
+                "participants": ["李四"],
+                "importance": 0.7,
+                "fact_id": "fact_2",
+                "parent_id": "memory_1",
+            },
+        ]
+    }
+
+    atoms = processor.classify_atoms_from_metadata(metadata)
+
+    assert atoms[0].entities == ["发布", "张三"]
+    assert atoms[1].entities == ["音乐偏好", "李四"]
+    assert atoms[0].metadata["fact_id"] == "fact_1"
+    assert atoms[1].metadata["fact_id"] == "fact_2"
