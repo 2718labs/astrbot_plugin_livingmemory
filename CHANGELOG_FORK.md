@@ -21,6 +21,15 @@
 - 为旧 Atom、图谱、注入和 WebUI 消费者增加只读 fact-text 投影，避免对象 facts 被错误字符串化；完整事实索引、图关系和其他写入入口统一仍留在 S2/S3。
 - 新增多中心拆分、来源时间、稳定 ID、topic 复用、fact 级实体、幂等写入和真实数据库链路回归。
 
+### S2：统一 canonical 写入与事实索引
+
+- 自动总结、手动总结、主动记忆工具和直接 v3 写入统一进入一条 canonical pipeline；主动记忆不再生成 v2 字符串 facts。
+- 新增独立 `memory_parents` / `memory_facts` 存储：parent 仅保存来源与 fact IDs，完整对象 facts 成为唯一持久事实真源；详情读取时按需重组 LM 风格 `key_facts`。
+- 新增逐 fact FTS 和独立 FAISS 向量索引；搜索正文排除 sibling facts、长 summary 与 persona reaction，并保留未接入生产召回的候选查询接口供 S5 对照。
+- 索引重建只从 active canonical facts 重放；canonical 构建未全部成功时父文档不会进入 active，写入失败会清除 document、parent、fact 和事实索引残留。
+- 新 canonical 链暂不生成图或 Atom，分别留待 S3、S4；未增加实例旧数据迁移、清理或补造逻辑。
+- 补充主动记忆契约、fact 搜索正文、真实 SQLite/FAISS 写入、双路候选、干净重建和故障零残留测试。
+
 ## [2.6.0-a1] - 2026-08-20
 
 ### 项目

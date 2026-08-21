@@ -17,6 +17,127 @@ import time
 
 class MemoryEngineCrudMixin:
     """MemoryEngine 拆分模块：MemoryEngineCrudMixin"""
+
+    @staticmethod
+    def _canonical_document_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
+        """Keep only parent/source fields in the temporary document projection."""
+        allowed = {
+            "memory_schema_version",
+            "summary_schema_version",
+            "generation_version",
+            "parent_id",
+            "idempotency_key",
+            "summary",
+            "canonical_summary",
+            "interaction_type",
+            "source_window",
+            "source_session_id",
+            "summary_quality",
+            "time_tags",
+            "source_time_start",
+            "source_time_end",
+            "source_time_label",
+            "memory_origin",
+            "memorize_reason",
+        }
+        parent_metadata = {
+            key: value for key, value in metadata.items() if key in allowed
+        }
+        facts = metadata.get("key_facts") or []
+        parent_metadata["fact_ids"] = [
+            str(fact.get("fact_id"))
+            for fact in facts
+            if isinstance(fact, dict) and fact.get("fact_id")
+        ]
+        parent_metadata["canonical_build_status"] = "building"
+        parent_metadata["status"] = "building"
+        return parent_metadata
+
+    async def add_canonical_memory(
+        self,
+        *,
+        metadata: dict[str, Any],
+        session_id: str,
+        persona_id: str | None,
+        importance: float,
+        source_messages: list[dict[str, Any]] | None = None,
+    ) -> int:
+        """Persist one S1 record through the sole S2 canonical write path."""
+        if self.canonical_store is None:
+            raise RuntimeError("canonical memory store is not initialized")
+        facts = self.canonical_store._validated_facts(metadata)
+        idempotency_key = str(metadata.get("idempotency_key") or "").strip()
+        projection = "；".join(str(fact["fact"]).strip() for fact in facts)
+        if not projection:
+            raise ValueError("canonical memory projection is empty")
+
+        async with self._idempotency_lock:
+            existing_id = await self.canonical_store.find_active_document(
+                idempotency_key
+            )
+            if existing_id is not None:
+                logger.info(
+                    "[MemoryEngine] 复用同一 canonical 来源: "
+                    f"key={idempotency_key}, memory_id={existing_id}"
+                )
+                return existing_id
+
+            parent_metadata = self._canonical_document_metadata(metadata)
+            document_id: int | None = None
+            try:
+                document_id = await self._add_memory_unchecked(
+                    content=projection,
+                    session_id=session_id,
+                    persona_id=persona_id,
+                    importance=importance,
+                    metadata=parent_metadata,
+                    atoms=None,
+                    source_messages=source_messages,
+                    skip_legacy_downstream=True,
+                )
+                fact_ids = await self.canonical_store.persist(
+                    document_id=document_id,
+                    session_id=session_id,
+                    persona_id=persona_id,
+                    metadata=metadata,
+                )
+                if self.hybrid_retriever is None or not await self.hybrid_retriever.update_metadata(
+                    document_id,
+                    {
+                        "status": "active",
+                        "canonical_build_status": "active",
+                        "fact_ids": fact_ids,
+                    },
+                ):
+                    raise RuntimeError("canonical parent activation failed")
+                self._invalidate_search_cache()
+                return document_id
+            except asyncio.CancelledError:
+                if document_id is not None:
+                    await asyncio.shield(
+                        self.canonical_store.delete_by_document(document_id)
+                    )
+                    if self.hybrid_retriever is not None:
+                        await asyncio.shield(
+                            self.hybrid_retriever.delete_memory(document_id)
+                        )
+                raise
+            except Exception:
+                if document_id is not None:
+                    try:
+                        await self.canonical_store.delete_by_document(document_id)
+                    except Exception:
+                        logger.error("canonical fact rollback failed", exc_info=True)
+                    if self.hybrid_retriever is not None:
+                        await self.hybrid_retriever.delete_memory(document_id)
+                    if self.db_connection is not None:
+                        await self.db_connection.execute(
+                            "DELETE FROM memory_sources WHERE memory_id = ?",
+                            (document_id,),
+                        )
+                        await self.db_connection.commit()
+                raise
+
     async def add_memory(
         self,
         content: str,
@@ -29,6 +150,18 @@ class MemoryEngineCrudMixin:
         source_messages: list[dict[str, Any]] | None = None,
     ) -> int:
         """Add a memory, reusing an active v3 record for the same source unit."""
+        if (
+            isinstance(metadata, dict)
+            and metadata.get("memory_schema_version") == "v3"
+            and self.canonical_store is not None
+        ):
+            return await self.add_canonical_memory(
+                metadata=metadata,
+                session_id=str(session_id or metadata.get("source_session_id") or ""),
+                persona_id=persona_id,
+                importance=importance,
+                source_messages=source_messages,
+            )
         idempotency_key = str((metadata or {}).get("idempotency_key") or "").strip()
         if not idempotency_key:
             return await self._add_memory_unchecked(
@@ -88,6 +221,7 @@ class MemoryEngineCrudMixin:
         atoms: list | None = None,
         preserve_create_time: bool = False,
         source_messages: list[dict[str, Any]] | None = None,
+        skip_legacy_downstream: bool = False,
     ) -> int:
         """
         添加新记忆
@@ -184,7 +318,12 @@ class MemoryEngineCrudMixin:
 
         # 写入记忆原子
         atom_write_failed = False
-        if atoms and self.atom_store is not None and self.atom_enabled:
+        if (
+            not skip_legacy_downstream
+            and atoms
+            and self.atom_store is not None
+            and self.atom_enabled
+        ):
             prepared_atoms = []
             for atom in atoms:
                 atom.session_id = atom.session_id or session_id
@@ -236,7 +375,7 @@ class MemoryEngineCrudMixin:
             await self._advance_write_op(op_id, "atoms_skipped", memory_id=doc_id)
 
         needs_repair = atom_write_failed
-        if self.graph_memory_manager is not None:
+        if not skip_legacy_downstream and self.graph_memory_manager is not None:
             try:
                 await self.graph_memory_manager.index_memory(
                     doc_id, content, full_metadata, atoms
@@ -443,6 +582,8 @@ class MemoryEngineCrudMixin:
         self, scope: str, limit: int = 50
     ) -> list[dict[str, str]]:
         """Return exact reusable v3 topic concepts from active records in scope."""
+        if self.canonical_store is not None:
+            return await self.canonical_store.get_topic_candidates(scope, limit)
         if self.db_connection is None or not str(scope or "").strip():
             return []
         cursor = await self.db_connection.execute(
@@ -488,6 +629,45 @@ class MemoryEngineCrudMixin:
             if len(candidates) >= limit:
                 break
         return list(candidates.values())[:limit]
+
+    async def get_canonical_index_status(self) -> dict[str, Any]:
+        if self.canonical_store is None:
+            return {
+                "consistent": False,
+                "facts": 0,
+                "fts": 0,
+                "vectors": 0,
+            }
+        status = await self.canonical_store.index_status()
+        return {
+            "consistent": status.is_consistent,
+            "facts": status.fact_count,
+            "fts": status.fts_count,
+            "vectors": status.vector_count,
+        }
+
+    async def rebuild_canonical_indexes(self) -> dict[str, int | bool]:
+        if self.canonical_store is None:
+            raise RuntimeError("canonical memory store is not initialized")
+        return await self.canonical_store.rebuild_indexes()
+
+    async def search_canonical_fact_candidates(
+        self,
+        query: str,
+        *,
+        limit: int = 10,
+        session_id: str | None = None,
+        persona_id: str | None = None,
+    ) -> dict[str, list[dict[str, Any]]]:
+        """Evaluate fact indexes without switching the S5 production route."""
+        if self.canonical_store is None:
+            return {"bm25": [], "vector": []}
+        return await self.canonical_store.search_candidates(
+            query,
+            limit=limit,
+            scope=session_id,
+            persona_id=persona_id,
+        )
 
     async def search_memories(
         self,
@@ -587,10 +767,41 @@ class MemoryEngineCrudMixin:
                 return None
 
             doc = docs[0]
+            metadata = self._safe_json_dict(doc.get("metadata"))
+            if (
+                self.canonical_store is not None
+                and metadata.get("memory_schema_version") == "v3"
+                and metadata.get("parent_id")
+            ):
+                facts = await self.canonical_store.get_facts_by_document(memory_id)
+                metadata["key_facts"] = facts
+                topic_refs: list[dict[str, Any]] = []
+                participant_refs: list[dict[str, Any]] = []
+                for fact in facts:
+                    for ref in fact.get("topic_refs", []) or []:
+                        if isinstance(ref, dict) and ref.get("topic_id") not in {
+                            item.get("topic_id") for item in topic_refs
+                        }:
+                            topic_refs.append(ref)
+                    for ref in fact.get("participant_refs", []) or []:
+                        if isinstance(ref, dict) and ref.get("participant_id") not in {
+                            item.get("participant_id") for item in participant_refs
+                        }:
+                            participant_refs.append(ref)
+                metadata["topic_refs"] = topic_refs
+                metadata["topics"] = [
+                    str(item.get("name")) for item in topic_refs if item.get("name")
+                ]
+                metadata["participant_refs"] = participant_refs
+                metadata["participants"] = [
+                    str(item.get("name"))
+                    for item in participant_refs
+                    if item.get("name")
+                ]
             return {
                 "id": doc["id"],
                 "text": doc["text"],
-                "metadata": doc["metadata"],
+                "metadata": metadata,
             }
         except asyncio.CancelledError:
             raise
@@ -863,6 +1074,27 @@ class MemoryEngineCrudMixin:
             await self.db_connection.commit()
 
         needs_repair = False
+        try:
+            if self.canonical_store is not None:
+                await self.canonical_store.delete_by_document(memory_id)
+            await self._advance_write_op(
+                op_id, "canonical_facts_deleted", memory_id=memory_id
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            await self._advance_write_op(
+                op_id,
+                "canonical_fact_delete_failed",
+                status="needs_repair",
+                memory_id=memory_id,
+                error=str(e),
+            )
+            needs_repair = True
+            logger.error(
+                f"[MemoryEngine] canonical facts 删除失败 (memory_id={memory_id})",
+                exc_info=True,
+            )
         try:
             if self.graph_memory_manager is not None:
                 await self.graph_memory_manager.delete_memory(memory_id)

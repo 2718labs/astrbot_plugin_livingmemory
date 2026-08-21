@@ -34,6 +34,8 @@ class InitializerFinalizeMixin:
             data_dir_path = Path(self.data_dir)
             db_path = data_dir_path / "livingmemory.db"
             index_path = data_dir_path / "livingmemory.index"
+            fact_doc_path = data_dir_path / "livingmemory_fact_vectors.db"
+            fact_index_path = data_dir_path / "livingmemory_facts.index"
             graph_doc_path = data_dir_path / "livingmemory_graph_documents.db"
             graph_index_path = data_dir_path / "livingmemory_graph.index"
             graph_memory_enabled = self.config_manager.get("graph_memory.enabled", True)
@@ -47,6 +49,7 @@ class InitializerFinalizeMixin:
 
             # 检查索引文件维度与当前 embedding provider 维度是否一致
             await self._check_and_fix_dimension_mismatch(str(index_path))
+            await self._check_and_fix_dimension_mismatch(str(fact_index_path))
             if graph_memory_enabled:
                 self._graph_index_requires_rebuild = (
                     await self._check_and_fix_dimension_mismatch(str(graph_index_path))
@@ -58,6 +61,12 @@ class InitializerFinalizeMixin:
                 self.embedding_provider,
             )
             await self.db.initialize()
+            self.fact_db = faiss_vec_db_cls(
+                str(fact_doc_path),
+                str(fact_index_path),
+                self.embedding_provider,
+            )
+            await self.fact_db.initialize()
             self.graph_db = None
             if graph_memory_enabled:
                 self.graph_db = faiss_vec_db_cls(
@@ -211,6 +220,7 @@ class InitializerFinalizeMixin:
             self.memory_engine = MemoryEngine(
                 db_path=str(db_path),
                 faiss_db=self.db,
+                fact_vector_db=self.fact_db,
                 graph_vector_db=self.graph_db,
                 llm_provider=self.llm_provider,
                 config=memory_engine_config,
@@ -607,6 +617,8 @@ class InitializerFinalizeMixin:
             self.memory_engine = None
             # memory_engine.close() 已关闭 graph_vector_db（即 self.graph_db）
             self.graph_db = None
+            # memory_engine.close() 也关闭 fact_vector_db。
+            self.fact_db = None
 
         if self.graph_db is not None:
             try:
@@ -614,6 +626,13 @@ class InitializerFinalizeMixin:
             except Exception:
                 logger.warning("关闭图 FaissVecDB 失败", exc_info=True)
             self.graph_db = None
+
+        if self.fact_db is not None:
+            try:
+                await self.fact_db.close()
+            except Exception:
+                logger.warning("关闭 fact FaissVecDB 失败", exc_info=True)
+            self.fact_db = None
 
         if self.db is not None:
             try:

@@ -59,6 +59,7 @@ class PluginInitializer(InitializerFaissMixin, InitializerFinalizeMixin):
         self.embedding_provider: EmbeddingProvider | None = None
         self.llm_provider: Provider | None = None
         self.db: Any | None = None
+        self.fact_db: Any | None = None
         self.graph_db: Any | None = None
         self.memory_engine: MemoryEngine | None = None
         self.memory_processor: MemoryProcessor | None = None

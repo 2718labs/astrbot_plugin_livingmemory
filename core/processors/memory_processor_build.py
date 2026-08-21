@@ -8,6 +8,7 @@ from ..models.memory_atom import MemoryAtom
 from ..models.memory_contract import (
     MEMORY_GENERATION_VERSION,
     MEMORY_SCHEMA_VERSION,
+    build_explicit_source_descriptor,
     build_source_descriptor,
     concept_key,
     memory_idempotency_key,
@@ -314,6 +315,150 @@ class MemoryProcessorBuildMixin:
                 )
             )
         return records
+
+    def build_explicit_memory_record(
+        self,
+        *,
+        memory: str,
+        source_scope: str,
+        topics: list[str] | None = None,
+        key_facts: list[str] | None = None,
+        participants: list[str] | None = None,
+        sentiment: str = "neutral",
+        importance: float = 0.7,
+        topic_candidates: list[dict[str, Any] | str] | None = None,
+        source_reference: str | int | None = None,
+        origin: str = "agent_memorize_tool",
+        is_group_chat: bool = False,
+    ) -> MemoryWriteRecord:
+        """Build an explicit remember request into the same v3 fact contract."""
+        overview = str(memory or "").strip()
+        scope = str(source_scope or "").strip()
+        if not overview or not scope:
+            raise ValueError("explicit memory requires content and scope")
+
+        normalized_importance = self._validate_importance(importance)
+        normalized_sentiment = str(sentiment or "neutral").strip().lower()
+        if normalized_sentiment not in {"positive", "neutral", "negative"}:
+            normalized_sentiment = "neutral"
+        fact_values = fact_texts(key_facts or [], limit=5) or [overview]
+        fact_values = unique_strings(fact_values)[:5]
+        topic_names = unique_strings(
+            normalize_concept_name(item) for item in (topics or []) if item
+        )[:5]
+        participant_names = unique_strings(
+            normalize_concept_name(item) for item in (participants or []) if item
+        )[:8]
+
+        topic_catalog: dict[str, dict[str, str]] = {}
+        for candidate in topic_candidates or []:
+            if isinstance(candidate, dict):
+                name = normalize_concept_name(
+                    str(candidate.get("name") or candidate.get("final_name") or "")
+                )
+                resolved_id = str(candidate.get("topic_id") or "").strip()
+            else:
+                name = normalize_concept_name(str(candidate))
+                resolved_id = ""
+            if name:
+                topic_catalog[concept_key(name)] = {
+                    "topic_id": resolved_id or topic_id(scope, name),
+                    "name": name,
+                }
+        topic_refs: list[dict[str, str]] = []
+        for name in topic_names:
+            existing = topic_catalog.get(concept_key(name))
+            topic_refs.append(
+                {
+                    "topic_id": (
+                        existing["topic_id"] if existing else topic_id(scope, name)
+                    ),
+                    "raw_name": name,
+                    "name": existing["name"] if existing else name,
+                    "decision": "reused" if existing else "created",
+                }
+            )
+        participant_refs = [
+            {
+                "participant_id": participant_id(scope, name),
+                "name": name,
+                "identity_key": None,
+                "source": "explicit",
+            }
+            for name in participant_names
+        ]
+
+        source_window = build_explicit_source_descriptor(
+            scope,
+            {
+                "overview": overview,
+                "facts": fact_values,
+                "topics": topic_names,
+                "participants": participant_names,
+            },
+            origin=origin,
+            source_reference=source_reference,
+        )
+        unit_key = {
+            "source_message_ids": [str(item) for item in source_window["message_ids"]],
+            "topic_ids": [item["topic_id"] for item in topic_refs],
+            "participant_ids": [item["participant_id"] for item in participant_refs],
+            "origin": origin,
+        }
+        parent_id = parent_memory_id(source_window["fingerprint"], unit_key)
+        prepared_facts: list[dict[str, Any]] = []
+        for index, text in enumerate(fact_values):
+            fact_key = {
+                "source_message_ids": [
+                    str(item) for item in source_window["message_ids"]
+                ],
+                "fact": concept_key(text),
+                "index": index,
+            }
+            prepared_facts.append(
+                {
+                    "fact_id": stable_fact_id(parent_id, fact_key),
+                    "parent_id": parent_id,
+                    "fact": text,
+                    "topics": [item["name"] for item in topic_refs],
+                    "topic_refs": topic_refs,
+                    "participants": participant_names,
+                    "participant_refs": participant_refs,
+                    "time": None,
+                    "importance": normalized_importance,
+                    "source": "user_explicit",
+                    "source_message_ids": list(source_window["message_ids"]),
+                    "persona_reaction": None,
+                }
+            )
+
+        metadata: dict[str, Any] = {
+            "memory_schema_version": MEMORY_SCHEMA_VERSION,
+            "summary_schema_version": MEMORY_SCHEMA_VERSION,
+            "generation_version": MEMORY_GENERATION_VERSION,
+            "parent_id": parent_id,
+            "idempotency_key": memory_idempotency_key(
+                source_window["fingerprint"], unit_key
+            ),
+            "summary": overview,
+            "canonical_summary": overview,
+            "topics": [item["name"] for item in topic_refs],
+            "topic_refs": topic_refs,
+            "participants": participant_names,
+            "participant_refs": participant_refs,
+            "key_facts": prepared_facts,
+            "sentiment": normalized_sentiment,
+            "interaction_type": "group_chat" if is_group_chat else "private_chat",
+            "source_window": source_window,
+            "source_session_id": scope,
+            "summary_quality": "normal",
+            "memory_origin": origin,
+        }
+        return MemoryWriteRecord(
+            content="；".join(fact_values),
+            metadata=metadata,
+            importance=normalized_importance,
+        )
 
     def classify_atoms_from_metadata(
         self,

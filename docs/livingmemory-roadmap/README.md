@@ -109,7 +109,7 @@ Sfuture（独立愿景，不进入当前执行链）
 |---|---|---|---|---|---|---|
 | S0 | 先严格检查原始回答，再逐 fact 决定 `store / skip`，由程序推导窗口的 `store / skip / invalid`，并建立真实链路基线 | I05、I15、I16 | reflection、processor、parser、eval fixtures | T0A/T0B | Done | [S0](S0.md) |
 | S1 | 将 S0 的获准 fact 从临时文本投影升级为 LM 风格的唯一对象契约，并移除长篇第一人称总结真源 | I03、I04、I05、I09、I15、I17、F03 | summary schema、fact model、processor、source window | S0 | Done | [S1](S1.md) |
-| S2 | 让所有新写入入口生成同一 parent/fact 结构和事实级索引 | I03、I04、I06、I17 | build pipeline、fact storage/index、rebuild | S1 | Planned | [S2](S2.md) |
+| S2 | 让所有新写入入口生成同一 parent/fact 结构和事实级索引 | I03、I04、I06、I17 | build pipeline、fact storage/index、rebuild | S1 | Done | [S2](S2.md) |
 | S3 | 消除全组合噪声，只保存有来源证据的图关系，修复图谱查看入口，并固定双路满信号 bug 的回归样本 | I01、I02、I06、I09、I18、I19、F03 | graph extractor/store/manager、resolver、rebuild、dual-route eval、WebUI/Page API | S2 | Planned | [S3](S3.md) |
 | S4 | 在 canonical fact 与 Atom 之间选定唯一生产事实层 | I08、I12、I17、F02 | fact/Atom model、store、retriever、lifecycle、memory engine | S2、S3 | Decision gate | [S4](S4.md) |
 | S5 | 让无关消息不注入，相关消息按 fact 命中并在硬预算内装配 | I10、I11、I13、I14、I16、I17、I18、U02 | fact search、route fusion/calibration、recent、filter、budget packer、formatting、memory recall | S3、S4 | Planned | [S5](S5.md) |
@@ -172,6 +172,7 @@ Sfuture（独立愿景，不进入当前执行链）
 16. 不等全部改完才开始验收：每阶段在实现前固定失败样本、实现后通过局部门槛；Stest 只做跨阶段总验和体验盲测，不在看到结果后临时改标准。
 17. `dynamic_route_weighting` 默认关闭；显式配置仍可开启。其未来资格由 `Sfuture` 重新立项，不作为 S3/S5 必须完成的优化。
 18. `store / skip` 是逐 fact 的生成期决定；窗口结果必须由程序推导。`skip` fact 和 `action` 都不得持久化，格式错误才进入窗口级 `invalid`。
+20. S0–S2 是写入侧；S3–S4 是附属结构；S5 是读取侧；S6 是稳定收尾。
 
 ## 状态词
 

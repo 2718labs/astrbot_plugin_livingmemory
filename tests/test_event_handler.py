@@ -24,6 +24,7 @@ def memory_engine():
     engine = Mock()
     engine.search_memories = AsyncMock(return_value=[])
     engine.add_memory = AsyncMock(return_value=1)
+    engine.add_canonical_memory = AsyncMock(return_value=1)
     return engine
 
 
@@ -294,7 +295,7 @@ async def test_handle_memory_reflection_triggers_storage_task(
         await handler.shutdown()
 
     assert conversation_manager.get_messages_range.await_count >= 1
-    assert memory_engine.add_memory.await_count >= 1
+    assert memory_engine.add_canonical_memory.await_count >= 1
 
 
 @pytest.mark.asyncio
@@ -520,7 +521,7 @@ async def test_storage_task_writes_source_window(
     captured_source = None
 
     async def _capture_add_memory(
-        content, session_id, persona_id, importance, metadata, atoms=None, **kwargs
+        metadata, session_id, persona_id, importance, **kwargs
     ):
         nonlocal captured_scope, captured_source
         captured_scope = session_id
@@ -528,7 +529,7 @@ async def test_storage_task_writes_source_window(
         captured_metadata.update(metadata)
         return 1
 
-    memory_engine.add_memory = AsyncMock(side_effect=_capture_add_memory)
+    memory_engine.add_canonical_memory = AsyncMock(side_effect=_capture_add_memory)
     handler._memory_reflection.memory_processor.process_conversation_result.return_value = MemoryProcessingResult(
         status="store",
         content="summary",
@@ -602,7 +603,7 @@ async def test_storage_task_writes_every_s1_memory_record(
         stored_fact_count=2,
         records=records,
     )
-    memory_engine.add_memory.reset_mock()
+    memory_engine.add_canonical_memory.reset_mock()
 
     await handler._memory_reflection._storage_task(
         session_id="s1",
@@ -614,13 +615,14 @@ async def test_storage_task_writes_every_s1_memory_record(
         memory_scope="scope:s1",
     )
 
-    assert memory_engine.add_memory.await_count == 2
+    assert memory_engine.add_canonical_memory.await_count == 2
     assert [
-        call.kwargs["content"] for call in memory_engine.add_memory.await_args_list
-    ] == ["first", "second"]
+        call.kwargs["metadata"]["topics"][0]
+        for call in memory_engine.add_canonical_memory.await_args_list
+    ] == ["A", "B"]
     assert all(
         call.kwargs["metadata"]["source_window"]["triggered_by"] == "automatic"
-        for call in memory_engine.add_memory.await_args_list
+        for call in memory_engine.add_canonical_memory.await_args_list
     )
 
 
@@ -660,7 +662,10 @@ async def test_storage_task_does_not_retain_source_below_threshold(
         retry_count=0,
     )
 
-    assert memory_engine.add_memory.await_args.kwargs["source_messages"] is None
+    assert (
+        memory_engine.add_canonical_memory.await_args.kwargs["source_messages"]
+        is None
+    )
 
 
 @pytest.mark.asyncio

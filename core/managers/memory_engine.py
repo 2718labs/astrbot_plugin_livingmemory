@@ -13,6 +13,7 @@ import aiosqlite
 from astrbot.api import logger
 
 from ...storage.atom_store import AtomStore
+from ...storage.canonical_memory_store import CanonicalMemoryStore
 from ...storage.graph_store import GraphStore
 from ..managers.atom_lifecycle_manager import AtomLifecycleManager
 from ..managers.graph_memory_manager import GraphMemoryManager
@@ -81,6 +82,7 @@ class MemoryEngine(MemoryEngineWriteOpsMixin, MemoryEngineCrudMixin, MemoryEngin
         graph_vector_db=None,
         llm_provider=None,
         config: dict[str, Any] | None = None,
+        fact_vector_db=None,
     ):
         """
         初始化记忆引擎
@@ -101,6 +103,7 @@ class MemoryEngine(MemoryEngineWriteOpsMixin, MemoryEngineCrudMixin, MemoryEngin
         """
         self.db_path = db_path
         self.faiss_db = faiss_db
+        self.fact_vector_db = fact_vector_db
         self.graph_vector_db = graph_vector_db
         self.llm_provider = llm_provider
         self.config = config or {}
@@ -121,6 +124,7 @@ class MemoryEngine(MemoryEngineWriteOpsMixin, MemoryEngineCrudMixin, MemoryEngin
 
         # 初始化组件(在initialize中完成)
         self.text_processor = None
+        self.canonical_store = None
         self.bm25_retriever = None
         self.vector_retriever = None
         self.rrf_fusion = None
@@ -174,6 +178,14 @@ class MemoryEngine(MemoryEngineWriteOpsMixin, MemoryEngineCrudMixin, MemoryEngin
         # 3. 初始化文本处理器
         stopwords_path = self.config.get("stopwords_path")
         self.text_processor = TextProcessor(stopwords_path)
+
+        # S2 authoritative fact store and its dedicated search projections.
+        self.canonical_store = CanonicalMemoryStore(
+            self.db_path,
+            self.fact_vector_db,
+            self.text_processor,
+        )
+        await self.canonical_store.initialize()
 
         # 4. 初始化RRF融合器
         rrf_k = self.config.get("rrf_k", 60)
@@ -250,6 +262,10 @@ class MemoryEngine(MemoryEngineWriteOpsMixin, MemoryEngineCrudMixin, MemoryEngin
             self._pending_tasks.clear()
         if self.db_connection:
             await self.db_connection.close()
+        if self.canonical_store is not None:
+            await self.canonical_store.close()
+        if self.fact_vector_db is not None:
+            await self.fact_vector_db.close()
         if self.graph_vector_db is not None:
             await self.graph_vector_db.close()
 

@@ -97,6 +97,36 @@ def build_source_descriptor(
     }
 
 
+def build_explicit_source_descriptor(
+    scope: str,
+    content: Any,
+    *,
+    origin: str = "agent_memorize_tool",
+    source_reference: str | int | None = None,
+) -> dict[str, Any]:
+    """Build a stable source identity for an explicit remember request."""
+    resolved_scope = str(scope or "").strip()
+    payload = {
+        "scope": resolved_scope,
+        "origin": str(origin or "explicit"),
+        "content": content,
+    }
+    reference: str | int = source_reference or (
+        "intent_" + _stable_hash(payload, length=20)
+    )
+    return {
+        "scope": resolved_scope,
+        "first_message_id": reference,
+        "last_message_id": reference,
+        "message_ids": [reference],
+        "message_count": 1,
+        "generation_version": MEMORY_GENERATION_VERSION,
+        "fingerprint": "src_" + _stable_hash(payload),
+        "triggered_by": "explicit",
+        "origin": str(origin or "explicit"),
+    }
+
+
 def parent_memory_id(source_fingerprint: str, unit_key: Any) -> str:
     return "memory_" + _stable_hash(
         {"source_fingerprint": source_fingerprint, "unit_key": unit_key}
@@ -236,6 +266,7 @@ __all__ = [
     "MEMORY_GENERATION_VERSION",
     "MEMORY_SCHEMA_VERSION",
     "build_source_descriptor",
+    "build_explicit_source_descriptor",
     "concept_key",
     "memory_idempotency_key",
     "normalize_concept_name",

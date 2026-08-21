@@ -636,6 +636,7 @@ class MemoryEngineBatchMixin:
 
             for fts_table in (
                 "livingmemory_memories_fts",
+                "livingmemory_facts_fts",
                 "livingmemory_graph_entries_fts",
                 "memory_atoms_fts",
             ):

@@ -438,6 +438,8 @@ class _TestEvent:
 async def real_db_stack(tmp_path: Path):
     memory_db_path = tmp_path / "memory.db"
     memory_index_path = tmp_path / "memory.index"
+    fact_vector_db_path = tmp_path / "fact_vectors.db"
+    fact_index_path = tmp_path / "facts.index"
     conversation_db_path = tmp_path / "conversation.db"
     graph_memory_db_path = tmp_path / "graph_memory.db"
     graph_memory_index_path = tmp_path / "graph_memory.index"
@@ -450,6 +452,13 @@ async def real_db_stack(tmp_path: Path):
     )
     await faiss_db.initialize()
 
+    fact_faiss_db = FaissVecDB(
+        doc_store_path=str(fact_vector_db_path),
+        index_store_path=str(fact_index_path),
+        embedding_provider=embedding_provider,
+    )
+    await fact_faiss_db.initialize()
+
     graph_faiss_db = FaissVecDB(
         doc_store_path=str(graph_memory_db_path),
         index_store_path=str(graph_memory_index_path),
@@ -460,6 +469,7 @@ async def real_db_stack(tmp_path: Path):
     memory_engine = MemoryEngine(
         db_path=str(memory_db_path),
         faiss_db=faiss_db,
+        fact_vector_db=fact_faiss_db,
         graph_vector_db=graph_faiss_db,
         config={
             "fallback_enabled": True,
@@ -515,6 +525,7 @@ async def real_db_stack(tmp_path: Path):
         "event_handler": event_handler,
         "command_handler": command_handler,
         "memory_db_path": str(memory_db_path),
+        "fact_faiss_db": fact_faiss_db,
     }
 
     await event_handler.shutdown()
@@ -604,16 +615,103 @@ async def test_normal_message_pipeline_with_real_database(real_db_stack):
     async with aiosqlite.connect(memory_db_path) as db:
         cursor = await db.execute(
             """
-            SELECT text, metadata
+            SELECT id, text, metadata
             FROM documents
             WHERE json_extract(metadata, '$.session_id') = ?
             """,
             (session_id,),
         )
         rows = list(await cursor.fetchall())
+        cursor = await db.execute("SELECT COUNT(*) FROM memory_parents")
+        parent_count = int((await cursor.fetchone())[0])
+        cursor = await db.execute(
+            """
+            SELECT fact_json, search_text, parent_id
+            FROM memory_facts
+            WHERE status = 'active'
+            """
+        )
+        fact_rows = list(await cursor.fetchall())
+        fact_count = len(fact_rows)
+        cursor = await db.execute(
+            "SELECT COUNT(DISTINCT fact_id) FROM livingmemory_facts_fts"
+        )
+        fact_fts_count = int((await cursor.fetchone())[0])
 
     assert len(rows) >= 1
-    assert any("running" in row[0].lower() for row in rows)
+    assert any("running" in row[1].lower() for row in rows)
+    stored_metadata = [json.loads(row[2]) for row in rows]
+    assert all("key_facts" not in item for item in stored_metadata)
+    assert parent_count == 1
+    assert fact_count == 1
+    assert fact_fts_count == 1
+    canonical_fact = json.loads(fact_rows[0][0])
+    assert canonical_fact["fact_id"].startswith("fact_")
+    assert canonical_fact["parent_id"] == fact_rows[0][2]
+    assert canonical_fact["fact"] in fact_rows[0][1]
+    assert "persona_reaction" not in fact_rows[0][1]
+    hydrated = await real_db_stack["memory_engine"].get_memory(int(rows[0][0]))
+    assert hydrated is not None
+    assert hydrated["metadata"]["key_facts"] == [canonical_fact]
+    status = await real_db_stack["memory_engine"].get_canonical_index_status()
+    assert status == {"consistent": True, "facts": 1, "fts": 1, "vectors": 1}
+    candidates = await real_db_stack[
+        "memory_engine"
+    ].search_canonical_fact_candidates(
+        "running",
+        session_id=session_id,
+        persona_id="persona-real",
+    )
+    assert candidates["bm25"][0]["fact_id"] == canonical_fact["fact_id"]
+    assert candidates["vector"][0]["fact_id"] == canonical_fact["fact_id"]
+    rebuilt = await real_db_stack["memory_engine"].rebuild_canonical_indexes()
+    assert rebuilt == {
+        "success": True,
+        "processed": 1,
+        "facts": 1,
+        "fts": 1,
+        "vectors": 1,
+    }
+
+
+@pytest.mark.asyncio
+async def test_canonical_write_failure_leaves_no_active_or_partial_rows(
+    real_db_stack, monkeypatch
+):
+    memory_engine = real_db_stack["memory_engine"]
+    fact_faiss_db = real_db_stack["fact_faiss_db"]
+    processor = MemoryProcessor(llm_provider=object())
+    record = processor.build_explicit_memory_record(
+        memory="张三明确要求记住周五复盘",
+        source_scope="test:private:rollback",
+        topics=["项目复盘"],
+        importance=0.9,
+    )
+    monkeypatch.setattr(
+        fact_faiss_db,
+        "insert",
+        AsyncMock(side_effect=RuntimeError("fact vector unavailable")),
+    )
+
+    with pytest.raises(RuntimeError, match="fact vector unavailable"):
+        await memory_engine.add_canonical_memory(
+            metadata=record.metadata,
+            session_id="test:private:rollback",
+            persona_id="persona-real",
+            importance=record.importance,
+        )
+
+    async with aiosqlite.connect(real_db_stack["memory_db_path"]) as db:
+        counts = []
+        for table in (
+            "documents",
+            "memory_parents",
+            "memory_facts",
+            "livingmemory_facts_fts",
+        ):
+            cursor = await db.execute(f"SELECT COUNT(*) FROM {table}")
+            counts.append(int((await cursor.fetchone())[0]))
+    assert counts == [0, 0, 0, 0]
 
 
 @pytest.mark.asyncio

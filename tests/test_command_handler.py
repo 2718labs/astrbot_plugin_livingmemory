@@ -28,6 +28,12 @@ def memory_engine():
     engine.search_memories = AsyncMock(return_value=[])
     engine.delete_memory = AsyncMock(return_value=True)
     engine.rebuild_graph_index = AsyncMock(return_value={"rebuilt": 0, "skipped": 0})
+    engine.get_canonical_index_status = AsyncMock(
+        return_value={"consistent": True, "facts": 0, "fts": 0, "vectors": 0}
+    )
+    engine.rebuild_canonical_indexes = AsyncMock(
+        return_value={"success": True, "processed": 0}
+    )
     return engine
 
 

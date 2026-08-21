@@ -251,23 +251,57 @@ class CommandHandler:
 
             # 检查索引一致性
             status = await self.index_validator.check_consistency()
+            fact_status = await self.memory_engine.get_canonical_index_status()
+            document_needs_rebuild = not status.is_consistent or status.needs_rebuild
+            fact_needs_rebuild = not bool(fact_status.get("consistent", False))
 
-            if status.is_consistent and not status.needs_rebuild:
+            if not document_needs_rebuild and not fact_needs_rebuild:
                 yield event.plain_result(t("rebuild_index.ok", reason=status.reason))
                 return
 
             # 显示当前状态
-            status_msg = t(
-                "rebuild_index.status_template",
-                doc_count=status.documents_count,
-                bm25_count=status.bm25_count,
-                vec_count=status.vector_count,
-                reason=status.reason,
+            status_msg = (
+                t(
+                    "rebuild_index.status_template",
+                    doc_count=status.documents_count,
+                    bm25_count=status.bm25_count,
+                    vec_count=status.vector_count,
+                    reason=status.reason,
+                )
+                if document_needs_rebuild
+                else (
+                    "事实索引需要重建："
+                    f"facts={fact_status.get('facts', 0)}, "
+                    f"FTS={fact_status.get('fts', 0)}, "
+                    f"vectors={fact_status.get('vectors', 0)}"
+                )
             )
             yield event.plain_result(status_msg)
 
             # 执行重建
-            result = await self.index_validator.rebuild_indexes(self.memory_engine)
+            result = (
+                await self.index_validator.rebuild_indexes(self.memory_engine)
+                if document_needs_rebuild
+                else {
+                    "success": True,
+                    "processed": 0,
+                    "errors": 0,
+                    "total": 0,
+                    "vector_mode": "unchanged",
+                    "switched": False,
+                }
+            )
+            fact_result = (
+                await self.memory_engine.rebuild_canonical_indexes()
+                if fact_needs_rebuild
+                else {
+                    "success": True,
+                    "processed": fact_status.get("facts", 0),
+                }
+            )
+            result["success"] = bool(result.get("success")) and bool(
+                fact_result.get("success")
+            )
 
             if result["success"]:
                 partial_notice = ""
@@ -287,6 +321,10 @@ class CommandHandler:
                     vector_mode=result.get("vector_mode", "unknown"),
                     switched=switched_str,
                     partial_notice=partial_notice,
+                )
+                result_msg += (
+                    "\n事实索引："
+                    f"{fact_result.get('processed', 0)} 条 canonical fact"
                 )
                 yield event.plain_result(result_msg)
             else:
@@ -495,19 +533,11 @@ class CommandHandler:
                     "end_index": actual_count,
                 }
                 record.metadata["source_session_id"] = session_id
-                atoms = self._memory_processor.classify_atoms_from_metadata(
+                await self.memory_engine.add_canonical_memory(
                     metadata=record.metadata,
-                    parent_importance=record.importance,
-                    session_id=memory_scope,
-                    persona_id=persona_id,
-                )
-                await self.memory_engine.add_memory(
-                    content=record.content,
                     session_id=memory_scope,
                     persona_id=persona_id,
                     importance=record.importance,
-                    metadata=record.metadata,
-                    atoms=atoms,
                     source_messages=(
                         serialize_source_messages(history_messages)
                         if record.importance >= source_threshold

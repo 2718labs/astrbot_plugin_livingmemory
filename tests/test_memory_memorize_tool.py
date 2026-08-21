@@ -8,6 +8,7 @@ import pytest
 from astrbot.api.platform import MessageType
 
 from astrbot_plugin_livingmemory.core.base.config_manager import ConfigManager
+from astrbot_plugin_livingmemory.core.models.memory_processing import MemoryWriteRecord
 from astrbot_plugin_livingmemory.core.tools.memory_memorize_tool import (
     MemoryMemorizeTool,
 )
@@ -17,26 +18,30 @@ from astrbot_plugin_livingmemory.core.tools.memory_memorize_tool import (
 def memory_engine():
     engine = Mock()
     engine.add_memory = AsyncMock(return_value=42)
+    engine.add_canonical_memory = AsyncMock(return_value=42)
+    engine.get_topic_candidates = AsyncMock(return_value=[])
     return engine
 
 
 @pytest.fixture
 def memory_processor():
     processor = Mock()
-    processor.build_memory_from_structured_data = Mock(
-        return_value=(
-            "用户喜欢黑咖啡 | 不加糖",
-            {
+    processor.build_explicit_memory_record = Mock(
+        return_value=MemoryWriteRecord(
+            content="不加糖",
+            metadata={
+                "memory_schema_version": "v3",
                 "topics": ["饮食偏好"],
-                "key_facts": ["不加糖"],
+                "key_facts": [{"fact": "不加糖"}],
                 "sentiment": "neutral",
                 "interaction_type": "private_chat",
-                "canonical_summary": "用户喜欢黑咖啡 | 不加糖",
-                "persona_summary": "用户喜欢黑咖啡",
-                "summary_schema_version": "v2",
+                "canonical_summary": "用户喜欢黑咖啡",
+                "source_window": {"fingerprint": "src_explicit"},
+                "source_session_id": "test:private:session-1",
+                "memory_origin": "agent_memorize_tool",
                 "summary_quality": "normal",
             },
-            0.8,
+            importance=0.8,
         )
     )
     return processor
@@ -45,6 +50,7 @@ def memory_processor():
 def _make_run_context(message_type=MessageType.FRIEND_MESSAGE):
     event = Mock()
     event.unified_msg_origin = "test:private:session-1"
+    event.message_obj = None
     event.get_message_type = Mock(return_value=message_type)
 
     run_context = Mock()
@@ -80,8 +86,8 @@ async def test_memory_memorize_tool_writes_current_session_and_persona(
     assert result["memorized"] is True
     assert result["session_id"] == "test:private:session-1"
     assert result["persona_id"] == "persona_a"
-    memory_engine.add_memory.assert_awaited_once()
-    call_kwargs = memory_engine.add_memory.await_args.kwargs
+    memory_engine.add_canonical_memory.assert_awaited_once()
+    call_kwargs = memory_engine.add_canonical_memory.await_args.kwargs
     assert call_kwargs["session_id"] == "test:private:session-1"
     assert call_kwargs["persona_id"] == "persona_a"
 
@@ -110,11 +116,10 @@ async def test_memory_memorize_tool_writes_resolved_user_scope(
     ):
         await tool.call(run_context, memory="remember this")
 
-    call_kwargs = memory_engine.add_memory.await_args.kwargs
+    build_kwargs = memory_processor.build_explicit_memory_record.call_args.kwargs
+    call_kwargs = memory_engine.add_canonical_memory.await_args.kwargs
     assert call_kwargs["session_id"] == "livingmemory:user:test:user-1"
-    assert call_kwargs["metadata"]["source_session_id"] == (
-        "test:private:session-1"
-    )
+    assert build_kwargs["source_scope"] == "livingmemory:user:test:user-1"
 
 
 @pytest.mark.asyncio
@@ -142,25 +147,21 @@ async def test_memory_memorize_tool_uses_memory_processor_format(
             reason="用户明确要求记住",
         )
 
-    memory_processor.build_memory_from_structured_data.assert_called_once_with(
-        structured_data={
-            "summary": "用户喜欢黑咖啡",
-            "topics": ["饮食偏好", "咖啡"],
-            "key_facts": ["不加糖"],
-            "sentiment": "neutral",
-            "importance": 2.0,
-        },
+    memory_processor.build_explicit_memory_record.assert_called_once_with(
+        memory="用户喜欢黑咖啡",
+        source_scope="test:private:session-1",
+        topics=["饮食偏好", "咖啡"],
+        key_facts=["不加糖"],
+        participants=[],
+        sentiment="neutral",
+        importance=2.0,
+        topic_candidates=[],
+        source_reference=None,
+        origin="agent_memorize_tool",
         is_group_chat=False,
-        fallback_excerpt="用户喜欢黑咖啡",
     )
-    call_kwargs = memory_engine.add_memory.await_args.kwargs
-    assert call_kwargs["content"] == "用户喜欢黑咖啡 | 不加糖"
+    call_kwargs = memory_engine.add_canonical_memory.await_args.kwargs
     assert call_kwargs["importance"] == 0.8
-    assert call_kwargs["metadata"]["source_window"] == {
-        "session_id": "test:private:session-1",
-        "triggered_by": "agent_tool",
-        "tool_name": "memorize_long_term_memory",
-    }
     assert call_kwargs["metadata"]["memory_origin"] == "agent_memorize_tool"
     assert call_kwargs["metadata"]["memorize_reason"] == "用户明确要求记住"
 
@@ -183,7 +184,7 @@ async def test_memory_memorize_tool_detects_group_chat(memory_engine, memory_pro
             memory="群里约定周五复盘",
         )
 
-    assert memory_processor.build_memory_from_structured_data.call_args.kwargs[
+    assert memory_processor.build_explicit_memory_record.call_args.kwargs[
         "is_group_chat"
     ] is True
 
@@ -209,10 +210,10 @@ async def test_memory_memorize_tool_normalizes_invalid_sentiment(
             sentiment="SURPRISED",
         )
 
-    structured_data = memory_processor.build_memory_from_structured_data.call_args.kwargs[
-        "structured_data"
-    ]
-    assert structured_data["sentiment"] == "neutral"
+    assert (
+        memory_processor.build_explicit_memory_record.call_args.kwargs["sentiment"]
+        == "neutral"
+    )
 
 
 @pytest.mark.asyncio
@@ -236,10 +237,10 @@ async def test_memory_memorize_tool_handles_non_string_sentiment(
             sentiment=1,
         )
 
-    structured_data = memory_processor.build_memory_from_structured_data.call_args.kwargs[
-        "structured_data"
-    ]
-    assert structured_data["sentiment"] == "neutral"
+    assert (
+        memory_processor.build_explicit_memory_record.call_args.kwargs["sentiment"]
+        == "neutral"
+    )
 
 
 @pytest.mark.asyncio
@@ -256,8 +257,8 @@ async def test_memory_memorize_tool_returns_error_for_empty_memory(
     result = json.loads(raw_result)
 
     assert result == {"memorized": False, "error": "memory is empty"}
-    memory_processor.build_memory_from_structured_data.assert_not_called()
-    memory_engine.add_memory.assert_not_called()
+    memory_processor.build_explicit_memory_record.assert_not_called()
+    memory_engine.add_canonical_memory.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -275,7 +276,7 @@ async def test_memory_memorize_tool_returns_not_initialized_error(memory_engine)
         "memorized": False,
         "error": "memory memorize tool is not initialized",
     }
-    memory_engine.add_memory.assert_not_called()
+    memory_engine.add_canonical_memory.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -287,7 +288,9 @@ async def test_memory_memorize_tool_hides_internal_exception_details(
         memory_engine=memory_engine,
         memory_processor=memory_processor,
     )
-    memory_engine.add_memory = AsyncMock(side_effect=RuntimeError("secret db path"))
+    memory_engine.add_canonical_memory = AsyncMock(
+        side_effect=RuntimeError("secret db path")
+    )
 
     with patch(
         "astrbot_plugin_livingmemory.core.tools.memory_memorize_tool.get_persona_id",
@@ -310,7 +313,7 @@ async def test_memory_memorize_tool_propagates_cancellation(
         memory_engine=memory_engine,
         memory_processor=memory_processor,
     )
-    memory_engine.add_memory = AsyncMock(side_effect=asyncio.CancelledError())
+    memory_engine.add_canonical_memory = AsyncMock(side_effect=asyncio.CancelledError())
 
     with patch(
         "astrbot_plugin_livingmemory.core.tools.memory_memorize_tool.get_persona_id",

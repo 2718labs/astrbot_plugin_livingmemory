@@ -67,6 +67,12 @@ class MemoryMemorizeTool(FunctionTool[AstrAgentContext]):
                     "description": "Optional key facts supporting the memory, up to 5.",
                     "default": [],
                 },
+                "participants": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Optional people directly involved in these facts, up to 8.",
+                    "default": [],
+                },
                 "sentiment": {
                     "type": "string",
                     "description": "Sentiment of the memory: positive, neutral, or negative.",
@@ -93,6 +99,7 @@ class MemoryMemorizeTool(FunctionTool[AstrAgentContext]):
         memory: str,
         topics: list[str] | None = None,
         key_facts: list[str] | None = None,
+        participants: list[str] | None = None,
         sentiment: str = "neutral",
         importance: float = 0.7,
         reason: str = "",
@@ -131,46 +138,48 @@ class MemoryMemorizeTool(FunctionTool[AstrAgentContext]):
             persona_id = await get_persona_id(self.context, event)
             is_group_chat = event.get_message_type() == MessageType.GROUP_MESSAGE
 
-            structured_data = {
-                "summary": cleaned_memory,
-                "topics": _normalize_list(topics),
-                "key_facts": _normalize_list(key_facts),
-                "sentiment": normalized_sentiment,
-                "importance": importance,
-            }
-
-            content, metadata, normalized_importance = (
-                self.memory_processor.build_memory_from_structured_data(
-                    structured_data=structured_data,
-                    is_group_chat=is_group_chat,
-                    fallback_excerpt=cleaned_memory,
-                )
+            get_topic_candidates = getattr(
+                self.memory_engine, "get_topic_candidates", None
             )
-            metadata["source_window"] = {
-                "session_id": session_id,
-                "triggered_by": "agent_tool",
-                "tool_name": self.name,
-            }
-            metadata["memory_origin"] = "agent_memorize_tool"
-            metadata["source_session_id"] = session_id
+            topic_candidates = (
+                await get_topic_candidates(memory_scope)
+                if callable(get_topic_candidates)
+                else []
+            )
+            message_obj = getattr(event, "message_obj", None)
+            source_reference = getattr(message_obj, "message_id", None)
+            record = self.memory_processor.build_explicit_memory_record(
+                memory=cleaned_memory,
+                source_scope=memory_scope,
+                topics=_normalize_list(topics),
+                key_facts=_normalize_list(key_facts),
+                participants=_normalize_list(participants, limit=8),
+                sentiment=normalized_sentiment,
+                importance=importance,
+                topic_candidates=(
+                    topic_candidates if isinstance(topic_candidates, list) else []
+                ),
+                source_reference=source_reference,
+                origin="agent_memorize_tool",
+                is_group_chat=is_group_chat,
+            )
             cleaned_reason = (reason or "").strip()
             if cleaned_reason:
-                metadata["memorize_reason"] = cleaned_reason
+                record.metadata["memorize_reason"] = cleaned_reason
 
-            memory_id = await self.memory_engine.add_memory(
-                content=content,
+            memory_id = await self.memory_engine.add_canonical_memory(
+                metadata=record.metadata,
                 session_id=memory_scope,
                 persona_id=persona_id,
-                importance=normalized_importance,
-                metadata=metadata,
+                importance=record.importance,
             )
 
             return _json_result(
                 {
                     "memorized": True,
                     "id": memory_id,
-                    "content": content,
-                    "importance": normalized_importance,
+                    "content": record.content,
+                    "importance": record.importance,
                     "session_id": memory_scope,
                     "persona_id": persona_id,
                 }

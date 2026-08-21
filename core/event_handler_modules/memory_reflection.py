@@ -478,24 +478,16 @@ class MemoryReflection:
                         )
                     )
                     for record in records:
-                        atoms = self.memory_processor.classify_atoms_from_metadata(
-                            metadata=record.metadata,
-                            parent_importance=record.importance,
-                            session_id=memory_scope,
-                            persona_id=persona_id,
-                        )
                         source_messages = (
                             serialize_source_messages(history_messages)
                             if record.importance >= source_threshold
                             else None
                         )
-                        await self.memory_engine.add_memory(
-                            content=record.content,
+                        await self.memory_engine.add_canonical_memory(
+                            metadata=record.metadata,
                             session_id=memory_scope,
                             persona_id=persona_id,
                             importance=record.importance,
-                            metadata=record.metadata,
-                            atoms=atoms,
                             source_messages=source_messages,
                         )
 

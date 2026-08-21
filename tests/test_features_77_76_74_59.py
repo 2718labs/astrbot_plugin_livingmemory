@@ -146,6 +146,7 @@ def _make_command_handler(
             return_value={"total_memories": 0, "sessions": {}, "newest_memory": None}
         )
         memory_engine.add_memory = AsyncMock(return_value=1)
+        memory_engine.add_canonical_memory = AsyncMock(return_value=1)
 
     if conversation_manager is None:
         conversation_manager = Mock()
@@ -250,6 +251,7 @@ async def test_summarize_calls_processor_and_stores_memory():
     memory_engine = Mock()
     memory_engine.db_path = "/tmp/test.db"
     memory_engine.add_memory = AsyncMock(return_value=1)
+    memory_engine.add_canonical_memory = AsyncMock(return_value=1)
 
     conv_mgr = Mock()
     conv_mgr.store = Mock()
@@ -278,7 +280,7 @@ async def test_summarize_calls_processor_and_stores_memory():
 
     memory_processor.process_conversation_result.assert_awaited_once()
     # Should have stored the memory
-    memory_engine.add_memory.assert_awaited_once()
+    memory_engine.add_canonical_memory.assert_awaited_once()
     # Should report success
     assert any("总结完成" in m for m in msgs)
 
@@ -300,6 +302,7 @@ async def test_summarize_updates_last_summarized_index():
     memory_engine = Mock()
     memory_engine.db_path = "/tmp/test.db"
     memory_engine.add_memory = AsyncMock(return_value=1)
+    memory_engine.add_canonical_memory = AsyncMock(return_value=1)
 
     conv_mgr = Mock()
     conv_mgr.store = Mock()
@@ -339,6 +342,7 @@ async def test_summarize_skip_advances_without_writing_memory():
     )
     memory_engine = Mock()
     memory_engine.add_memory = AsyncMock(return_value=1)
+    memory_engine.add_canonical_memory = AsyncMock(return_value=1)
     conv_mgr = Mock()
     conv_mgr.store = Mock()
     conv_mgr.store.get_message_count = AsyncMock(return_value=5)

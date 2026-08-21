@@ -340,11 +340,18 @@ async def test_complete_initialization_wires_graph_db_and_engine_config(
 
     class FakeMemoryEngine:
         def __init__(
-            self, db_path, faiss_db, graph_vector_db, llm_provider=None, config=None
+            self,
+            db_path,
+            faiss_db,
+            graph_vector_db,
+            llm_provider=None,
+            config=None,
+            fact_vector_db=None,
         ):
             self.db_path = db_path
             self.faiss_db = faiss_db
             self.graph_vector_db = graph_vector_db
+            self.fact_vector_db = fact_vector_db
             self.llm_provider = llm_provider
             self.config = config or {}
             self.text_processor = Mock(async_init=AsyncMock())
@@ -457,9 +464,12 @@ async def test_complete_initialization_wires_graph_db_and_engine_config(
 
     await init._complete_initialization()
 
-    assert len(created_vec_dbs) == 2
-    assert created_vec_dbs[1].db_path.endswith("livingmemory_graph_documents.db")
-    assert created_vec_dbs[1].index_path.endswith("livingmemory_graph.index")
+    assert len(created_vec_dbs) == 3
+    assert created_vec_dbs[1].db_path.endswith("livingmemory_fact_vectors.db")
+    assert created_vec_dbs[1].index_path.endswith("livingmemory_facts.index")
+    assert created_vec_dbs[2].db_path.endswith("livingmemory_graph_documents.db")
+    assert created_vec_dbs[2].index_path.endswith("livingmemory_graph.index")
+    assert init.memory_engine.fact_vector_db is init.fact_db
     assert init.memory_engine.graph_vector_db is init.graph_db
     assert init.memory_engine.config["graph_memory_enabled"] is True
     assert init.memory_engine.config["document_route_weight"] == 0.7
@@ -503,11 +513,18 @@ async def test_complete_initialization_skips_graph_db_when_disabled(
 
     class FakeMemoryEngine:
         def __init__(
-            self, db_path, faiss_db, graph_vector_db, llm_provider=None, config=None
+            self,
+            db_path,
+            faiss_db,
+            graph_vector_db,
+            llm_provider=None,
+            config=None,
+            fact_vector_db=None,
         ):
             self.db_path = db_path
             self.faiss_db = faiss_db
             self.graph_vector_db = graph_vector_db
+            self.fact_vector_db = fact_vector_db
             self.llm_provider = llm_provider
             self.config = config or {}
             self.text_processor = Mock(async_init=AsyncMock())
@@ -607,11 +624,13 @@ async def test_complete_initialization_skips_graph_db_when_disabled(
 
     await init._complete_initialization()
 
-    assert len(created_vec_dbs) == 1
+    assert len(created_vec_dbs) == 2
+    assert created_vec_dbs[1].db_path.endswith("livingmemory_fact_vectors.db")
     assert init.graph_db is None
+    assert init.memory_engine.fact_vector_db is init.fact_db
     assert init.memory_engine.graph_vector_db is None
     assert init.memory_engine.config["graph_memory_enabled"] is False
-    init._check_and_fix_dimension_mismatch.assert_awaited_once()
+    assert init._check_and_fix_dimension_mismatch.await_count == 2
 
 
 @pytest.mark.asyncio

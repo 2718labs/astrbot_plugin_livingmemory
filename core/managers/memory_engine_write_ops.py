@@ -690,6 +690,10 @@ class MemoryEngineWriteOpsMixin:
         if not memory_ids or self.db_connection is None:
             return 0
 
+        if self.canonical_store is not None:
+            for memory_id in memory_ids:
+                await self.canonical_store.delete_by_document(memory_id)
+
         placeholders = ",".join("?" * len(memory_ids))
         await self.db_connection.execute(
             f"DELETE FROM livingmemory_memories_fts WHERE doc_id IN ({placeholders})",

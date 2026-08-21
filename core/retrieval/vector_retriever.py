@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -230,16 +231,21 @@ class VectorRetriever:
             # data是包含id, text, metadata的字典
             doc_data = result.data
             metadata = doc_data.get("metadata")
-            if isinstance(metadata, dict) and str(
-                metadata.get("status") or "active"
-            ) != "active":
+            if isinstance(metadata, str):
+                try:
+                    metadata = json.loads(metadata)
+                except (json.JSONDecodeError, TypeError):
+                    metadata = {}
+            if not isinstance(metadata, dict):
+                metadata = {}
+            if str(metadata.get("status") or "active") != "active":
                 continue
             results.append(
                 VectorResult(
                     doc_id=doc_data["id"],
                     score=result.similarity,  # FaissVecDB已经归一化到[0,1]
                     content=doc_data["text"],
-                    metadata=doc_data["metadata"],
+                    metadata=metadata,
                 )
             )
 

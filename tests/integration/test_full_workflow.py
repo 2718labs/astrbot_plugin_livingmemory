@@ -28,6 +28,7 @@ def setup_bundle():
     memory_engine = Mock()
     memory_engine.search_memories = AsyncMock(return_value=[])
     memory_engine.add_memory = AsyncMock(return_value=1)
+    memory_engine.add_canonical_memory = AsyncMock(return_value=1)
     memory_engine.get_statistics = AsyncMock(
         return_value={
             "total_memories": 0,
@@ -143,7 +144,8 @@ async def test_recall_reflection_and_search_workflow(setup_bundle):
         await event_handler.handle_memory_reflection(event, resp)
         await event_handler.shutdown()
 
-    assert memory_engine.add_memory.await_count >= 1
+    assert memory_engine.add_canonical_memory.await_count >= 1
+    memory_engine.add_memory.assert_not_awaited()
 
     search_messages = [
         msg async for msg in command_handler.handle_search(event, query="测试", k=5)

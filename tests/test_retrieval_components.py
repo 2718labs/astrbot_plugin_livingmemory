@@ -67,6 +67,39 @@ async def test_vector_retriever_bulk_delete_saves_index_once() -> None:
 
 
 @pytest.mark.asyncio
+async def test_vector_retriever_filters_json_encoded_non_active_metadata() -> None:
+    faiss_db = SimpleNamespace(
+        retrieve=AsyncMock(
+            return_value=[
+                SimpleNamespace(
+                    similarity=0.9,
+                    data={
+                        "id": 1,
+                        "text": "unfinished",
+                        "metadata": json.dumps({"status": "building"}),
+                    },
+                ),
+                SimpleNamespace(
+                    similarity=0.8,
+                    data={
+                        "id": 2,
+                        "text": "finished",
+                        "metadata": json.dumps(
+                            {"status": "active", "session_id": "s1"}
+                        ),
+                    },
+                ),
+            ]
+        )
+    )
+
+    results = await VectorRetriever(faiss_db).search("query", k=2)
+
+    assert [result.doc_id for result in results] == [2]
+    assert results[0].metadata == {"status": "active", "session_id": "s1"}
+
+
+@pytest.mark.asyncio
 async def test_bm25_add_search_update_delete(tmp_path: Path):
     db_path = tmp_path / "bm25.db"
     retriever = BM25Retriever(str(db_path), TextProcessor())
