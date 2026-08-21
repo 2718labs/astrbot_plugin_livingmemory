@@ -1,16 +1,15 @@
-"""
-MemoryProcessor 的 MemoryProcessorBuildMixin 拆分模块
-自动从 core/processors/memory_processor.py 拆分，保持行为不变
-"""
+"""Build current storage records from admitted memory data."""
 
-from typing import Any
-from .atom_classifier import classify_atoms
 import json
+from typing import Any
+
 from ..models.memory_atom import MemoryAtom
+from .atom_classifier import classify_atoms
 
 
 class MemoryProcessorBuildMixin:
     """MemoryProcessor 拆分模块：MemoryProcessorBuildMixin"""
+
     def _build_storage_format(
         self,
         fallback_excerpt: str,
@@ -31,13 +30,13 @@ class MemoryProcessorBuildMixin:
         summary = str(structured_data.get("summary", "")).strip()
         key_facts = structured_data.get("key_facts", [])
 
-        # 检索内容恒为 summary + key_facts 的富文本：content 是 BM25/FAISS 的
-        # 索引语料，也是 Agent 主动召回工具直接返回给 LLM 的内容，必须保证信息
-        # 密度。不依赖模型输出的压缩摘要，也不退化为纯事实的机械拼接。
-        # （自动注入链路优先使用 metadata 中的 persona_summary，不受此影响。）
+        # 自动总结链路在调用本方法前已经把 summary/key_facts 投影成获准事实；
+        # 显式记忆工具仍可传入摘要和事实，沿用原有富文本兼容格式。
         rich_parts = [summary] if summary else []
-        if key_facts:
-            rich_parts.append("；".join(str(f) for f in key_facts[:5] if f))
+        fact_texts = [str(f).strip() for f in key_facts[:5] if str(f).strip()]
+        remaining_facts = [fact for fact in fact_texts if fact != summary]
+        if remaining_facts:
+            rich_parts.append("；".join(remaining_facts))
         rich_content = " | ".join(rich_parts)
 
         content = rich_content if rich_content else fallback_excerpt
@@ -61,7 +60,7 @@ class MemoryProcessorBuildMixin:
             "canonical_summary": canonical_summary,
             "persona_summary": summary,
             "summary_schema_version": "v2",
-            # summary_quality 由 process_conversation 中的 SummaryValidator 覆盖写入
+            # summary_quality 由具体调用链在写入前确定。
         }
 
         if is_group_chat and "participants" in structured_data:

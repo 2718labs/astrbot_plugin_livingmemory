@@ -2,6 +2,7 @@
 Tests for EventHandler core behaviors.
 """
 
+import asyncio
 import json
 import time
 from unittest.mock import AsyncMock, Mock, patch
@@ -9,6 +10,10 @@ from unittest.mock import AsyncMock, Mock, patch
 import pytest
 from astrbot_plugin_livingmemory.core.base.config_manager import ConfigManager
 from astrbot_plugin_livingmemory.core.event_handler import EventHandler
+from astrbot_plugin_livingmemory.core.managers.memory_engine import MemoryEngine
+from astrbot_plugin_livingmemory.core.models.memory_processing import (
+    MemoryProcessingResult,
+)
 
 from astrbot.api.platform import MessageType
 
@@ -24,8 +29,14 @@ def memory_engine():
 @pytest.fixture
 def memory_processor():
     processor = Mock()
-    processor.process_conversation = AsyncMock(
-        return_value=("summary", {"topics": ["t1"]}, 0.6)
+    processor.process_conversation_result = AsyncMock(
+        return_value=MemoryProcessingResult(
+            status="store",
+            content="summary",
+            metadata={"topics": ["t1"]},
+            importance=0.6,
+            stored_fact_count=1,
+        )
     )
     processor.classify_atoms_from_metadata = Mock(return_value=[])
     return processor
@@ -139,6 +150,113 @@ async def test_handle_memory_recall_injects_extra_user_content(handler, memory_e
     assert getattr(text_part, "_no_save", False) is True
     # system_prompt 不应被修改
     assert req.system_prompt == ""
+
+
+@pytest.mark.asyncio
+async def test_s0_baseline_uses_final_top4_after_recent_merge(
+    tmp_path, conversation_manager
+):
+    def _result(doc_id: int, content: str, score: float):
+        return Mock(
+            doc_id=doc_id,
+            content=content,
+            final_score=score,
+            vector_score=score,
+            score_breakdown={},
+            metadata={"importance": 0.8, "status": "active"},
+        )
+
+    relevant = [
+        _result(1, "目标事实：张三周三参加科目二考试", 0.95),
+        _result(2, "张三最近在练习倒车入库", 0.85),
+        _result(3, "不会进入最终四条的弱候选", 0.40),
+        _result(4, "最近记忆：已预约考试", 0.35),
+    ]
+    recent = [
+        _result(4, "最近记忆：已预约考试", 1.0),
+        _result(5, "最近记忆：准备身份证", 1.0),
+    ]
+    engine = MemoryEngine(
+        db_path=str(tmp_path / "s0-baseline.db"),
+        faiss_db=Mock(),
+        config={"recent_memory_count": 2, "search_cache_enabled": False},
+    )
+    engine.hybrid_retriever = Mock()
+    engine.hybrid_retriever.search = AsyncMock(return_value=relevant)
+    engine._get_recent_memory_results = AsyncMock(return_value=recent)
+    engine._update_access_times_internal = AsyncMock()
+    engine._migrate_session_data_if_needed = AsyncMock()
+
+    test_handler = EventHandler(
+        context=Mock(),
+        config_manager=ConfigManager(
+            {
+                "recall_engine": {
+                    "top_k": 4,
+                    "injection_method": "extra_user_content",
+                }
+            }
+        ),
+        memory_engine=engine,
+        memory_processor=Mock(),
+        conversation_manager=conversation_manager,
+    )
+    event = _make_event(group=False)
+    event.get_message_str.return_value = "张三的科目二是什么时候？"
+    req = _make_req("张三的科目二是什么时候？")
+
+    started = time.perf_counter()
+    with patch(
+        "astrbot_plugin_livingmemory.core.event_handler_modules.memory_recall.get_persona_id",
+        new=AsyncMock(return_value="persona_1"),
+    ):
+        await test_handler.handle_memory_recall(event, req)
+    latency_ms = (time.perf_counter() - started) * 1000
+    if engine._pending_tasks:
+        await asyncio.gather(*engine._pending_tasks)
+
+    engine.hybrid_retriever.search.assert_awaited_once()
+    assert engine.hybrid_retriever.search.await_args.args[1] == 4
+    engine._update_access_times_internal.assert_awaited_once_with([1, 2, 4, 5])
+    assert len(req.extra_user_content_parts) == 1
+    injected = req.extra_user_content_parts[0].text
+    assert "目标事实：张三周三参加科目二考试" in injected
+    assert "最近记忆：已预约考试" in injected
+    assert "最近记忆：准备身份证" in injected
+    assert "不会进入最终四条的弱候选" not in injected
+    observation = {
+        "final_document_ids": [1, 2, 4, 5],
+        "forced_recent_ids": [4, 5],
+        "injection_chars": len(injected),
+        "estimated_tokens": max(1, (len(injected) + 3) // 4),
+        "latency_ms": latency_ms,
+        "empty_result": False,
+    }
+    assert observation["injection_chars"] > 0
+    assert observation["estimated_tokens"] > 0
+    assert observation["latency_ms"] >= 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "query",
+    ["你好", "哈哈哈哈", "再见", "换个问题", "刚才工具报错了"],
+)
+async def test_s0_negative_baseline_allows_empty_final_injection(
+    handler, memory_engine, query
+):
+    memory_engine.search_memories = AsyncMock(return_value=[])
+    event = _make_event(group=False)
+    event.get_message_str.return_value = query
+    req = _make_req(query)
+
+    with patch(
+        "astrbot_plugin_livingmemory.core.event_handler_modules.memory_recall.get_persona_id",
+        new=AsyncMock(return_value="persona_1"),
+    ):
+        await handler.handle_memory_recall(event, req)
+
+    assert req.extra_user_content_parts == []
 
 
 @pytest.mark.asyncio
@@ -410,10 +528,12 @@ async def test_storage_task_writes_source_window(
         return 1
 
     memory_engine.add_memory = AsyncMock(side_effect=_capture_add_memory)
-    handler._memory_reflection.memory_processor.process_conversation.return_value = (
-        "summary",
-        {"topics": ["t1"]},
-        0.9,
+    handler._memory_reflection.memory_processor.process_conversation_result.return_value = MemoryProcessingResult(
+        status="store",
+        content="summary",
+        metadata={"topics": ["t1"]},
+        importance=0.9,
+        stored_fact_count=1,
     )
 
     await handler._memory_reflection._storage_task(
@@ -455,10 +575,12 @@ async def test_storage_task_does_not_retain_source_below_threshold(
             (2, "assistant", "hi", "bot"),
         )
     ]
-    handler._memory_reflection.memory_processor.process_conversation.return_value = (
-        "summary",
-        {"topics": ["t1"]},
-        0.79,
+    handler._memory_reflection.memory_processor.process_conversation_result.return_value = MemoryProcessingResult(
+        status="store",
+        content="summary",
+        metadata={"topics": ["t1"]},
+        importance=0.79,
+        stored_fact_count=1,
     )
 
     await handler._memory_reflection._storage_task(
@@ -471,6 +593,71 @@ async def test_storage_task_does_not_retain_source_below_threshold(
     )
 
     assert memory_engine.add_memory.await_args.kwargs["source_messages"] is None
+
+
+@pytest.mark.asyncio
+async def test_storage_task_skip_advances_window_without_writing(
+    handler, conversation_manager, memory_engine
+):
+    processor = handler._memory_reflection.memory_processor
+    processor.process_conversation_result.return_value = MemoryProcessingResult(
+        status="skip",
+        skipped_fact_count=2,
+    )
+    processor.classify_atoms_from_metadata.reset_mock()
+    memory_engine.add_memory.reset_mock()
+    conversation_manager.update_session_metadata.reset_mock()
+
+    await handler._memory_reflection._storage_task(
+        session_id="s1",
+        history_messages=[Mock(group_id=None)],
+        persona_id="p1",
+        start_index=0,
+        end_index=2,
+        retry_count=0,
+    )
+
+    memory_engine.add_memory.assert_not_awaited()
+    processor.classify_atoms_from_metadata.assert_not_called()
+    conversation_manager.update_session_metadata.assert_any_await(
+        "s1", "last_summarized_index", 2
+    )
+    conversation_manager.update_session_metadata.assert_any_await(
+        "s1", "pending_summary", None
+    )
+
+
+@pytest.mark.asyncio
+async def test_storage_task_invalid_keeps_window_pending(
+    handler, conversation_manager, memory_engine
+):
+    processor = handler._memory_reflection.memory_processor
+    processor.process_conversation_result.return_value = MemoryProcessingResult(
+        status="invalid",
+        error="key_facts[0] 缺少 action",
+    )
+    memory_engine.add_memory.reset_mock()
+    conversation_manager.update_session_metadata.reset_mock()
+
+    await handler._memory_reflection._storage_task(
+        session_id="s1",
+        history_messages=[Mock(group_id=None)],
+        persona_id="p1",
+        start_index=0,
+        end_index=2,
+        retry_count=0,
+    )
+
+    memory_engine.add_memory.assert_not_awaited()
+    assert not any(
+        call.args[1] == "last_summarized_index"
+        for call in conversation_manager.update_session_metadata.await_args_list
+    )
+    conversation_manager.update_session_metadata.assert_awaited_once_with(
+        "s1",
+        "pending_summary",
+        {"start_index": 0, "end_index": 2, "retry_count": 1},
+    )
 
 
 @pytest.mark.asyncio

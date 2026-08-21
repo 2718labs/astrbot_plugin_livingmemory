@@ -19,6 +19,9 @@ from astrbot_plugin_livingmemory.core.managers.conversation_manager import (
     ConversationManager,
 )
 from astrbot_plugin_livingmemory.core.models.conversation_models import Message
+from astrbot_plugin_livingmemory.core.models.memory_processing import (
+    MemoryProcessingResult,
+)
 from astrbot_plugin_livingmemory.core.processors.memory_processor import MemoryProcessor
 from astrbot_plugin_livingmemory.core.retrieval.vector_retriever import VectorRetriever
 from astrbot_plugin_livingmemory.storage.conversation_store import ConversationStore
@@ -110,7 +113,7 @@ def _make_group_messages():
 _VALID_JSON_RESPONSE = """{
     "summary": "张三提醒我明天下午三点开会，我确认了会议安排",
     "topics": ["会议提醒"],
-    "key_facts": ["张三安排明天下午三点开会"],
+    "key_facts": [{"fact": "张三安排明天下午三点开会", "action": "store", "importance": 0.8}],
     "sentiment": "neutral",
     "importance": 0.8
 }"""
@@ -118,7 +121,10 @@ _VALID_JSON_RESPONSE = """{
 _VALID_GROUP_JSON_RESPONSE = """{
     "summary": "群聊讨论了 AI 工具的使用效果，张三和李四都参与了讨论",
     "topics": ["AI工具", "工作效率"],
-    "key_facts": ["张三认为 ChatGPT 效率提升 30%", "需要仔细审查 AI 生成代码"],
+    "key_facts": [
+        {"fact": "张三认为 ChatGPT 效率提升 30%", "action": "store", "importance": 0.75},
+        {"fact": "李四认为需要仔细审查 AI 生成代码", "action": "store", "importance": 0.7}
+    ],
     "participants": ["张三", "李四"],
     "sentiment": "positive",
     "importance": 0.75
@@ -232,11 +238,13 @@ async def test_summarize_rejects_explicit_count_below_two():
 async def test_summarize_calls_processor_and_stores_memory():
     """handle_summarize should call process_conversation and add_memory."""
     memory_processor = Mock()
-    memory_processor.process_conversation = AsyncMock(
-        return_value=(
-            "张三提醒我明天下午三点开会",
-            {"topics": ["会议"], "source_window": {}},
-            0.8,
+    memory_processor.process_conversation_result = AsyncMock(
+        return_value=MemoryProcessingResult(
+            status="store",
+            content="张三提醒我明天下午三点开会",
+            metadata={"topics": ["会议"], "source_window": {}},
+            importance=0.8,
+            stored_fact_count=1,
         )
     )
 
@@ -269,8 +277,7 @@ async def test_summarize_calls_processor_and_stores_memory():
     ):
         msgs = [m async for m in handler.handle_summarize(_MockEvent())]
 
-    # Should have called process_conversation
-    memory_processor.process_conversation.assert_awaited_once()
+    memory_processor.process_conversation_result.assert_awaited_once()
     # Should have stored the memory
     memory_engine.add_memory.assert_awaited_once()
     # Should report success
@@ -281,11 +288,13 @@ async def test_summarize_calls_processor_and_stores_memory():
 async def test_summarize_updates_last_summarized_index():
     """handle_summarize should update last_summarized_index to actual_count."""
     memory_processor = Mock()
-    memory_processor.process_conversation = AsyncMock(
-        return_value=(
-            "summary text",
-            {"topics": ["test"]},
-            0.5,
+    memory_processor.process_conversation_result = AsyncMock(
+        return_value=MemoryProcessingResult(
+            status="store",
+            content="summary text",
+            metadata={"topics": ["test"]},
+            importance=0.5,
+            stored_fact_count=1,
         )
     )
 
@@ -324,10 +333,49 @@ async def test_summarize_updates_last_summarized_index():
 
 
 @pytest.mark.asyncio
+async def test_summarize_skip_advances_without_writing_memory():
+    memory_processor = Mock()
+    memory_processor.process_conversation_result = AsyncMock(
+        return_value=MemoryProcessingResult(status="skip", skipped_fact_count=2)
+    )
+    memory_engine = Mock()
+    memory_engine.add_memory = AsyncMock(return_value=1)
+    conv_mgr = Mock()
+    conv_mgr.store = Mock()
+    conv_mgr.store.get_message_count = AsyncMock(return_value=5)
+    conv_mgr.get_session_metadata = AsyncMock(return_value=0)
+    conv_mgr.get_messages_range = AsyncMock(return_value=_make_private_messages())
+    conv_mgr.update_session_metadata = AsyncMock()
+    handler = _make_command_handler(
+        memory_processor=memory_processor,
+        memory_engine=memory_engine,
+        conversation_manager=conv_mgr,
+    )
+
+    with patch(
+        "astrbot_plugin_livingmemory.core.utils.get_persona_id",
+        new=AsyncMock(return_value=None),
+    ):
+        messages = [item async for item in handler.handle_summarize(_MockEvent())]
+
+    memory_engine.add_memory.assert_not_awaited()
+    conv_mgr.update_session_metadata.assert_any_await(
+        _MockEvent.unified_msg_origin, "last_summarized_index", 5
+    )
+    assert any("没有需要长期保存的事实" in item for item in messages)
+
+
+@pytest.mark.asyncio
 async def test_summarize_explicit_count_ignores_completed_progress():
     memory_processor = Mock()
-    memory_processor.process_conversation = AsyncMock(
-        return_value=("replacement summary", {"topics": []}, 0.5)
+    memory_processor.process_conversation_result = AsyncMock(
+        return_value=MemoryProcessingResult(
+            status="store",
+            content="replacement summary",
+            metadata={"topics": []},
+            importance=0.5,
+            stored_fact_count=1,
+        )
     )
     memory_processor.classify_atoms_from_metadata.return_value = []
     conv_mgr = Mock()
@@ -748,13 +796,12 @@ async def test_group_memory_format_contains_nicknames():
 
 
 @pytest.mark.asyncio
-async def test_group_memory_quality_low_for_group_member_generic_term():
-    """summary containing '群成员' should be flagged as low quality."""
+async def test_group_generic_store_fact_is_invalid():
     llm = _DummyLLMProvider(
         """{
             "summary": "群成员讨论了一些话题",
             "topics": ["闲聊"],
-            "key_facts": ["群成员说了话"],
+            "key_facts": [{"fact": "群成员说了话", "action": "store", "importance": 0.4}],
             "participants": ["群成员"],
             "sentiment": "neutral",
             "importance": 0.4
@@ -762,10 +809,10 @@ async def test_group_memory_quality_low_for_group_member_generic_term():
     )
     processor = MemoryProcessor(llm_provider=llm, context=None)
 
-    _, metadata, _ = await processor.process_conversation(
+    result = await processor.process_conversation_result(
         messages=_make_group_messages(),
         is_group_chat=True,
         persona_id=None,
     )
 
-    assert metadata.get("summary_quality") == "low"
+    assert result.status == "invalid"

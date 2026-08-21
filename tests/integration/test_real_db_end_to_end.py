@@ -104,7 +104,10 @@ class _DeterministicLLMProvider:
         payload = {
             "summary": summary,
             "topics": topics,
-            "key_facts": facts,
+            "key_facts": [
+                {"fact": fact, "action": "store", "importance": importance}
+                for fact in facts
+            ],
             "sentiment": sentiment,
             "importance": importance,
         }

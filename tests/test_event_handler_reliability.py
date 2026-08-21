@@ -6,6 +6,9 @@ from unittest.mock import AsyncMock, Mock, patch
 import pytest
 from astrbot_plugin_livingmemory.core.base.config_manager import ConfigManager
 from astrbot_plugin_livingmemory.core.event_handler import EventHandler
+from astrbot_plugin_livingmemory.core.models.memory_processing import (
+    MemoryProcessingResult,
+)
 
 from astrbot.api.platform import MessageType
 
@@ -16,7 +19,15 @@ def _make_handler() -> EventHandler:
     memory_engine.add_memory = AsyncMock(return_value=1)
 
     memory_processor = Mock()
-    memory_processor.process_conversation = AsyncMock(return_value=("summary", {}, 0.5))
+    memory_processor.process_conversation_result = AsyncMock(
+        return_value=MemoryProcessingResult(
+            status="store",
+            content="summary",
+            metadata={},
+            importance=0.5,
+            stored_fact_count=1,
+        )
+    )
 
     conversation_manager = Mock()
     conversation_manager.add_message_from_event = AsyncMock(return_value=Mock(id=1))

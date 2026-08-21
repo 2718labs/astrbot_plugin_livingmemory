@@ -2,6 +2,16 @@
 
 本文件只记录 [2718labs fork](https://github.com/2718labs/astrbot_plugin_livingmemory) 相对[原版 LivingMemory](https://github.com/lxfight-s-Astrbot-Plugins/astrbot_plugin_livingmemory)产生的变更。原项目自身的版本历史见 [CHANGELOG.md](CHANGELOG.md)。
 
+## [Unreleased]
+
+### S0：逐事实准入
+
+- 自动总结改为逐条输出候选事实及 `store / skip` 决定，程序统一推导窗口的 `store / skip / invalid` 结果。
+- 增加严格 JSON 结构检查；格式失败只允许一次不改写事实的修复，仍失败时不写入、不生成兜底记忆。
+- 混合窗口只把获准事实投影给现有存储和下游；全跳过时零写入并正常推进滑窗，结果无效时保留窗口进入原有重试路径。
+- 自动总结与手动总结接入同一结果契约；补充中、英、俄三种手动跳过提示。
+- 新增与生产顺序一致的 `top_k=4 + recent=2 + 最终注入` 基线，以及逐事实准入、格式修复和窗口状态回归测试。
+
 ## [2.6.0-a1] - 2026-08-20
 
 ### 项目

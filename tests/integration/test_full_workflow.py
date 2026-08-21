@@ -8,6 +8,9 @@ import pytest
 from astrbot_plugin_livingmemory.core.base.config_manager import ConfigManager
 from astrbot_plugin_livingmemory.core.command_handler import CommandHandler
 from astrbot_plugin_livingmemory.core.event_handler import EventHandler
+from astrbot_plugin_livingmemory.core.models.memory_processing import (
+    MemoryProcessingResult,
+)
 
 from astrbot.api.platform import MessageType
 
@@ -34,8 +37,14 @@ def setup_bundle():
     )
 
     memory_processor = Mock()
-    memory_processor.process_conversation = AsyncMock(
-        return_value=("摘要", {"topics": ["测试"]}, 0.7)
+    memory_processor.process_conversation_result = AsyncMock(
+        return_value=MemoryProcessingResult(
+            status="store",
+            content="摘要",
+            metadata={"topics": ["测试"]},
+            importance=0.7,
+            stored_fact_count=1,
+        )
     )
     memory_processor.classify_atoms_from_metadata = Mock(return_value=[])
 

@@ -11,6 +11,12 @@ from .conversation_models import (
     serialize_to_json,
 )
 from .graph_models import ExtractedGraph, GraphEdge, GraphEntry, GraphNode
+from .memory_processing import (
+    InvalidMemoryOutputError,
+    MemoryAdmissionSkipped,
+    MemoryProcessingResult,
+    MemoryProcessingStatus,
+)
 
 __all__ = [
     "MemoryEvent",
@@ -22,4 +28,8 @@ __all__ = [
     "GraphEdge",
     "GraphEntry",
     "ExtractedGraph",
+    "InvalidMemoryOutputError",
+    "MemoryAdmissionSkipped",
+    "MemoryProcessingResult",
+    "MemoryProcessingStatus",
 ]

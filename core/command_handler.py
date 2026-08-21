@@ -435,15 +435,28 @@ class CommandHandler:
                 )
                 return
 
-            (
-                content,
-                metadata,
-                importance,
-            ) = await self._memory_processor.process_conversation(
+            result = await self._memory_processor.process_conversation_result(
                 messages=history_messages,
                 is_group_chat=is_group_chat,
                 persona_id=persona_id,
             )
+
+            if result.status == "invalid":
+                raise ValueError(result.error or "记忆总结结果不合格")
+
+            if result.status == "skip":
+                await self.conversation_manager.update_session_metadata(
+                    session_id, "last_summarized_index", actual_count
+                )
+                await self.conversation_manager.update_session_metadata(
+                    session_id, "pending_summary", None
+                )
+                yield event.plain_result(t("summarize.skipped", count=actual_count))
+                return
+
+            content = result.content
+            metadata = result.metadata
+            importance = result.importance
 
             atoms = self._memory_processor.classify_atoms_from_metadata(
                 metadata=metadata,

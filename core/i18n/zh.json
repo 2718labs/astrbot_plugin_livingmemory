@@ -71,7 +71,8 @@
     "no_new": "当前没有需要总结的新对话。\n当前消息总数: {total}\n已总结到消息序号: {index}",
     "starting": "开始手动总结记忆...\n消息范围: [{start}:{end}]，共 {count} 条",
     "fetch_failed": "获取消息失败：未读取到可总结的消息。\n请确认当前会话存在历史消息后重试。",
-    "success": "记忆总结完成。\n重要性: {importance:.2f}\n主题: {topics}\n已更新总结进度至第 {count} 条消息"
+    "success": "记忆总结完成。\n重要性: {importance:.2f}\n主题: {topics}\n已更新总结进度至第 {count} 条消息",
+    "skipped": "总结完成：本窗口没有需要长期保存的事实，未写入记忆。\n已更新总结进度至第 {count} 条消息"
   },
   "reset": {
     "action_name": "重置记忆上下文",

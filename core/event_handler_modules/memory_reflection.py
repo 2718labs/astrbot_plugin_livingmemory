@@ -388,37 +388,59 @@ class MemoryReflection:
                     logger.info(
                         f"[{session_id}] 调用 MemoryProcessor 处理 {len(history_messages)} 条消息"
                     )
-                    (
-                        content,
-                        metadata,
-                        importance,
-                    ) = await self.memory_processor.process_conversation(
+                    result = await self.memory_processor.process_conversation_result(
                         messages=history_messages,
                         is_group_chat=is_group_chat,
                         persona_id=persona_id,
                     )
 
-                    atoms = self.memory_processor.classify_atoms_from_metadata(
-                        metadata=metadata,
-                        parent_importance=importance,
-                        session_id=memory_scope,
-                        persona_id=persona_id,
-                    )
+                    if result.status == "invalid":
+                        logger.warning(
+                            f"[{session_id}] 记忆总结结果无效，保留窗口待重试: "
+                            f"{result.error or '未知格式错误'}"
+                        )
+                        await self._record_pending_summary(
+                            session_id, start_index, end_index, retry_count
+                        )
+                        return
 
-                    # 补充 source_window 元数据，记录本次总结的消息范围
-                    metadata["source_window"] = {
-                        "session_id": session_id,
-                        "start_index": start_index,
-                        "end_index": end_index,
-                        "message_count": end_index - start_index,
-                    }
-                    metadata["source_session_id"] = session_id
+                    if result.status == "skip":
+                        logger.info(
+                            f"[{session_id}] 本窗口没有需要长期保存的事实，"
+                            f"跳过候选={result.skipped_fact_count}"
+                        )
+                        content = ""
+                        metadata = {}
+                        importance = 0.0
+                        atoms = []
+                    else:
+                        content = result.content
+                        metadata = result.metadata
+                        importance = result.importance
 
-                    logger.info(
-                        f"[{session_id}] 已使用LLM生成结构化记忆, "
-                        f"主题={metadata.get('topics', [])}, "
-                        f"重要性={importance:.2f}"
-                    )
+                        atoms = self.memory_processor.classify_atoms_from_metadata(
+                            metadata=metadata,
+                            parent_importance=importance,
+                            session_id=memory_scope,
+                            persona_id=persona_id,
+                        )
+
+                        # 补充 source_window 元数据，记录本次总结的消息范围
+                        metadata["source_window"] = {
+                            "session_id": session_id,
+                            "start_index": start_index,
+                            "end_index": end_index,
+                            "message_count": end_index - start_index,
+                        }
+                        metadata["source_session_id"] = session_id
+
+                        logger.info(
+                            f"[{session_id}] 已生成可写入记忆, "
+                            f"获准事实={result.stored_fact_count}, "
+                            f"跳过事实={result.skipped_fact_count}, "
+                            f"主题={metadata.get('topics', [])}, "
+                            f"重要性={importance:.2f}"
+                        )
 
                 except Exception as e:
                     # LLM处理失败，记录待重试信息
@@ -432,7 +454,7 @@ class MemoryReflection:
                     return
 
                 # 正常流程：添加到记忆引擎
-                if self.memory_engine:
+                if result.status == "store" and self.memory_engine:
                     source_threshold = float(
                         self.config_manager.get(
                             "reflection_engine.source_retention_importance_threshold",
@@ -471,13 +493,18 @@ class MemoryReflection:
                             f"[{session_id}] 更新滑动窗口位置: last_summarized_index = {end_index}"
                         )
                     except Exception as meta_err:
+                        outcome = (
+                            "记忆已存储"
+                            if result.status == "store"
+                            else "窗口已跳过"
+                        )
                         logger.error(
-                            f"[{session_id}] 记忆已存储但元数据更新失败: {meta_err}。"
+                            f"[{session_id}] {outcome}但进度更新失败: {meta_err}。"
                             "下次触发时将跳过本段消息，避免重复总结。",
                             exc_info=True,
                         )
-                        # Advance the index anyway to prevent re-processing the
-                        # same message range (memory is already stored durably).
+                        # Retry only the progress update so a stored or validly
+                        # skipped window is not processed again.
                         try:
                             await self.conversation_manager.update_session_metadata(
                                 session_id, "last_summarized_index", end_index

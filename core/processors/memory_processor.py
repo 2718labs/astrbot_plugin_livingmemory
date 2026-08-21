@@ -12,8 +12,14 @@ from typing import Any
 from astrbot.api import logger
 
 from ..models.conversation_models import Message
+from ..models.memory_processing import (
+    InvalidMemoryOutputError,
+    MemoryAdmissionSkipped,
+    MemoryProcessingResult,
+)
 from .memory_processor_parse import MemoryProcessorParseMixin
 from .memory_processor_build import MemoryProcessorBuildMixin
+
 
 class MemoryProcessor(MemoryProcessorParseMixin, MemoryProcessorBuildMixin):
     """
@@ -114,6 +120,31 @@ class MemoryProcessor(MemoryProcessorParseMixin, MemoryProcessorBuildMixin):
             pass
         return self.group_chat_prompt if is_group_chat else self.private_chat_prompt
 
+    @staticmethod
+    def _build_admission_output_contract(is_group_chat: bool) -> str:
+        """Return the non-overridable S0 output contract."""
+        participants = (
+            '\n- 群聊顶层还必须包含字符串数组 "participants"。'
+            if is_group_chat
+            else ""
+        )
+        return (
+            "## 必须遵守的逐事实准入格式\n"
+            "- 只输出一个 JSON object。\n"
+            '- 顶层必须包含 "summary"、"topics"、"key_facts"、'
+            '"sentiment"、"importance"。\n'
+            '- "key_facts" 必须是对象数组，每项必须包含非空字符串 "fact"、'
+            '值为 "store" 或 "skip" 的 "action"、0.0 到 1.0 的数字 '
+            '"importance"；"reason" 可选。\n'
+            "- 每条 fact 独立判断：稳定身份、偏好、关系、计划、反复问题或"
+            "明确要求记住的内容用 store；寒暄、一次性玩笑、临时报错过程、"
+            "即时状态和重复内容用 skip。\n"
+            "- 顶层 summary、topics、importance 只能概括 store facts；"
+            "没有 store fact 时分别输出空字符串、空数组和 0.0。\n"
+            "- 不要输出顶层 memory_action；窗口结果由程序根据 facts 推导。"
+            f"{participants}"
+        )
+
     def _load_prompts_fallback(self) -> None:
         """后备加载：直接从文件读取提示词"""
         prompt_dir = Path(__file__).parent.parent / "prompts"
@@ -135,13 +166,13 @@ class MemoryProcessor(MemoryProcessorParseMixin, MemoryProcessorBuildMixin):
 {conversation}
 
 输出格式:
-{"summary": "摘要", "topics": ["主题"], "key_facts": ["事实"], "sentiment": "neutral", "importance": 0.5}
+{"summary": "仅概括 store facts", "topics": ["主题"], "key_facts": [{"fact": "事实", "action": "store", "importance": 0.5}], "sentiment": "neutral", "importance": 0.5}
 """
             self.group_chat_prompt = """分析以下群聊对话并生成JSON格式的记忆:
 {conversation}
 
 输出格式:
-{"summary": "摘要", "topics": ["主题"], "key_facts": ["事实"], "participants": ["参与者"], "sentiment": "neutral", "importance": 0.5}
+{"summary": "仅概括 store facts", "topics": ["主题"], "key_facts": [{"fact": "事实", "action": "store", "importance": 0.5}], "participants": ["参与者"], "sentiment": "neutral", "importance": 0.5}
 """
 
     async def _build_system_prompt_with_persona(self, persona_id: str | None) -> str:
@@ -359,28 +390,48 @@ class MemoryProcessor(MemoryProcessorParseMixin, MemoryProcessorBuildMixin):
 
         return fixed
 
-    async def process_conversation(
+    async def _repair_llm_response_format(
+        self, response_text: str, is_group_chat: bool
+    ) -> str:
+        """Ask the LLM once to reformat its own response without new facts."""
+        participants_rule = (
+            '\n- 顶层必须包含字符串数组字段 "participants"。'
+            if is_group_chat
+            else ""
+        )
+        prompt = (
+            "下面是一次记忆提取的原始回答。只把它整理成合法 JSON；"
+            "不得新增、删除、合并、拆分或改写任何 fact，也不得改变 action 和 importance 的含义。\n"
+            "要求：\n"
+            '- 顶层必须包含 "summary"、"topics"、"key_facts"、'
+            '"sentiment"、"importance"。\n'
+            '- "key_facts" 必须是数组，每项必须包含非空字符串 "fact"、'
+            '值为 "store" 或 "skip" 的 "action"、0.0 到 1.0 的数字 '
+            '"importance"；"reason" 可选。'
+            f"{participants_rule}\n"
+            "如果原回答缺少某个事实判断所需的信息，不要猜测或补造；保留缺失，"
+            "让后续校验拒绝。只输出 JSON，不要解释。\n\n"
+            f"原始回答：\n{response_text}"
+        )
+        system_prompt = "你只负责修复 JSON 表达形式，不负责重新总结或判断记忆价值。"
+        return await self._call_llm_with_retry(prompt, system_prompt)
+
+    async def process_conversation_result(
         self,
         messages: list[Message],
         is_group_chat: bool = False,
         persona_id: str | None = None,
-    ) -> tuple[str, dict[str, Any], float]:
+    ) -> MemoryProcessingResult:
         """
-        处理对话历史,生成结构化记忆
+        处理对话历史，返回 store / skip / invalid 三态结果。
 
         Args:
             messages: 消息列表(Message对象)
             is_group_chat: 是否为群聊
             persona_id: 人格ID,用于获取人格提示词
 
-        Returns:
-            tuple: (content, metadata, importance)
-                - content: 格式化的记忆内容字符串
-                - metadata: 包含结构化信息的字典
-                - importance: 重要性评分(0-1)
-
-        Raises:
-            Exception: 处理失败时抛出异常
+        格式不合格时只请求一次格式修复；修复仍失败返回 invalid。
+        Provider 或其他运行错误仍向上抛出，由调用方沿用既有重试机制。
         """
         if not messages:
             raise ValueError("消息列表不能为空")
@@ -394,6 +445,7 @@ class MemoryProcessor(MemoryProcessorParseMixin, MemoryProcessorBuildMixin):
         prompt = self._get_chat_prompt(is_group_chat).replace(
             "{conversation}", conversation_text
         ).replace("{current_date}", current_date)
+        prompt = f"{prompt}\n\n{self._build_admission_output_contract(is_group_chat)}"
 
         # 3. 调用LLM生成结构化记忆
         conversation_type = "群聊" if is_group_chat else "私聊"
@@ -420,16 +472,55 @@ class MemoryProcessor(MemoryProcessorParseMixin, MemoryProcessorBuildMixin):
             )
             logger.debug(f"[MemoryProcessor] LLM 原始响应内容:\n{llm_response_text}")
 
-            # 4. 解析LLM响应
-            structured_data = self._parse_llm_response(llm_response_text, is_group_chat)
-
-            # 4.5 质量校验
-            quality = self._validate_summary_quality(structured_data)
-            if quality == "low":
-                logger.warning(
-                    "[MemoryProcessor] 总结质量不达标（low），将标记但仍写入"
+            # 4. 原始回答先过严格格式门；失败时只请求一次格式修复。
+            try:
+                structured_data = self._parse_llm_response(
+                    llm_response_text, is_group_chat
                 )
-            structured_data["_quality"] = quality
+            except InvalidMemoryOutputError as first_error:
+                logger.warning(
+                    f"[MemoryProcessor] 原始回答格式不合格，尝试一次格式修复: {first_error}"
+                )
+                repaired_text = await self._repair_llm_response_format(
+                    llm_response_text, is_group_chat
+                )
+                try:
+                    structured_data = self._parse_llm_response(
+                        repaired_text, is_group_chat
+                    )
+                except InvalidMemoryOutputError as second_error:
+                    logger.warning(
+                        f"[MemoryProcessor] 格式修复后仍不合格: {second_error}"
+                    )
+                    return MemoryProcessingResult(
+                        status="invalid",
+                        error=str(second_error),
+                    )
+
+            # 4.5 逐 fact 准入，并只向旧消费者投影获准文本。
+            try:
+                admitted_data, stored_count, skipped_count = (
+                    self._prepare_admitted_projection(structured_data)
+                )
+            except InvalidMemoryOutputError as quality_error:
+                logger.warning(f"[MemoryProcessor] 候选事实不合格: {quality_error}")
+                return MemoryProcessingResult(
+                    status="invalid",
+                    error=str(quality_error),
+                )
+
+            if admitted_data is None:
+                logger.info(
+                    f"[MemoryProcessor] 本窗口没有获准保存的事实，跳过 {skipped_count} 条候选"
+                )
+                return MemoryProcessingResult(
+                    status="skip",
+                    stored_fact_count=0,
+                    skipped_fact_count=skipped_count,
+                )
+
+            structured_data = admitted_data
+            structured_data["_quality"] = "normal"
 
             # 5. 构建存储格式
             fallback_excerpt = (
@@ -444,8 +535,7 @@ class MemoryProcessor(MemoryProcessorParseMixin, MemoryProcessorBuildMixin):
                 messages
             )
             content = self._apply_source_time_tags(content, metadata, messages)
-            # 将质量标记写入 metadata
-            metadata["summary_quality"] = structured_data.get("_quality", "normal")
+            metadata["summary_quality"] = "normal"
 
             importance = float(structured_data.get("importance", 0.5))
 
@@ -458,12 +548,37 @@ class MemoryProcessor(MemoryProcessorParseMixin, MemoryProcessorBuildMixin):
                 f"[MemoryProcessor] 生成的记忆内容（前200字符）:\n{content[:200]}"
             )
 
-            return content, metadata, importance
+            return MemoryProcessingResult(
+                status="store",
+                content=content,
+                metadata=metadata,
+                importance=importance,
+                stored_fact_count=stored_count,
+                skipped_fact_count=skipped_count,
+            )
 
         except Exception as e:
             logger.error(f"[MemoryProcessor] 处理对话历史失败: {e}", exc_info=True)
             # 不再降级处理，直接向上抛出异常，由调用方处理重试逻辑
             raise
+
+    async def process_conversation(
+        self,
+        messages: list[Message],
+        is_group_chat: bool = False,
+        persona_id: str | None = None,
+    ) -> tuple[str, dict[str, Any], float]:
+        """Compatibility tuple API for callers that require a stored memory."""
+        result = await self.process_conversation_result(
+            messages=messages,
+            is_group_chat=is_group_chat,
+            persona_id=persona_id,
+        )
+        if result.status == "skip":
+            raise MemoryAdmissionSkipped("本窗口没有需要长期保存的事实")
+        if result.status == "invalid":
+            raise InvalidMemoryOutputError(result.error or "记忆总结结果不合格")
+        return result.content, result.metadata, result.importance
 
     def _apply_source_time_tags(
         self,
