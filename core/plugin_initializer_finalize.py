@@ -180,7 +180,7 @@ class InitializerFinalizeMixin:
                     "graph_memory.max_facts_per_memory", 8
                 ),
                 "atom_enabled": self.config_manager.get(
-                    "graph_memory.atom_enabled", True
+                    "graph_memory.atom_enabled", False
                 ),
                 "atom_maintenance_interval_hours": self.config_manager.get(
                     "graph_memory.atom_maintenance_interval_hours", 24.0

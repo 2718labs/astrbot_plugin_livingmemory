@@ -2,7 +2,6 @@
 
 from pathlib import Path
 
-from astrbot_plugin_livingmemory.core.models.memory_atom import MemoryAtom
 from astrbot_plugin_livingmemory.core.processors.graph_extractor import GraphExtractor
 from astrbot_plugin_livingmemory.core.processors.memory_processor import MemoryProcessor
 
@@ -47,26 +46,6 @@ def test_person_node_key_survives_nickname_changes() -> None:
         "person:account:aiocqhttp:10001"
     ]
     assert after_people[0].value == "新昵称"
-
-
-def test_atom_graph_uses_stable_person_nodes_instead_of_name_topics() -> None:
-    atom = MemoryAtom(
-        parent_memory_id=1,
-        content="寒露确认周五发布",
-        entities=["发布计划", "寒露"],
-    )
-    metadata = _graph_metadata("寒露")
-
-    graph = GraphExtractor().extract(1, atom.content, metadata, [atom])
-
-    assert any(
-        node.node_key == "person:account:aiocqhttp:10001" for node in graph.nodes
-    )
-    assert not any(
-        node.node_type == "topic" and node.canonical_value == "寒露"
-        for node in graph.nodes
-    )
-    assert any(edge.relation_type == "mentioned_in" for edge in graph.edges)
 
 
 def test_participant_identity_keeps_alias_history_and_latest_display_name() -> None:

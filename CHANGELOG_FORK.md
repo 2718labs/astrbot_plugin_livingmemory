@@ -46,6 +46,16 @@
 - 图谱页首次进入只加载受限概览；`full_graph=true` 仅在显式点击“全量图谱”按钮时发送。
 - 合成多会话样本结构验收全 PASS（零全组合、全边带证据、共享节点复用、删除安全、间接联想路径可达）；语义级独有命中由 S5 判定，生产图权重保持 0。
 
+### S4：收敛 Atom，停用独立事实层
+
+- 完成 A/B 对照（合成脱敏样本，纯离线可复现）：canonical fact store 与独立 Atom 在分类、时间基准、检索命中、负注入、过期语义和存储成本六维对比，Atom 无任何生产净收益。
+- 规则分类器可复现错分类（过去事件被标成 `planned`，样本错分类率 40%）；Atom 时间基准用写入时刻而非源消息时间戳（同一句“上周六”差 14 天）；中文句子查询在 Atom FTS 下 3/3 落空，canonical fact FTS 3/3 命中。
+- 决策为方案 B：canonical fact store（`memory_facts` + 可重建 FTS/向量投影）成为唯一生产事实层；独立 Atom Retriever、FTS、分类器和定时生命周期全部停用。
+- `MemoryEngine` 不再初始化 AtomStore/AtomLifecycleManager/AtomRetriever；`atom_enabled` 默认改 `false` 且不再驱动任何初始化。
+- `replace_memory`、`restore_memory` 和 Page API 导入入口停止生成 Atom；`GraphExtractor` 删除 `_extract_from_atoms` 建图路径，`GraphMemoryManager` 移除 atoms 参数链。
+- 不迁移、不清洗实例旧 Atom 数据；新链路不再创建 `memory_atoms` 表，生产检索路径（从未经过 Atom）前后一致。
+- 对照脚本 `code/scripts/s4_atom_eval.py` 与报告 `code/artifacts/s4_atom_eval_report.json` 全 PASS；新增停用行为回归测试（初始化三组件为 None、replace/restore 不生成 Atom、extract 忽略 atom 载荷）。
+
 ## [2.6.0-a1] - 2026-08-20
 
 ### 项目

@@ -1703,7 +1703,7 @@ async def test_update_memory_add_fails_returns_false(tmp_path: Path):
 
 
 @pytest.mark.asyncio
-async def test_replace_memory_rebuilds_atoms_and_preserves_create_time(tmp_path: Path):
+async def test_replace_memory_preserves_create_time_and_skips_atoms(tmp_path: Path):
     engine = MemoryEngine(
         db_path=str(tmp_path / "replace_structured.db"),
         faiss_db=_FakeFaissDB(),
@@ -1711,6 +1711,10 @@ async def test_replace_memory_rebuilds_atoms_and_preserves_create_time(tmp_path:
         config={"atom_enabled": True, "graph_memory_enabled": True},
     )
     await engine.initialize()
+    # S4: even with atom_enabled=True the standalone AtomStore is retired.
+    assert engine.atom_store is None
+    assert engine.atom_retriever is None
+    assert engine.atom_lifecycle_manager is None
     old_id = await engine.add_memory(
         content="old summary",
         session_id="s1",
@@ -1737,9 +1741,6 @@ async def test_replace_memory_rebuilds_atoms_and_preserves_create_time(tmp_path:
     assert replacement["metadata"]["topics"] == ["release"]
     assert replacement["metadata"]["key_facts"] == ["Release is Friday"]
     assert replacement["metadata"]["create_time"] == old_create_time
-    atoms = await engine.atom_store.get_by_parent(new_id)
-    assert [atom.content for atom in atoms] == ["Release is Friday"]
-    assert atoms[0].entities == ["release"]
     old_graph = await engine.graph_store.get_subgraph_for_memories([old_id])
     new_graph = await engine.graph_store.get_subgraph_for_memories([new_id])
     assert old_graph["entries"] == []

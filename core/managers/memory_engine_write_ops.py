@@ -591,7 +591,6 @@ class MemoryEngineWriteOpsMixin:
                 int(memory_id),
                 content,
                 metadata,
-                atoms or None,
             )
             await self._advance_write_op(op_id, "graph_repaired", memory_id=memory_id)
 

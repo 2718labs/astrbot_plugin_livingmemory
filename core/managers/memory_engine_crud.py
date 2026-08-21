@@ -8,7 +8,6 @@ import json
 from typing import Any
 from ..utils.number_utils import clamp_float, safe_float
 from ..models.memory_contract import concept_key, normalize_concept_name, topic_id
-from ..processors.atom_classifier import classify_metadata_atoms
 from ..retrieval.hybrid_retriever import HybridResult
 from astrbot.api import logger
 from ..memory_transfer import memory_import_key
@@ -115,7 +114,7 @@ class MemoryEngineCrudMixin:
                 # routes on memory_schema_version internally.
                 if self.graph_memory_manager is not None:
                     await self.graph_memory_manager.index_memory(
-                        document_id, projection, metadata, None
+                        document_id, projection, metadata
                     )
                 self._invalidate_search_cache()
                 return document_id
@@ -391,7 +390,7 @@ class MemoryEngineCrudMixin:
         if not skip_legacy_downstream and self.graph_memory_manager is not None:
             try:
                 await self.graph_memory_manager.index_memory(
-                    doc_id, content, full_metadata, atoms
+                    doc_id, content, full_metadata
                 )
                 await self._advance_write_op(
                     op_id,
@@ -987,14 +986,8 @@ class MemoryEngineCrudMixin:
 
         session_id = replacement_metadata.get("session_id")
         persona_id = replacement_metadata.get("persona_id")
-        atoms = []
-        if self.atom_enabled:
-            atoms = classify_metadata_atoms(
-                metadata=replacement_metadata,
-                parent_importance=normalized_importance,
-                session_id=session_id,
-                persona_id=persona_id,
-            )
+        # S4: atoms are retired (S4-03B); replace no longer regenerates them.
+        atoms = None
 
         new_memory_id: int | None = None
         add_task = self._create_tracked_task(

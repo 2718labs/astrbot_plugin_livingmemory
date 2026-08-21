@@ -12,14 +12,11 @@ import aiosqlite
 
 from astrbot.api import logger
 
-from ...storage.atom_store import AtomStore
 from ...storage.canonical_memory_store import CanonicalMemoryStore
 from ...storage.graph_store import GraphStore
-from ..managers.atom_lifecycle_manager import AtomLifecycleManager
 from ..managers.graph_memory_manager import GraphMemoryManager
 from ..processors.graph_extractor import GraphExtractor
 from ..processors.text_processor import TextProcessor
-from ..retrieval.atom_retriever import AtomRetriever
 from ..retrieval.bm25_retriever import BM25Retriever
 from ..retrieval.dual_route_retriever import DualRouteRetriever
 from ..retrieval.graph_keyword_retriever import GraphKeywordRetriever
@@ -108,10 +105,13 @@ class MemoryEngine(MemoryEngineWriteOpsMixin, MemoryEngineCrudMixin, MemoryEngin
         self.llm_provider = llm_provider
         self.config = config or {}
         self.graph_enabled = bool(self.config.get("graph_memory_enabled", False))
+        # S4: the standalone Atom mechanism is retired (S4-03B). canonical
+        # facts are the single production fact layer; the flag only exists
+        # for config compatibility and no longer drives any initialization.
         self.atom_enabled = bool(
             self.config.get(
                 "atom_enabled",
-                self.config.get("graph_memory_atom_enabled", True),
+                self.config.get("graph_memory_atom_enabled", False),
             )
         )
 
@@ -209,15 +209,13 @@ class MemoryEngine(MemoryEngineWriteOpsMixin, MemoryEngineCrudMixin, MemoryEngin
             self.graph_store = GraphStore(self.db_path)
             await self.graph_store.initialize()
 
-            self.atom_store = AtomStore(self.db_path)
-            await self.atom_store.initialize()
-
-            if self.atom_enabled:
-                self.atom_lifecycle_manager = AtomLifecycleManager(
-                    self.atom_store, self.config
-                )
-                self.atom_retriever = AtomRetriever(self.atom_store, self.config)
-                await self.atom_lifecycle_manager.start()
+            # S4: the standalone AtomStore / AtomRetriever / AtomLifecycle are
+            # retired (S4-03B). atom_store stays None so every legacy write,
+            # delete and repair guard that checks `atom_store is not None`
+            # becomes a no-op without touching those call sites.
+            self.atom_store = None
+            self.atom_lifecycle_manager = None
+            self.atom_retriever = None
 
             self.graph_extractor = GraphExtractor(self.config)
             self.graph_keyword_retriever = GraphKeywordRetriever(
@@ -256,8 +254,6 @@ class MemoryEngine(MemoryEngineWriteOpsMixin, MemoryEngineCrudMixin, MemoryEngin
 
     async def close(self):
         """关闭数据库连接和清理资源"""
-        if self.atom_lifecycle_manager is not None:
-            await self.atom_lifecycle_manager.stop()
         if self._pending_tasks:
             for task in self._pending_tasks:
                 if not task.done():

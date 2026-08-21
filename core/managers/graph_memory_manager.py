@@ -31,8 +31,10 @@ class GraphMemoryManager:
         self.graph_extractor = graph_extractor
         self._rebuild_gate = asyncio.Lock()
         self._rebuild_active = False
+        # S4: atoms are retired (S4-03B); rebuild deltas only carry
+        # (content, metadata) pairs.
         self._rebuild_delta: dict[
-            int, tuple[str, dict[str, Any] | None, list | None] | None
+            int, tuple[str, dict[str, Any] | None] | None
         ] = {}
 
     async def index_memory(
@@ -40,29 +42,22 @@ class GraphMemoryManager:
         source_memory_id: int,
         content: str,
         metadata: dict[str, Any] | None,
-        atoms: list | None = None,
     ) -> None:
-        """Rebuild graph artifacts for one source memory.
-
-        When atoms are provided, each atom independently contributes
-        nodes/edges/entries with per-atom confidence scores.
-        """
+        """Rebuild graph artifacts for one source memory."""
         async with self._rebuild_gate:
             if self._rebuild_active:
                 self._rebuild_delta[int(source_memory_id)] = (
                     content,
                     metadata,
-                    atoms,
                 )
                 return
-        await self._index_memory_now(source_memory_id, content, metadata, atoms)
+        await self._index_memory_now(source_memory_id, content, metadata)
 
     async def _index_memory_now(
         self,
         source_memory_id: int,
         content: str,
         metadata: dict[str, Any] | None,
-        atoms: list | None = None,
     ) -> None:
         await self._delete_memory_now(source_memory_id)
 
@@ -70,7 +65,6 @@ class GraphMemoryManager:
             source_memory_id,
             content,
             metadata,
-            atoms,
         )
         if not entries:
             return
@@ -87,11 +81,10 @@ class GraphMemoryManager:
         source_memory_id: int,
         content: str,
         metadata: dict[str, Any] | None,
-        atoms: list | None = None,
     ) -> tuple[list[GraphEntry], list[int]]:
         """Persist graph structure without touching the vector index."""
         extracted = self.graph_extractor.extract(
-            source_memory_id, content, metadata, atoms
+            source_memory_id, content, metadata
         )
         if not extracted.entries:
             return [], []
@@ -197,21 +190,20 @@ class GraphMemoryManager:
                 new_vector_doc_ids.pop(int(source_memory_id), None)
 
         async def apply_shadow_delta(
-            delta: dict[int, tuple[str, dict[str, Any] | None, list | None] | None],
+            delta: dict[int, tuple[str, dict[str, Any] | None] | None],
         ) -> None:
             for source_memory_id, payload in delta.items():
                 replaced_vector_ids = await shadow_store.delete_memory(source_memory_id)
                 await remove_shadow_vectors(source_memory_id, replaced_vector_ids)
                 if payload is None:
                     continue
-                content, metadata, atoms = payload
+                content, metadata = payload
                 if not content.strip():
                     continue
                 entries, entry_ids = await shadow_manager._store_graph_structure(
                     source_memory_id,
                     content,
                     metadata,
-                    atoms,
                 )
                 if not entries:
                     continue

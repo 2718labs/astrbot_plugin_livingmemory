@@ -471,8 +471,12 @@ class MemoryProcessorBuildMixin:
 
         This is a post-processing step after process_conversation().
         It does NOT make additional LLM calls — classification is rule-based.
+
+        S4: the standalone Atom mechanism is retired (S4-03B). This method is
+        kept only as a pure helper for component-level tests; no production
+        chain calls it anymore and the default is disabled.
         """
-        if not self.config.get("atom_enabled", True):
+        if not self.config.get("atom_enabled", False):
             return []
         if not metadata.get("key_facts"):
             return []

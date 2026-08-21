@@ -1,7 +1,7 @@
 > [!IMPORTANT]
 > **这是 LivingMemory 的增强 fork。** 本项目由 [2718labs](https://github.com/2718labs) 基于[原版 LivingMemory](https://github.com/lxfight-s-Astrbot-Plugins/astrbot_plugin_livingmemory)继续开发，目标是重建“总结 → 处理与存储 → 事实与图谱 → 召回与注入”整条记忆链路。当前优先修复记忆质量、数据结构和真实召回问题；聚合、矛盾消解、rerank 与动态路线选择等新增能力暂不进入主线。项目仍处于改造阶段，具体实施顺序见 [S0–S6 执行路线图](docs/livingmemory-roadmap/README.md)；fork 自身的实际变更请查看 [CHANGELOG_FORK.md](CHANGELOG_FORK.md)，原项目更新请查看 [CHANGELOG.md](CHANGELOG.md)。
 >
-> **当前进度：** S0 逐事实准入、S1 v3 记忆契约、S2 canonical 写入/事实索引和 S3 按事实证据重建图谱已经完成；下一阶段为 S4 收敛 Atom。最终召回仍未切换到 fact route。
+> **当前进度：** S0 逐事实准入、S1 v3 记忆契约、S2 canonical 写入/事实索引、S3 按事实证据重建图谱和 S4 收敛 Atom（停用独立事实层，canonical fact 成为唯一生产事实层）已经完成；下一阶段为 S5 fact 级召回与最小注入。最终召回仍未切换到 fact route。
 
 <div align="center">
 

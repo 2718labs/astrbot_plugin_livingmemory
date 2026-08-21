@@ -798,8 +798,13 @@ async def test_graph_store_first_edge_no_merge(tmp_path: Path) -> None:
 # ---------- GraphExtractor with atoms ----------
 
 
-def test_graph_extractor_empty_atoms_falls_back_to_legacy() -> None:
-    """Empty atoms list is falsy → extract() falls back to legacy path."""
+def test_graph_extractor_ignores_atom_payloads() -> None:
+    """S4: atom extraction path is retired (S4-03B).
+
+    extract() ignores any atom payload; empty metadata falls back to the
+    legacy path, and a v3 metadata routes to the canonical path regardless
+    of atoms.
+    """
     from astrbot_plugin_livingmemory.core.processors.graph_extractor import (
         GraphExtractor,
     )
@@ -815,14 +820,9 @@ def test_graph_extractor_empty_atoms_falls_back_to_legacy() -> None:
     assert len(result.nodes) >= 1
     assert len(result.entries) >= 1
 
-
-def test_graph_extractor_atoms_with_entities() -> None:
+    # An atom payload must not create atom edges anymore.
     from astrbot_plugin_livingmemory.core.models.memory_atom import AtomType, MemoryAtom
-    from astrbot_plugin_livingmemory.core.processors.graph_extractor import (
-        GraphExtractor,
-    )
 
-    extractor = GraphExtractor()
     atom = MemoryAtom(
         parent_memory_id=1,
         atom_type=AtomType.FACTUAL,
@@ -831,46 +831,39 @@ def test_graph_extractor_atoms_with_entities() -> None:
         confidence=0.85,
     )
     result = extractor.extract(1, "", {}, atoms=[atom])
-    # Should produce nodes for entities + fact node
-    assert len(result.nodes) >= 2
-    assert len(result.entries) >= 1
-    # At least one edge connecting entity to fact
-    assert len(result.edges) >= 1
-    # Verify atom confidence propagated to edge
-    for edge in result.edges:
-        assert edge.confidence == pytest.approx(0.85 * 0.9, abs=0.01)
+    # Legacy path with empty metadata: no nodes/entries at all.
+    assert len(result.nodes) == 0
+    assert len(result.entries) == 0
+    assert len(result.edges) == 0
 
-
-def test_graph_extractor_atoms_no_entities_fallback() -> None:
-    from astrbot_plugin_livingmemory.core.models.memory_atom import AtomType, MemoryAtom
-    from astrbot_plugin_livingmemory.core.processors.graph_extractor import (
-        GraphExtractor,
+    # v3 canonical metadata still routes to the canonical path.
+    result = extractor.extract(
+        1,
+        "",
+        {
+            "memory_schema_version": "v3",
+            "canonical_summary": "s",
+            "key_facts": [
+                {
+                    "fact_id": "f1",
+                    "parent_id": "p1",
+                    "fact": "张三喜欢滑雪",
+                    "topics": ["滑雪"],
+                    "topic_refs": [{"topic_id": "t1", "name": "滑雪"}],
+                    "participants": ["张三"],
+                    "participant_refs": [
+                        {"participant_id": "per1", "name": "张三"}
+                    ],
+                    "time": None,
+                    "importance": 0.8,
+                    "source_message_ids": [1],
+                }
+            ],
+            "source_session_id": "s1",
+        },
+        atoms=[atom],
     )
-
-    extractor = GraphExtractor()
-    # Atom without entities — _add_node("fact") fails if canonicalize returns ""
-    # so it should fall through to the "no entries" branch and create a summary entry
-    atom = MemoryAtom(
-        parent_memory_id=1,
-        atom_type=AtomType.UNKNOWN,
-        content="x",
-        entities=[],
-        confidence=0.6,
-    )
-    result = extractor.extract(1, "", {}, atoms=[atom])
-    # The fact node key would be "fact:x" which should canonicalize to "x"
-    # Actually let me check: if canonicalize("x") returns "x" (non-empty), then
-    # we'll get a fact node + entry. Let me use a proper test instead.
-    atom2 = MemoryAtom(
-        parent_memory_id=1,
-        atom_type=AtomType.UNKNOWN,
-        content="测试内容",
-        entities=[],
-        confidence=0.6,
-    )
-    result = extractor.extract(1, "", {}, atoms=[atom2])
-    assert len(result.nodes) >= 1
-    assert len(result.entries) >= 1
+    assert any(edge.relation_type == "mentioned_in" for edge in result.edges)
 
 
 # ---------- Backward compatibility ----------

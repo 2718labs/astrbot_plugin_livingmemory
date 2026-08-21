@@ -274,8 +274,11 @@ class GraphMemoryConfig(BaseModel):
         default=8, ge=1, le=30, description="单条记忆最多索引事实数"
     )
     # Atom-level memory configuration
+    # S4: the standalone Atom mechanism is retired (S4-03B); canonical facts
+    # are the single production fact layer. Keys stay for config compatibility
+    # but no longer drive any initialization.
     atom_enabled: bool = Field(
-        default=True, description="是否启用记忆原子化（细化粒度+时间衰减）"
+        default=False, description="[已废弃] 记忆原子化：S4 起停用，不再初始化"
     )
     atom_maintenance_interval_hours: float = Field(
         default=24.0, ge=1.0, le=168.0, description="原子生命周期维护间隔(小时)"

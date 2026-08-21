@@ -292,7 +292,9 @@ async def test_source_time_tags_come_from_message_timestamps_without_rewriting_s
 
 
 def test_atom_classification_persists_parent_memory_types():
-    processor = MemoryProcessor(context=None)
+    # S4: atom generation is retired; the pure classifier helper still works
+    # when explicitly enabled (component-level coverage only).
+    processor = MemoryProcessor(context=None, config={"atom_enabled": True})
     metadata = {
         "key_facts": ["明天下午发布新版本", "用户喜欢爵士乐"],
         "topics": ["发布", "音乐"],
@@ -1043,7 +1045,9 @@ async def test_s1_topic_candidate_is_reused_with_same_stable_id():
 
 
 def test_s1_atom_projection_uses_each_fact_own_entities():
-    processor = MemoryProcessor(context=None)
+    # S4: atom generation is retired; the pure classifier helper still works
+    # when explicitly enabled (component-level coverage only).
+    processor = MemoryProcessor(context=None, config={"atom_enabled": True})
     metadata = {
         "key_facts": [
             {

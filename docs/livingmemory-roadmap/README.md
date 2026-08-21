@@ -1,7 +1,7 @@
 ---
 project: LivingMemory enhancement
 baseline: c2e733049392d1cfc27843fc083096a9103f27d1
-updated: 2026-08-21
+updated: 2026-08-22
 document_role: execution-index
 investigation_state: T0A-T0B-complete
 excel_role: snapshot-only
@@ -120,7 +120,7 @@ Sfuture（独立愿景，不进入当前执行链）
 | S1 | 将 S0 的获准 fact 从临时文本投影升级为 LM 风格的唯一对象契约，并移除长篇第一人称总结真源 | I03、I04、I05、I09、I15、I17、F03 | summary schema、fact model、processor、source window | S0 | Done | [S1](S1.md) |
 | S2 | 让所有新写入入口生成同一 parent/fact 结构和事实级索引 | I03、I04、I06、I17 | build pipeline、fact storage/index、rebuild | S1 | Done | [S2](S2.md) |
 | S3 | 消除全组合噪声，只保存有来源证据的图关系，修复图谱查看入口，并固定双路满信号 bug 的回归样本 | I01、I02、I06、I09、I18、I19、F03 | graph extractor/store/manager、resolver、rebuild、dual-route eval、WebUI/Page API | S2 | Done | [S3](S3.md) |
-| S4 | 在 canonical fact 与 Atom 之间选定唯一生产事实层 | I08、I12、I17、F02 | fact/Atom model、store、retriever、lifecycle、memory engine | S2、S3 | Decision gate | [S4](S4.md) |
+| S4 | 在 canonical fact 与 Atom 之间选定唯一生产事实层 | I08、I12、I17、F02 | fact/Atom model、store、retriever、lifecycle、memory engine | S2、S3 | Done | [S4](S4.md) |
 | S5 | 让无关消息不注入，相关消息按 fact 命中并在硬预算内装配 | I10、I11、I13、I14、I16、I17、I18、U02 | fact search、route fusion/calibration、recent、filter、budget packer、formatting、memory recall | S3、S4 | Planned | [S5](S5.md) |
 | S6 | 仅在主线稳定后校准生命周期信号和必要观察体验 | I08、I13、U01、U02 | lifecycle、event tracking、WebUI | S5 | Deferred | [S6](S6.md) |
 | Stest | 对完成范围做完整链路、长周期和盲测体验验收，判定改造净收益 | I20 | eval harness、time-controlled replay、paired blind review | S5；以及所有获准实施的 S6 项 | Planned | [Stest](Stest.md) |
@@ -139,11 +139,11 @@ Sfuture（独立愿景，不进入当前执行链）
 | I05 | FIX / P0 | 低质量、兜底解析或结构不完整的总结仍可进入 active | 坏产物会立刻成为搜索和建图原料；当前 `summary_quality=low` 仍会写入 | S0、S1 | 写前严格校验；仅允许一次不改事实的格式修复，仍失败则不写并进入重试 |
 | I06 | FIX / P1 | 自动、Agent、合并、恢复和 rebuild 使用不同处理语义 | 同一内容从不同入口进入会得到不同 Atom/图 | S2、S3 | 统一为一条可重放的规范处理链 |
 | I07 | OPTIONAL / 远期证据 | 默认关闭的 Consolidation 在手动开启后会合并异质记录 | ID 94 证明旧规则不适合新事实结构，但当前不依赖该功能 | Sfuture | 当前不处理；只作为未来聚合愿景的负例证据 |
-| I08 | FIX / P1 | Atom 过期/遗忘不影响父文档召回 | 生命周期状态对用户不可见，语义自相矛盾 | S4、S6 | 先决定 Atom 是否进入主线，之后才谈生命周期 |
+| I08 | FIX / P1 | Atom 过期/遗忘不影响父文档召回 | 生命周期状态对用户不可见，语义自相矛盾 | S4、S6 | S4 已停用独立 Atom（方案 B），过期状态不再存在第二套；fact 层生命周期由 S6 校准 |
 | I09 | FIX / P0 | 每条 fact 继承整组 topics/participants，随后全组合建边 | 是当前 1781 条图边的主要噪声来源 | S1、S3 | S1 输出事实级绑定；S3 仅按显式证据建边 |
 | I10 | FIX / P0 | 最近记忆固定占用最多一半注入槽位 | 无关最新日记绕过正常排名，挤掉真正命中 | S5 | recent 只作为统一候选的时效信号，仍须相关 |
 | I11 | FIX / P0 | 每条非空消息都召回，搜索后也没有可靠空结果 | “哈哈”“晚安”等负例全部注入记忆 | S5 | 增加是否需要记忆的判断和搜索后拒绝契约 |
-| I12 | FIX / P1 | Atom 约 39% 为 unknown，且存在明显错分类与 `event_only` 漏口 | 分类不能支撑召回或生命周期 | S4 | 采用 Atom 才重做类型；不采用则删除无效分类链 |
+| I12 | FIX / P1 | Atom 约 39% 为 unknown，且存在明显错分类与 `event_only` 漏口 | 分类不能支撑召回或生命周期 | S4 | S4 采用方案 B（停用 Atom），不再需要第二套类型 |
 | I13 | OPT-S / P1 | 路线分数难校准，访问统计的意义依赖召回是否准确 | 难以解释排序；但召回正确后现有衰减可以继续工作 | S5、S6 | S5 先修召回并保留原始信号；不为衰减另建暂停/恢复流程 |
 | I14 | FIX / P0 | 注入没有总预算，并重复正文、标签、全部事实和人格总结 | 文档长度不受 `top_k` 控制；四条文档可轻易占用数千 token | S5 | 候选数量与注入预算分离；按完整 fact 装配，达到整轮 token 上限即停止 |
 | I15 | FIX / P0 | 没有先确定最终状态和本窗口新证据，也没有逐 fact 的“是否值得长期保存”结果；低重要度只是落库后的衰减信号 | 被纠正的说法、Bot 复述的旧事和一次性玩笑可能与真正偏好一起写入；窗口级决定又会把有用与无用内容捆在一起 | S0、S1 | S0 依次执行最终状态收束、新证据边界和逐 fact `store / skip`，由程序推导窗口结果；importance 只作信号；S1 将获准 fact 升级为唯一持久对象 |
@@ -153,7 +153,7 @@ Sfuture（独立愿景，不进入当前执行链）
 | I19 | FIX / P2 | 图谱页首次进入就自动请求 `full_graph=true`；“全量图谱”按钮再次调用同一函数，未筛选时只会重复同一请求 | 默认全量加载绕过受限概览，数据多时形成毛团和无界开销；按钮也没有清楚的状态转换 | S3 | 首次进入加载受限概览；只有显式点击按钮才加载全量图，并分别建立前端与 Page API 回归 |
 | I20 | TEST / P0 | 各阶段虽有局部完成条件，但缺少一个冻结口径、汇总证据并判断整体净收益的最终节点 | 如果全部改完才凭实际感觉回看，容易临时改判卷标准，也无法定位退化来自哪一阶段 | Stest | 每阶段先固定样本并验收；Stest 最后跑完整链路、时间压缩回放和成对盲测，失败退回责任阶段 |
 | F01 | FEAT / 远期大版本候选 | 矛盾检测与 `SUPERSEDED` 没有生产闭环 | 矛盾消解会改变系统认定的事实和生产召回，误判代价高 | Sfuture | 作为独立 Feature Request 调查；不进入 S0-S6 |
-| F02 | DECISION / P1 | Atom Retriever 存在但不在生产召回链 | 当前是死机制，不应继续默认维护 | S4 | 默认倾向停用；只有对照实验有净收益才接入 |
+| F02 | DECISION / P1 | Atom Retriever 存在但不在生产召回链 | 当前是死机制，不应继续默认维护 | S4 | S4 对照实验无净收益，已停用独立 Atom（方案 B） |
 | F03 | OPT-S / P1 | 缺少可复用 topic 身份和确定性节点复用 | 309 个不同 topic 中 297 个只出现一次 | S1、S3 | 规范名称、scope 和稳定 ID；仅在能确认是同一概念时复用节点 |
 | F04 | FEAT / 远期 | 缺少跨记忆的语义聚合与上层综合记忆 | 这不是修复 topic 身份，而是新增一种派生记忆能力 | Sfuture | 作为独立 Feature Request 调查；优先考虑保留原记忆的非破坏性聚合 |
 | F05 | FEAT / 远期 | 当前没有独立 rerank 层，但尚无证据证明新增 reranker 能改善事实级最终注入 | rerank 可能提高复杂查询排序，也可能增加延迟、成本和新的不可解释判断 | Sfuture | S5 稳定后再作为独立候选评估；只有最终注入与盲测体验有净收益才立项 |

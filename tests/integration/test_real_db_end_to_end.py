@@ -351,9 +351,15 @@ async def test_memory_archive_retains_document_and_restore_rebuilds_real_indexes
             "graph_memory_enabled": False,
             "recent_memory_count": 0,
             "auto_archived_enabled": True,
+            # S4: even an explicit atom_enabled=True must not initialize the
+            # retired standalone Atom mechanism (S4-03B).
+            "atom_enabled": True,
         },
     )
     await engine.initialize()
+    assert engine.atom_store is None
+    assert engine.atom_retriever is None
+    assert engine.atom_lifecycle_manager is None
     memory_id = await engine.add_memory(
         "release archive verification",
         "test:private:archive",
@@ -393,6 +399,14 @@ async def test_memory_archive_retains_document_and_restore_rebuilds_real_indexes
         assert vector_db.embedding_storage.index.ntotal == 1
         results = await engine.search_memories("release", k=5)
         assert [result.doc_id for result in results] == [memory_id]
+
+        # S4: add/archive/restore must never create or write the retired
+        # memory_atoms table.
+        async with aiosqlite.connect(str(db_path)) as conn:
+            cursor = await conn.execute(
+                "SELECT name FROM sqlite_master WHERE name = 'memory_atoms'"
+            )
+            assert await cursor.fetchone() is None
     finally:
         await engine.close()
         await vector_db.close()

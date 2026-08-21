@@ -148,17 +148,9 @@ class MemoryHandlerIoMixin:
                     importance, "stored"
                 )
                 metadata["importance"] = importance
+                # S4: atoms are retired (S4-03B); imports no longer classify
+                # atoms as a post-processing step.
                 atoms = None
-                classify_atoms = getattr(
-                    memory_processor, "classify_atoms_from_metadata", None
-                )
-                if callable(classify_atoms):
-                    atoms = classify_atoms(
-                        metadata=metadata,
-                        parent_importance=importance,
-                        session_id=entry.session_id,
-                        persona_id=entry.persona_id,
-                    )
                 memory_id = await memory_engine.add_memory(
                     content=content_text,
                     session_id=entry.session_id,
