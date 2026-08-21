@@ -888,6 +888,56 @@ async def test_s1_fact_source_time_and_reaction_are_bound_to_the_fact():
 
 
 @pytest.mark.asyncio
+async def test_s1_message_timestamp_stays_source_metadata_when_fact_has_no_time():
+    messages = _make_messages()
+    messages[0].content = "张三说宝是她的开机键"
+    messages[0].timestamp = datetime(2026, 8, 19, 10, 8).timestamp()
+    messages[1].timestamp = datetime(2026, 8, 19, 10, 9).timestamp()
+    unit = _unit_from_json(
+        _memory_json("张三说宝是她的开机键", topics=["称呼习惯"])
+    )
+    processor = MemoryProcessor(
+        llm_provider=_DummyLLMProvider(
+            json.dumps({"memories": [unit]}, ensure_ascii=False)
+        ),
+        context=None,
+    )
+
+    result = await processor.process_conversation_result(messages)
+
+    assert result.status == "store"
+    assert result.metadata["key_facts"][0]["time"] is None
+    assert result.metadata["source_time_label"] == "2026-08-19"
+
+
+@pytest.mark.asyncio
+async def test_s1_message_timestamp_cannot_be_copied_into_fact_time():
+    messages = _make_messages()
+    messages[0].content = "张三说宝是她的开机键"
+    messages[0].timestamp = datetime(2026, 8, 19, 10, 8).timestamp()
+    unit = _unit_from_json(
+        _memory_json("张三说宝是她的开机键", topics=["称呼习惯"])
+    )
+    unit["key_facts"][0]["time"] = {
+        "raw": "2026-08-19",
+        "normalized": "2026-08-19",
+        "precision": "day",
+    }
+    processor = MemoryProcessor(
+        llm_provider=_DummyLLMProvider(
+            json.dumps({"memories": [unit]}, ensure_ascii=False)
+        ),
+        context=None,
+    )
+
+    result = await processor.process_conversation_result(messages)
+
+    assert result.status == "invalid"
+    assert "cited message body" in (result.error or "")
+    assert "message timestamp" in (result.error or "")
+
+
+@pytest.mark.asyncio
 async def test_s1_incorrect_relative_time_is_rejected_after_one_repair():
     messages = _make_messages()
     messages[0].content = "我周三参加科目二考试"
@@ -909,6 +959,13 @@ async def test_s1_incorrect_relative_time_is_rejected_after_one_repair():
 
     assert result.status == "invalid"
     assert "expected 2026-08-26" in (result.error or "")
+
+
+def test_s1_output_contract_distinguishes_fact_time_from_message_timestamp():
+    contract = MemoryProcessor._build_admission_output_contract(False)
+
+    assert "time.raw 必须逐字来自所引用消息正文" in contract
+    assert "禁止复制消息头的发送时间" in contract
 
 
 @pytest.mark.asyncio

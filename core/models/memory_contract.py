@@ -227,7 +227,10 @@ def validate_and_normalize_time(
         raise ValueError("time requires at least one direct source message")
     source_text = "\n".join(Message.content_to_text(item.content) for item in source_messages)
     if raw not in source_text:
-        raise ValueError(f"time.raw is not present in its source messages: {raw}")
+        raise ValueError(
+            "time.raw must appear in the cited message body, not only in its "
+            f"message timestamp: {raw}"
+        )
 
     base = datetime.fromtimestamp(float(source_messages[0].timestamp)).astimezone()
     resolved = _resolved_relative_date(raw, base)

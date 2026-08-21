@@ -69,7 +69,9 @@ PROMPT_REGISTRY: dict[str, dict[str, Any]] = {
             "你正在提取可独立复用的对话事实。请严格按照 JSON 格式输出，"
             "不写第一人称长篇总结。\n"
             "当前日期时间: {current_date}\n"
-            "重要: 相对时间必须保留原始说法并按直接来源消息时间换算；程序会再次校验。"
+            "重要: time 只记录事实正文明确提到的事件时间；time.raw 必须来自"
+            "消息正文，禁止复制消息头的发送时间。消息头时间只用于换算相对时间表达；"
+            "正文没有时间表达时写 null，程序会再次校验。"
         ),
     },
     "memory_system_prompt_with_persona": {
@@ -91,7 +93,8 @@ PROMPT_REGISTRY: dict[str, dict[str, Any]] = {
             "事实和 summary 必须中性、完整、自包含，不得使用人格化口吻重写事实。\n"
             "人格设定只用于每条 fact 可选的 persona_reaction：emotion 和 thought "
             "各最多一小句；不复述 fact、不编造反应，没有价值时写 null。\n"
-            "相对时间按直接来源消息时间换算（当前日期: {current_date}），程序会再次校验。"
+            "time 只记录 fact 正文明确提到的事件时间；消息头时间不是事件时间，"
+            "只能用于换算正文中的相对时间表达（当前日期: {current_date}），程序会再次校验。"
         ),
     },
     "memory_injection_header": {

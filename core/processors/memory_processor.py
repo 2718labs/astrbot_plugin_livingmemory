@@ -134,8 +134,10 @@ class MemoryProcessor(MemoryProcessorParseMixin, MemoryProcessorBuildMixin):
             '- "key_facts" 必须是对象数组，每项必须包含非空字符串 "fact"、'
             '"action"、"topics"、"participants"、"time"、"importance"、'
             '"source"、"source_indexes" 和 "persona_reaction"；"reason" 可选。\n'
-            '- source_indexes 使用对话中的 [M1]、[M2] 编号且至少一项；time 无时间时为 null，'
-            '有时间时为 {"raw","normalized","precision"}；persona_reaction 无价值时为 null。\n'
+            '- source_indexes 使用对话中的 [M1]、[M2] 编号且至少一项；time 只表示 fact '
+            '正文明确提到的事件时间。time.raw 必须逐字来自所引用消息正文，禁止复制消息头的发送时间；'
+            '正文无时间表达时为 null，有时间时为 {"raw","normalized","precision"}；'
+            'persona_reaction 无价值时为 null。\n'
             "- 每条 fact 独立判断：稳定身份、偏好、关系、计划、反复问题或"
             "明确要求记住的内容用 store；寒暄、一次性玩笑、临时报错过程、"
             "即时状态和重复内容用 skip。\n"
@@ -280,10 +282,9 @@ class MemoryProcessor(MemoryProcessorParseMixin, MemoryProcessorBuildMixin):
         return (
             "你正在总结对话记忆。请严格按照JSON格式输出。\n"
             f"当前日期时间: {current_date}\n"
-            "重要: 请将对话中出现的相对时间表达（如\u201c今天\u201d、"
-            "\u201c明天\u201d、\u201c昨天\u201d、"
-            "\u201c下周\u201d、\u201c上个月\u201d等）"
-            "转换为具体日期后再写入记忆，以便未来查阅时仍能准确理解时间信息。"
+            "重要: time 只记录事实正文明确提到的事件时间；time.raw 必须来自"
+            "消息正文，不能复制消息头的发送时间。消息头时间只用于换算相对时间表达；"
+            "正文没有时间表达时写 null。"
         )
 
     @staticmethod
@@ -301,7 +302,7 @@ class MemoryProcessor(MemoryProcessorParseMixin, MemoryProcessorBuildMixin):
             f'2. **第一人称视角**: 以"我"的视角回顾对话,不要说"bot"、"助手"等第三人称\n'
             f"3. **体现你的关注点**: 根据你的人格特点,侧重记录你会关注的信息\n"
             f"4. **自然真实**: 让记忆读起来像是你本人在回忆这段对话,而不是机械的客观描述\n"
-            f"5. **时间转换**: 将对话中的相对时间（今天、明天、下周等）转换为具体日期（当前日期: {current_date}）\n\n"
+            f"5. **时间转换**: time.raw 只能来自消息正文；消息头时间只用于换算正文中的相对时间，正文无时间表达时写 null（当前日期: {current_date}）\n\n"
             f"例如:\n"
             f'- 如果你是活泼可爱的性格,记忆中可以使用"呀"、"呢"、"~"等语气词\n'
             f"- 如果你是专业严谨的性格,记忆应该用词准确、逻辑清晰、格式规范\n"
