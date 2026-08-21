@@ -968,6 +968,19 @@ def test_s1_output_contract_distinguishes_fact_time_from_message_timestamp():
     assert "禁止复制消息头的发送时间" in contract
 
 
+def test_s0_output_contract_uses_final_correction_and_future_reuse_value():
+    contract = MemoryProcessor._build_admission_output_contract(False)
+
+    assert "后面的明确否认、纠正、澄清或形成的约定" in contract
+    assert "不得把已被否认的旧说法另存为事实" in contract
+    assert "几周或几个月后的另一场对话" in contract
+    assert "同一个玩笑在一个窗口内重复多次仍是一次性玩笑" in contract
+    assert "明确的互动偏好、边界及已接受的未来约定" in contract
+    assert "助手自己复述的旧记忆" in contract
+    assert "单次喊昵称、使用亲昵称呼或做出某个动作不自动等于稳定偏好" in contract
+    assert "真实发生过本身不等于值得长期保存" in contract
+
+
 @pytest.mark.asyncio
 async def test_s1_topic_candidate_is_reused_with_same_stable_id():
     unit = _unit_from_json(

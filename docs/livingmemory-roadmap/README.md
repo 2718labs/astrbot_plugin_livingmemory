@@ -25,6 +25,7 @@ excel_role: snapshot-only
 ```text
 聊天窗口
   → 把“达到总结轮数”误当成“必须写一条长期记忆”
+  → 没有先收束最终状态和本窗口新证据；被纠正的中间说法、Bot 自己复述的旧事也可能再次成为候选
   → 低重要度只影响后续衰减，低质量或兜底结果仍可先进入 active
   → 生成混合的第一人称日记；一条记录容纳多件事
   → topic 接近一次性标题，fact 缺少自身关系
@@ -58,10 +59,16 @@ excel_role: snapshot-only
 
 ## 已确定的目标形态
 
-十轮滑窗只是事实的来源边界，不再是召回和注入的最小单位：
+十轮滑窗只是事实的来源边界，不再是召回和注入的最小单位。窗口先经过“最终状态 → 新证据 → 长期价值”三层判断，再形成事实对象：
 
 ```text
-来源窗口 / parent memory
+来源窗口
+  → 合并同一事件的前后说法，以最后的明确纠正或约定为准
+  → 只保留本窗口中新确认的内容，阻止 Bot 复述旧记忆后自我复制
+  → 每条候选独立判断 store / skip
+  → 只有 store facts 进入 parent memory
+
+parent memory
   ├─ fact A（自身 topic、participant、time、importance、source）
   ├─ fact B（自身 topic、participant、time、importance、source）
   └─ fact C（自身 topic、participant、time、importance、source）
@@ -70,6 +77,8 @@ excel_role: snapshot-only
 ```
 
 - 保留 LM 风格的 `summary / topics / key_facts / sentiment / importance` 外壳，但 `key_facts` 升级为对象列表并标记新 schema 版本。
+- “真实发生过”不等于值得长期保存；单次称呼、动作、斗嘴和窗口内重复的同一玩笑默认跳过，稳定偏好、关系边界、已接受约定和未完成事项才是长期候选。
+- Bot 的人格设定和自己复述的旧记忆只是当前处理上下文；没有用户在本窗口的直接确认或补充，不得作为新事实再次写入。
 - `summary` 不再是长篇第一人称真源；它只是一句中性、可由 facts 派生的概览。
 - 每条 fact 可选保存当前人格对该事实的简短 `persona_reaction`（情绪/想法）；它不参与事实搜索、建图、重要度或矛盾判断。
 - parent memory 负责来源窗口和必要背景；生产搜索返回 fact，不能因命中一条 fact 就恢复整篇父总结。
@@ -82,7 +91,7 @@ T0A 源头→存储调查（完成）
   +
 T0B Atom→召回→注入调查（完成）
   ↓
-S0 建立原始回答格式门和逐 fact 准入门，并固定真实链路基线
+S0 建立最终状态、新证据、逐 fact 准入和原始回答格式门，并固定真实链路基线
   ↓
 S1 重写“什么是一条记忆”的产物契约
   ↓
@@ -107,7 +116,7 @@ Sfuture（独立愿景，不进入当前执行链）
 
 | 阶段 | 目标 | 主要问题 | 核心模块 | 前置 | 状态 | 文档 |
 |---|---|---|---|---|---|---|
-| S0 | 先严格检查原始回答，再逐 fact 决定 `store / skip`，由程序推导窗口的 `store / skip / invalid`，并建立真实链路基线 | I05、I15、I16 | reflection、processor、parser、eval fixtures | T0A/T0B | Done | [S0](S0.md) |
+| S0 | 先收束最终状态并隔离非新增内容，再逐 fact 判断长期价值和检查输出格式；由程序推导窗口的 `store / skip / invalid`，并建立真实链路基线 | I05、I15、I16 | reflection、processor、prompts、parser、eval fixtures | T0A/T0B | Done | [S0](S0.md) |
 | S1 | 将 S0 的获准 fact 从临时文本投影升级为 LM 风格的唯一对象契约，并移除长篇第一人称总结真源 | I03、I04、I05、I09、I15、I17、F03 | summary schema、fact model、processor、source window | S0 | Done | [S1](S1.md) |
 | S2 | 让所有新写入入口生成同一 parent/fact 结构和事实级索引 | I03、I04、I06、I17 | build pipeline、fact storage/index、rebuild | S1 | Done | [S2](S2.md) |
 | S3 | 消除全组合噪声，只保存有来源证据的图关系，修复图谱查看入口，并固定双路满信号 bug 的回归样本 | I01、I02、I06、I09、I18、I19、F03 | graph extractor/store/manager、resolver、rebuild、dual-route eval、WebUI/Page API | S2 | Planned | [S3](S3.md) |
@@ -137,7 +146,7 @@ Sfuture（独立愿景，不进入当前执行链）
 | I12 | FIX / P1 | Atom 约 39% 为 unknown，且存在明显错分类与 `event_only` 漏口 | 分类不能支撑召回或生命周期 | S4 | 采用 Atom 才重做类型；不采用则删除无效分类链 |
 | I13 | OPT-S / P1 | 路线分数难校准，访问统计的意义依赖召回是否准确 | 难以解释排序；但召回正确后现有衰减可以继续工作 | S5、S6 | S5 先修召回并保留原始信号；不为衰减另建暂停/恢复流程 |
 | I14 | FIX / P0 | 注入没有总预算，并重复正文、标签、全部事实和人格总结 | 文档长度不受 `top_k` 控制；四条文档可轻易占用数千 token | S5 | 候选数量与注入预算分离；按完整 fact 装配，达到整轮 token 上限即停止 |
-| I15 | FIX / P0 | 没有逐 fact 的“是否值得长期保存”结果；低重要度只是落库后的衰减信号，一条文档还混合多件事并写成人格日记 | 模型给低分仍会先生成 active 文档和下游对象，窗口级决定又会把有用与无用内容捆在一起 | S0、S1 | S0 对每条 fact 给出 `store / skip` 并由程序推导窗口结果；importance 只作信号，不能单独决定准入；S1 将获准 fact 升级为唯一持久对象 |
+| I15 | FIX / P0 | 没有先确定最终状态和本窗口新证据，也没有逐 fact 的“是否值得长期保存”结果；低重要度只是落库后的衰减信号 | 被纠正的说法、Bot 复述的旧事和一次性玩笑可能与真正偏好一起写入；窗口级决定又会把有用与无用内容捆在一起 | S0、S1 | S0 依次执行最终状态收束、新证据边界和逐 fact `store / skip`，由程序推导窗口结果；importance 只作信号；S1 将获准 fact 升级为唯一持久对象 |
 | I16 | TEST / P0 | 旧评测以 `k=8` 结果推导 `hit@4`，没有复现生产 `top_k=4 + recent=2 + injection` | 会把候选池成绩误当真实用户效果 | S0、S5 | 验收必须跑完整生产顺序并检查最终注入 |
 | I17 | FIX / P0 | 生产召回单位仍是十轮总结文档；命中其中一点就整块注入 summary、全部 facts 和元数据 | 相关信息被长篇无关内容淹没，无法精确截断，也直接造成预算爆炸 | S1、S2、S4、S5 | parent 只保留来源；建立唯一 canonical fact 层，S5 按 fact 检索并最小装配 |
 | I18 | FIX / P1 | document 与 graph 路线各自除以本路线最高分，导致每条路线的第一名无论多弱都得到满信号 | 抹掉路线的绝对可信度；弱图结果只因“本路线排第一”就可能拿满图权重，挤掉更可靠的 fact/document 候选 | S3、S5 | S3 固定回归样本并在重建图上复现；S5 修复融合校准。在通过回归与最终注入验收前不得启用图权重 |
@@ -172,6 +181,7 @@ Sfuture（独立愿景，不进入当前执行链）
 16. 不等全部改完才开始验收：每阶段在实现前固定失败样本、实现后通过局部门槛；Stest 只做跨阶段总验和体验盲测，不在看到结果后临时改标准。
 17. `dynamic_route_weighting` 默认关闭；显式配置仍可开启。其未来资格由 `Sfuture` 重新立项，不作为 S3/S5 必须完成的优化。
 18. `store / skip` 是逐 fact 的生成期决定；窗口结果必须由程序推导。`skip` fact 和 `action` 都不得持久化，格式错误才进入窗口级 `invalid`。
+19. 写入准入固定按“同一事件最终状态 → 本窗口新证据 → 跨对话复用价值”执行；Bot 复述旧记忆不得形成自我强化写入回路。
 20. S0–S2 是写入侧；S3–S4 是附属结构；S5 是读取侧；S6 是稳定收尾。
 
 ## 状态词

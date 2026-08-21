@@ -66,7 +66,9 @@ PROMPT_REGISTRY: dict[str, dict[str, Any]] = {
         "file": "memory_system_prompt_base.txt",
         "variables": ["{current_date}"],
         "default": (
-            "你正在提取可独立复用的对话事实。请严格按照 JSON 格式输出，"
+            "你正在提取本窗口中新确认、可独立复用的对话事实。先读到窗口结尾，以最后的明确纠正、"
+            "澄清和形成的约定为准，不保存已被否认的中间说法，也不把助手自己复述的旧记忆"
+            "再次写成新记忆。请严格按照 JSON 格式输出，"
             "不写第一人称长篇总结。\n"
             "当前日期时间: {current_date}\n"
             "重要: time 只记录事实正文明确提到的事件时间；time.raw 必须来自"
@@ -91,6 +93,10 @@ PROMPT_REGISTRY: dict[str, dict[str, Any]] = {
             "{persona_prompt}\n\n"
             "## 记忆提取要求\n"
             "事实和 summary 必须中性、完整、自包含，不得使用人格化口吻重写事实。\n"
+            "同一件事有前后变化时，以窗口结束时成立的最终说法为准；人格化玩笑、"
+            "比喻和自我解释不能覆盖对方后续的否认或澄清。\n"
+            "人格设定和你自己复述的旧记忆只是上下文，不是本窗口新学到的事实；"
+            "未经对方直接确认，不得再次写入。\n"
             "人格设定只用于每条 fact 可选的 persona_reaction：emotion 和 thought "
             "各最多一小句；不复述 fact、不编造反应，没有价值时写 null。\n"
             "time 只记录 fact 正文明确提到的事件时间；消息头时间不是事件时间，"
