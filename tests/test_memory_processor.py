@@ -938,7 +938,8 @@ async def test_s1_message_timestamp_cannot_be_copied_into_fact_time():
 
 
 @pytest.mark.asyncio
-async def test_s1_incorrect_relative_time_is_rejected_after_one_repair():
+async def test_s1_mismatched_relative_time_is_saved_unverified():
+    # 换算分歧不再拒绝整条记忆：时间保留模型结果并标记 unverified
     messages = _make_messages()
     messages[0].content = "我周三参加科目二考试"
     messages[0].timestamp = datetime(2026, 8, 20, 9, 0).timestamp()
@@ -952,13 +953,47 @@ async def test_s1_incorrect_relative_time_is_rejected_after_one_repair():
     }
     response = json.dumps({"memories": [unit]}, ensure_ascii=False)
     processor = MemoryProcessor(
-        llm_provider=_DummyLLMProvider([response, response]), context=None
+        llm_provider=_DummyLLMProvider(response), context=None
     )
 
     result = await processor.process_conversation_result(messages)
 
-    assert result.status == "invalid"
-    assert "expected 2026-08-26" in (result.error or "")
+    assert result.status == "store"
+    stored_time = result.metadata["key_facts"][0]["time"]
+    assert stored_time["normalized"] == "2026-08-27"
+    assert stored_time["unverified"] is True
+
+
+@pytest.mark.asyncio
+async def test_s1_relative_time_uses_the_message_that_contains_raw():
+    # 跨天窗口：raw 出现在第二条消息，基准必须取第二条，不能误杀正确结果
+    messages = _make_messages()
+    messages[0].content = "前天我去爬了山"
+    messages[0].timestamp = datetime(2026, 8, 18, 23, 50).timestamp()
+    messages[1].content = "昨天报名了驾考"
+    messages[1].timestamp = datetime(2026, 8, 19, 9, 0).timestamp()
+    unit = _unit_from_json(
+        _memory_json("张三昨天报名了驾考", topics=["驾考"])
+    )
+    unit["key_facts"][0]["source_indexes"] = [1, 2]
+    unit["key_facts"][0]["time"] = {
+        "raw": "昨天",
+        "normalized": "2026-08-18",
+        "precision": "day",
+    }
+    processor = MemoryProcessor(
+        llm_provider=_DummyLLMProvider(
+            json.dumps({"memories": [unit]}, ensure_ascii=False)
+        ),
+        context=None,
+    )
+
+    result = await processor.process_conversation_result(messages)
+
+    assert result.status == "store"
+    stored_time = result.metadata["key_facts"][0]["time"]
+    assert stored_time["normalized"] == "2026-08-18"
+    assert "unverified" not in stored_time
 
 
 def test_s1_output_contract_distinguishes_fact_time_from_message_timestamp():

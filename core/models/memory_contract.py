@@ -232,7 +232,17 @@ def validate_and_normalize_time(
             f"message timestamp: {raw}"
         )
 
-    base = datetime.fromtimestamp(float(source_messages[0].timestamp)).astimezone()
+    # 基准修正：优先用逐字包含 raw 的那条消息换算，避免跨天窗口拿错消息
+    # （例如 raw 出现在第二条消息时，不能再按第一条消息的时间戳算）
+    base_message = next(
+        (
+            item
+            for item in source_messages
+            if raw in Message.content_to_text(item.content)
+        ),
+        source_messages[0],
+    )
+    base = datetime.fromtimestamp(float(base_message.timestamp)).astimezone()
     resolved = _resolved_relative_date(raw, base)
     time_value = _time_of_day(raw)
     if resolved is not None:
@@ -246,9 +256,14 @@ def validate_and_normalize_time(
             expected = resolved.strftime("%Y-%m-%d")
             expected_precision = "day"
         if normalized != expected:
-            raise ValueError(
-                f"time.normalized does not match source time: expected {expected}"
-            )
+            # 降级保存：换算分歧不再拒绝整条记忆，标记 unverified 照常写入，
+            # 由后续生命周期/聚合机制负责纠错
+            return {
+                "raw": raw,
+                "normalized": normalized,
+                "precision": precision,
+                "unverified": True,
+            }
         precision = expected_precision
     else:
         try:
