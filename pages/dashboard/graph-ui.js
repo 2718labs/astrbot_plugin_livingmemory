@@ -106,7 +106,9 @@
 
     dom.searchButton.addEventListener("click", runQuery);
     dom.focusButton.addEventListener("click", focusMemory);
-    dom.overviewButton.addEventListener("click", fetchOverview);
+    dom.overviewButton.addEventListener("click", function() {
+      fetchOverview(true);
+    });
 
     dom.queryInput.addEventListener("keydown", function(e) {
       if (e.key === "Enter") { e.preventDefault(); runQuery(); }
@@ -176,12 +178,15 @@
     return target;
   }
 
-  async function fetchOverview() {
+  async function fetchOverview(full) {
     setLoading(true);
     setCanvasMessage(window.t("graph.loadingOverview"), true);
     try {
       var filters = getFilters();
-      var params = new URLSearchParams({ full_graph: "true" });
+      /* S3: first entry loads the limited overview; only an explicit
+         "full graph" click requests the whole scope. */
+      var params = new URLSearchParams();
+      if (full) params.set("full_graph", "true");
       if (filters.session_id) params.set("session_id", filters.session_id);
       var qs = params.toString();
       var payload = await requestGraph("/graph/overview" + (qs ? "?" + qs : ""));

@@ -508,6 +508,7 @@ class DBMigration:
                         confidence REAL NOT NULL DEFAULT 0.8,
                         status TEXT NOT NULL DEFAULT 'active',
                         metadata TEXT DEFAULT '{}',
+                        evidence TEXT DEFAULT '[]',
                         created_at TEXT NOT NULL,
                         updated_at TEXT NOT NULL,
                         FOREIGN KEY(source_node_id) REFERENCES graph_nodes(id) ON DELETE CASCADE,

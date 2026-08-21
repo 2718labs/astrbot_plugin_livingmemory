@@ -5,6 +5,11 @@ from __future__ import annotations
 import hashlib
 from typing import Any
 
+from ..models.memory_contract import (
+    MEMORY_SCHEMA_VERSION,
+    participant_id as participant_stable_id,
+    topic_id as topic_stable_id,
+)
 from ..utils.memory_facts import fact_texts_from_metadata
 
 from ..models.graph_models import ExtractedGraph, GraphEdge, GraphEntry, GraphNode
@@ -29,9 +34,20 @@ class GraphExtractor:
     ) -> ExtractedGraph:
         """Build a graph snapshot from one memory document.
 
-        When atoms are provided, each atom independently contributes nodes
-        and edges with per-atom confidence scores instead of hardcoded values.
+        S3: only S1/S2 canonical facts (with their own topic/participant
+        bindings) are evidence for graph edges. Legacy documents without
+        explicit fact relations contribute nodes and searchable entries but
+        no combinatorial edges. Atom-level extraction is kept for the
+        pre-canonical path and its fate is decided in S4.
         """
+        if (
+            metadata
+            and metadata.get("memory_schema_version") == MEMORY_SCHEMA_VERSION
+            and metadata.get("key_facts")
+        ):
+            return self._extract_from_canonical(
+                source_memory_id, metadata["key_facts"], metadata
+            )
         if atoms:
             return self._extract_from_atoms(source_memory_id, atoms, metadata)
         return self._extract_legacy(source_memory_id, content, metadata)
@@ -84,6 +100,236 @@ class GraphExtractor:
             (participant, EntityResolver.canonicalize(participant), {})
             for participant in participants
         ]
+
+    def _extract_from_canonical(
+        self,
+        source_memory_id: int,
+        facts: list[dict[str, Any]],
+        metadata: dict[str, Any],
+    ) -> ExtractedGraph:
+        """S3: build the graph only from explicit fact-level bindings.
+
+        Every edge must trace back to one canonical fact: the fact's own
+        topic_refs / participant_refs (S1/S2 stable IDs) decide the edges,
+        and the edge carries the fact evidence. No cross-product edges, no
+        summary/persona_reaction as evidence.
+        """
+        graph = ExtractedGraph()
+        node_map: dict[str, GraphNode] = {}
+        scope = str(
+            metadata.get("source_session_id") or metadata.get("session_id") or ""
+        ).strip()
+        session_id = metadata.get("source_session_id") or metadata.get("session_id")
+        persona_id = metadata.get("persona_id")
+        summary = str(
+            metadata.get("canonical_summary") or metadata.get("summary") or ""
+        )
+        importance = metadata.get("importance", 0.5)
+
+        def _add_node(
+            node_type: str,
+            value: str,
+            canonical_value: str,
+            extra: dict[str, Any] | None = None,
+        ) -> str:
+            if not canonical_value or not str(value or "").strip():
+                return ""
+            node = GraphNode(
+                node_type=node_type,
+                value=str(value).strip(),
+                canonical_value=canonical_value,
+                metadata=extra or {},
+            )
+            node_map[node.node_key] = node
+            return node.node_key
+
+        def _entry_metadata(confidence: float, **extra: Any) -> dict[str, Any]:
+            payload: dict[str, Any] = {
+                "source_memory_id": source_memory_id,
+                "session_id": session_id,
+                "persona_id": persona_id,
+                "importance": importance,
+                "create_time": metadata.get("create_time"),
+                "last_access_time": metadata.get("last_access_time"),
+                "canonical_summary": summary,
+                "summary_schema_version": metadata.get("summary_schema_version"),
+                "graph_confidence": confidence,
+                "source_window": metadata.get("source_window"),
+            }
+            payload.update(extra)
+            return payload
+
+        for fact in facts:
+            if not isinstance(fact, dict):
+                continue
+            fact_id = str(fact.get("fact_id") or "").strip()
+            fact_text = str(fact.get("fact") or "").strip()
+            parent_id = str(fact.get("parent_id") or "").strip()
+            if not fact_id or not fact_text:
+                continue
+            fact_key = _add_node(
+                "fact",
+                fact_text,
+                fact_id,
+                {"fact_id": fact_id, "parent_id": parent_id},
+            )
+            if not fact_key:
+                continue
+
+            graph.entries.append(
+                GraphEntry(
+                    entry_key=hashlib.sha1(
+                        f"fact|{source_memory_id}|{fact_id}|{fact_text}".encode("utf-8")
+                    ).hexdigest(),
+                    source_memory_id=source_memory_id,
+                    session_id=session_id,
+                    persona_id=persona_id,
+                    entry_type="fact",
+                    content=f"Fact: {fact_text}",
+                    metadata=_entry_metadata(0.9, fact_id=fact_id),
+                    node_keys=[fact_key],
+                    relation_type="fact",
+                )
+            )
+
+            evidence = [
+                {
+                    "source_memory_id": source_memory_id,
+                    "fact_id": fact_id,
+                    "parent_id": parent_id,
+                    "source_message_ids": [
+                        str(item)
+                        for item in (fact.get("source_message_ids") or [])
+                        if item
+                    ],
+                }
+            ]
+
+            # Explicit topic bindings: topic -> fact (describes)
+            topic_bindings = [
+                (
+                    str(ref.get("topic_id") or "").strip(),
+                    str(ref.get("name") or ref.get("raw_name") or "").strip(),
+                )
+                for ref in (fact.get("topic_refs") or [])
+                if isinstance(ref, dict)
+            ]
+            if not topic_bindings:
+                topic_bindings = [
+                    (
+                        topic_stable_id(scope, str(name)),
+                        str(name).strip(),
+                    )
+                    for name in (fact.get("topics") or [])
+                    if str(name or "").strip()
+                ]
+            for topic_identifier, topic_name in topic_bindings:
+                if not topic_identifier or not topic_name:
+                    continue
+                topic_key = _add_node(
+                    "topic",
+                    topic_name,
+                    topic_identifier,
+                    {"topic_id": topic_identifier},
+                )
+                if not topic_key:
+                    continue
+                graph.edges.append(
+                    GraphEdge(
+                        source_key=topic_key,
+                        target_key=fact_key,
+                        relation_type="describes",
+                        source_memory_id=source_memory_id,
+                        confidence=0.9,
+                        metadata={"fact_id": fact_id, "summary": summary},
+                        evidence=evidence,
+                    )
+                )
+                graph.entries.append(
+                    GraphEntry(
+                        entry_key=hashlib.sha1(
+                            (
+                                f"edge|{source_memory_id}|describes|{topic_key}|"
+                                f"{fact_key}|{fact_text}"
+                            ).encode("utf-8")
+                        ).hexdigest(),
+                        source_memory_id=source_memory_id,
+                        session_id=session_id,
+                        persona_id=persona_id,
+                        entry_type="edge",
+                        content=(
+                            f"Topic {topic_name} describes fact: {fact_text}"
+                        ),
+                        metadata=_entry_metadata(0.9, fact_id=fact_id),
+                        node_keys=[topic_key, fact_key],
+                        relation_type="describes",
+                    )
+                )
+
+            # Explicit participant bindings: person -> fact (mentioned_in)
+            participant_bindings = [
+                (
+                    str(ref.get("participant_id") or "").strip(),
+                    str(ref.get("name") or "").strip(),
+                )
+                for ref in (fact.get("participant_refs") or [])
+                if isinstance(ref, dict)
+            ]
+            if not participant_bindings:
+                participant_bindings = [
+                    (
+                        participant_stable_id(scope, str(name)),
+                        str(name).strip(),
+                    )
+                    for name in (fact.get("participants") or [])
+                    if str(name or "").strip()
+                ]
+            for participant_identifier, participant_name in participant_bindings:
+                if not participant_identifier or not participant_name:
+                    continue
+                person_key = _add_node(
+                    "person",
+                    participant_name,
+                    participant_identifier,
+                    {"participant_id": participant_identifier},
+                )
+                if not person_key:
+                    continue
+                graph.edges.append(
+                    GraphEdge(
+                        source_key=person_key,
+                        target_key=fact_key,
+                        relation_type="mentioned_in",
+                        source_memory_id=source_memory_id,
+                        confidence=0.9,
+                        metadata={"fact_id": fact_id, "summary": summary},
+                        evidence=evidence,
+                    )
+                )
+                graph.entries.append(
+                    GraphEntry(
+                        entry_key=hashlib.sha1(
+                            (
+                                f"edge|{source_memory_id}|mentioned_in|{person_key}|"
+                                f"{fact_key}|{fact_text}"
+                            ).encode("utf-8")
+                        ).hexdigest(),
+                        source_memory_id=source_memory_id,
+                        session_id=session_id,
+                        persona_id=persona_id,
+                        entry_type="edge",
+                        content=(
+                            f"Participant {participant_name} is linked to "
+                            f"fact: {fact_text}"
+                        ),
+                        metadata=_entry_metadata(0.9, fact_id=fact_id),
+                        node_keys=[person_key, fact_key],
+                        relation_type="mentioned_in",
+                    )
+                )
+
+        graph.nodes = list(node_map.values())
+        return graph
 
     def _extract_legacy(
         self,
@@ -216,74 +462,10 @@ class GraphExtractor:
                 confidence=0.7,
             )
 
-        for topic_key in topic_keys:
-            for fact_key in fact_keys:
-                graph.edges.append(
-                    GraphEdge(
-                        source_key=topic_key,
-                        target_key=fact_key,
-                        relation_type="describes",
-                        source_memory_id=source_memory_id,
-                        confidence=0.82,
-                        metadata={"summary": summary},
-                    )
-                )
-                _add_entry(
-                    "edge",
-                    (
-                        f"Topic {node_map[topic_key].value} describes "
-                        f"fact {node_map[fact_key].value}. Summary: {summary}"
-                    ),
-                    [topic_key, fact_key],
-                    relation_type="describes",
-                    confidence=0.82,
-                )
-
-        for person_key in participant_keys:
-            for fact_key in fact_keys:
-                graph.edges.append(
-                    GraphEdge(
-                        source_key=person_key,
-                        target_key=fact_key,
-                        relation_type="mentioned_in",
-                        source_memory_id=source_memory_id,
-                        confidence=0.88,
-                        metadata={"summary": summary},
-                    )
-                )
-                _add_entry(
-                    "edge",
-                    (
-                        f"Participant {node_map[person_key].value} is linked to "
-                        f"fact {node_map[fact_key].value}. Summary: {summary}"
-                    ),
-                    [person_key, fact_key],
-                    relation_type="mentioned_in",
-                    confidence=0.88,
-                )
-
-        for index, first_key in enumerate(participant_keys):
-            for second_key in participant_keys[index + 1 :]:
-                graph.edges.append(
-                    GraphEdge(
-                        source_key=first_key,
-                        target_key=second_key,
-                        relation_type="co_occurs_with",
-                        source_memory_id=source_memory_id,
-                        confidence=0.7,
-                        metadata={"summary": summary},
-                    )
-                )
-                _add_entry(
-                    "edge",
-                    (
-                        f"Participant {node_map[first_key].value} co-occurs with "
-                        f"participant {node_map[second_key].value}. Summary: {summary}"
-                    ),
-                    [first_key, second_key],
-                    relation_type="co_occurs_with",
-                    confidence=0.7,
-                )
+        # S3: legacy documents carry no explicit fact-level bindings, so they
+        # contribute nodes and searchable entries but no combinatorial edges.
+        # Topic x fact, person x fact and person x person cross products are
+        # removed (I09); edges only come from the canonical fact path.
 
         if not graph.entries and summary:
             summary_key = _add_node("summary", summary)

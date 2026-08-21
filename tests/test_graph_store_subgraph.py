@@ -1,5 +1,7 @@
 """Focused tests for graph-store subgraph shaping."""
 
+import json
+
 import pytest
 from astrbot_plugin_livingmemory.core.models.graph_models import (
     GraphEntry,
@@ -140,3 +142,53 @@ async def test_add_edge_upsert_same_edge_key_is_idempotent(tmp_path):
         row = await cursor.fetchone()
 
     assert row[0] == 1
+
+
+@pytest.mark.asyncio
+async def test_shared_edge_survives_single_memory_deletion(tmp_path):
+    """S3: a semantic edge supported by multiple memories keeps other sources
+    when one memory is deleted; it is removed only when the last source goes."""
+    from astrbot_plugin_livingmemory.core.models.graph_models import GraphEdge
+
+    store = GraphStore(str(tmp_path / "graph_shared_edge.db"))
+    await store.initialize()
+
+    node_a = GraphNode("topic", "驾考", "topic:driving")
+    node_b = GraphNode("fact", "张三周三考科二", "fact:driving_exam")
+    node_map = await store.upsert_nodes([node_a, node_b])
+
+    edge_1 = GraphEdge(
+        source_key=node_a.node_key,
+        target_key=node_b.node_key,
+        relation_type="describes",
+        source_memory_id=1,
+        confidence=0.9,
+        evidence=[{"source_memory_id": 1, "fact_id": "fact_1", "parent_id": "memory_1"}],
+    )
+    edge_2 = GraphEdge(
+        source_key=node_a.node_key,
+        target_key=node_b.node_key,
+        relation_type="describes",
+        source_memory_id=2,
+        confidence=0.9,
+        evidence=[{"source_memory_id": 2, "fact_id": "fact_2", "parent_id": "memory_2"}],
+    )
+    edge_id = await store.add_edge(edge_1, node_map)
+    same_edge_id = await store.add_edge(edge_2, node_map)
+    assert same_edge_id == edge_id
+
+    # Deleting memory 1 must keep the edge (memory 2 still supports it).
+    await store.delete_memory(1)
+    async with store._connect() as db:
+        cursor = await db.execute("SELECT evidence FROM graph_edges WHERE id = ?", (edge_id,))
+        row = await cursor.fetchone()
+    assert row is not None
+    remaining = json.loads(row[0])
+    assert [item["source_memory_id"] for item in remaining] == [2]
+
+    # Deleting the last source removes the edge.
+    await store.delete_memory(2)
+    async with store._connect() as db:
+        cursor = await db.execute("SELECT COUNT(*) FROM graph_edges WHERE id = ?", (edge_id,))
+        row = await cursor.fetchone()
+    assert row[0] == 0

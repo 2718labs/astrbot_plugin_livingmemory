@@ -951,10 +951,11 @@ def test_legacy_extract_path_unchanged() -> None:
         },
         atoms=None,
     )
-    # Legacy path should produce nodes/edges/entries from metadata
+    # S3: legacy path keeps nodes/entries but no combinatorial edges;
+    # edges require explicit canonical fact bindings (I09).
     assert len(result.nodes) >= 2  # topic + fact + person
     assert len(result.entries) >= 1
-    assert len(result.edges) >= 1
+    assert len(result.edges) == 0
 
 
 # ---------- event_time parsing ----------

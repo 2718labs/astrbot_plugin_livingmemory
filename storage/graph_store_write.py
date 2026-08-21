@@ -4,6 +4,8 @@ GraphStore 的 GraphStoreWriteMixin 拆分模块
 """
 from __future__ import annotations
 
+import json
+
 import aiosqlite
 from typing import Any
 from ..core.models.graph_models import GraphEdge, GraphEntry, GraphNode
@@ -41,6 +43,7 @@ class GraphStoreWriteMixin:
                     confidence REAL NOT NULL DEFAULT 0.8,
                     status TEXT NOT NULL DEFAULT 'active',
                     metadata TEXT DEFAULT '{}',
+                    evidence TEXT DEFAULT '[]',
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL,
                     FOREIGN KEY(source_node_id) REFERENCES graph_nodes(id) ON DELETE CASCADE,
@@ -48,6 +51,14 @@ class GraphStoreWriteMixin:
                 )
                 """
             )
+            # S3: existing databases created before the evidence column get it
+            # added in place so shared edges survive single-memory deletion.
+            try:
+                await db.execute(
+                    "ALTER TABLE graph_edges ADD COLUMN evidence TEXT DEFAULT '[]'"
+                )
+            except Exception:
+                pass
             await db.execute(
                 """
                 CREATE TABLE IF NOT EXISTS graph_entries (
@@ -232,6 +243,7 @@ class GraphStoreWriteMixin:
         target_node_id: int,
         now: str,
     ) -> int:
+        evidence_json = self._to_json(edge.evidence)
         # Exact key match first (same memory, same edge)
         cursor = await db.execute(
             "SELECT id FROM graph_edges WHERE edge_key = ?",
@@ -242,7 +254,8 @@ class GraphStoreWriteMixin:
             await db.execute(
                 """
                 UPDATE graph_edges
-                SET weight = ?, confidence = ?, status = ?, metadata = ?, updated_at = ?
+                SET weight = ?, confidence = ?, status = ?, metadata = ?,
+                    evidence = ?, updated_at = ?
                 WHERE id = ?
                 """,
                 (
@@ -250,6 +263,7 @@ class GraphStoreWriteMixin:
                     edge.confidence,
                     edge.status,
                     self._to_json(edge.metadata),
+                    evidence_json,
                     now,
                     row[0],
                 ),
@@ -259,7 +273,7 @@ class GraphStoreWriteMixin:
         # Cross-memory semantic merge: find same relation between same nodes.
         semantic_cursor = await db.execute(
             """
-            SELECT id, confidence, weight FROM graph_edges
+            SELECT id, confidence, weight, evidence FROM graph_edges
             WHERE source_node_id = ? AND target_node_id = ?
               AND relation_type = ?
             ORDER BY id ASC LIMIT 1
@@ -274,13 +288,26 @@ class GraphStoreWriteMixin:
             old_weight = float(semantic_row[2] or 1.0)
             merged_confidence = old_conf * 0.7 + edge.confidence * 0.3
             merged_weight = old_weight + edge.weight * 0.15
+            # S3: merge multi-source evidence. New evidence for the same
+            # source memory replaces its own entry; other sources accumulate.
+            try:
+                old_evidence = json.loads(semantic_row[3] or "[]")
+            except (json.JSONDecodeError, TypeError):
+                old_evidence = []
+            merged_evidence = self._merge_evidence(old_evidence, edge.evidence)
             await db.execute(
                 """
                 UPDATE graph_edges
-                SET confidence = ?, weight = ?, updated_at = ?
+                SET confidence = ?, weight = ?, evidence = ?, updated_at = ?
                 WHERE id = ?
                 """,
-                (merged_confidence, merged_weight, now, existing_id),
+                (
+                    merged_confidence,
+                    merged_weight,
+                    self._to_json(merged_evidence),
+                    now,
+                    existing_id,
+                ),
             )
             return existing_id
 
@@ -289,13 +316,14 @@ class GraphStoreWriteMixin:
             INSERT INTO graph_edges(
                 edge_key, source_node_id, target_node_id, relation_type,
                 source_memory_id, weight, confidence, status,
-                metadata, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                metadata, evidence, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(edge_key) DO UPDATE SET
                 weight = excluded.weight,
                 confidence = excluded.confidence,
                 status = excluded.status,
                 metadata = excluded.metadata,
+                evidence = excluded.evidence,
                 updated_at = excluded.updated_at
             """,
             (
@@ -308,6 +336,7 @@ class GraphStoreWriteMixin:
                 edge.confidence,
                 edge.status,
                 self._to_json(edge.metadata),
+                evidence_json,
                 now,
                 now,
             ),
@@ -318,6 +347,47 @@ class GraphStoreWriteMixin:
         )
         row = await cursor.fetchone()
         return int(row[0])
+
+    @staticmethod
+    def _merge_evidence(
+        old_evidence: dict[str, Any],
+        new_evidence: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Merge edge evidence, replacing entries of the same source memory."""
+        if not isinstance(old_evidence, list):
+            old_evidence = []
+        merged: list[dict[str, Any]] = []
+        seen_memory_ids: set[int] = set()
+        for item in old_evidence:
+            if not isinstance(item, dict):
+                continue
+            memory_id = item.get("source_memory_id")
+            if memory_id is None:
+                continue
+            try:
+                seen_memory_ids.add(int(memory_id))
+            except (TypeError, ValueError):
+                continue
+            merged.append(item)
+        for item in new_evidence:
+            if not isinstance(item, dict):
+                continue
+            memory_id = item.get("source_memory_id")
+            try:
+                normalized_id = int(memory_id)
+            except (TypeError, ValueError):
+                merged.append(item)
+                continue
+            if normalized_id in seen_memory_ids:
+                merged = [
+                    entry
+                    for entry in merged
+                    if entry.get("source_memory_id") != memory_id
+                ]
+            else:
+                seen_memory_ids.add(normalized_id)
+            merged.append(item)
+        return merged
 
     async def add_entry(
         self,
@@ -520,11 +590,11 @@ class GraphStoreWriteMixin:
                     INSERT INTO graph_edges(
                         id, edge_key, source_node_id, target_node_id,
                         relation_type, source_memory_id, weight, confidence,
-                        status, metadata, created_at, updated_at
+                        status, metadata, evidence, created_at, updated_at
                     )
                     SELECT id, edge_key, source_node_id, target_node_id,
                            relation_type, source_memory_id, weight, confidence,
-                           status, metadata, created_at, updated_at
+                           status, metadata, evidence, created_at, updated_at
                     FROM shadow_graph.graph_edges
                     """
                 )
@@ -563,7 +633,13 @@ class GraphStoreWriteMixin:
                 await db.execute("DETACH DATABASE shadow_graph")
 
     async def delete_memory(self, source_memory_id: int) -> list[int]:
-        """Delete graph artifacts belonging to one source memory."""
+        """Delete graph artifacts belonging to one source memory.
+
+        S3: shared edges keep their other sources. A memory only removes its
+        own evidence entries; the edge is deleted only when the last source
+        disappears. Edges created before the evidence column (empty evidence)
+        are still deleted by their anchor source_memory_id.
+        """
         vector_doc_ids: list[int] = []
         async with self._connect() as db:
             cursor = await db.execute(
@@ -589,10 +665,7 @@ class GraphStoreWriteMixin:
                     entry_ids,
                 )
 
-            await db.execute(
-                "DELETE FROM graph_edges WHERE source_memory_id = ?",
-                (source_memory_id,),
-            )
+            await self._remove_edge_evidence(db, source_memory_id)
             await db.execute(
                 """
                 DELETE FROM graph_nodes
@@ -607,6 +680,55 @@ class GraphStoreWriteMixin:
             )
             await db.commit()
         return vector_doc_ids
+
+    async def _remove_edge_evidence(
+        self,
+        db: aiosqlite.Connection,
+        source_memory_id: int,
+    ) -> None:
+        """Remove one memory's support from every edge it contributed to.
+
+        Edges with evidence keep the other sources; edges whose evidence
+        becomes empty are deleted; legacy edges without evidence are deleted
+        by their anchor source_memory_id.
+        """
+        cursor = await db.execute(
+            """
+            SELECT id, evidence
+            FROM graph_edges
+            WHERE source_memory_id = ? OR evidence LIKE ?
+            """,
+            (source_memory_id, f'%"source_memory_id": {source_memory_id}%'),
+        )
+        rows = await cursor.fetchall()
+        delete_ids: list[int] = []
+        update_rows: list[tuple[str, int]] = []
+        for edge_id, evidence_raw in rows:
+            try:
+                evidence = json.loads(evidence_raw or "[]")
+            except (json.JSONDecodeError, TypeError):
+                evidence = []
+            if not isinstance(evidence, list) or not evidence:
+                delete_ids.append(int(edge_id))
+                continue
+            remaining = [
+                item
+                for item in evidence
+                if isinstance(item, dict)
+                and item.get("source_memory_id") != source_memory_id
+            ]
+            if remaining:
+                update_rows.append((self._to_json(remaining), int(edge_id)))
+            else:
+                delete_ids.append(int(edge_id))
+
+        for evidence_json, edge_id in update_rows:
+            await db.execute(
+                "UPDATE graph_edges SET evidence = ?, updated_at = ? WHERE id = ?",
+                (evidence_json, self._now_iso(), edge_id),
+            )
+        for edge_id in delete_ids:
+            await db.execute("DELETE FROM graph_edges WHERE id = ?", (edge_id,))
 
     async def batch_delete_memories(
         self, source_memory_ids: list[int]
@@ -658,10 +780,10 @@ class GraphStoreWriteMixin:
                             entry_batch,
                         )
 
-                await db.execute(
-                    f"DELETE FROM graph_edges WHERE source_memory_id IN ({memory_placeholders})",
-                    batch,
-                )
+                # S3: remove each memory's edge evidence; shared edges with
+                # other sources survive, edges without remaining support die.
+                for memory_id in batch:
+                    await self._remove_edge_evidence(db, memory_id)
 
             await db.execute(
                 """

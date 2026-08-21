@@ -250,23 +250,73 @@ async def test_graph_memory_manager_indexes_nodes_edges_and_entries(tmp_path: Pa
     )
 
     metadata = {
+        "memory_schema_version": "v3",
         "session_id": "test:private:s1",
         "persona_id": "persona_1",
         "importance": 0.8,
         "create_time": 1.0,
         "last_access_time": 1.0,
         "canonical_summary": "项目会议安排在明天下午三点",
-        "topics": ["项目会议"],
-        "participants": ["张三", "李四"],
-        "key_facts": ["明天下午三点开会"],
+        "key_facts": [
+            {
+                "fact_id": "fact_1",
+                "parent_id": "memory_1",
+                "fact": "张三安排明天下午三点开会",
+                "topics": ["项目会议"],
+                "topic_refs": [
+                    {
+                        "topic_id": "topic_project_meeting",
+                        "raw_name": "项目会议",
+                        "name": "项目会议",
+                        "decision": "created",
+                    }
+                ],
+                "participants": ["张三"],
+                "participant_refs": [
+                    {
+                        "participant_id": "person_zhangsan",
+                        "name": "张三",
+                        "identity_key": None,
+                        "source": "mentioned",
+                    }
+                ],
+                "source_message_ids": [1, 2],
+            },
+            {
+                "fact_id": "fact_2",
+                "parent_id": "memory_1",
+                "fact": "李四也要参会",
+                "topics": ["项目会议"],
+                "topic_refs": [
+                    {
+                        "topic_id": "topic_project_meeting",
+                        "raw_name": "项目会议",
+                        "name": "项目会议",
+                        "decision": "reused",
+                    }
+                ],
+                "participants": ["李四"],
+                "participant_refs": [
+                    {
+                        "participant_id": "person_lisi",
+                        "name": "李四",
+                        "identity_key": None,
+                        "source": "mentioned",
+                    }
+                ],
+                "source_message_ids": [3],
+            },
+        ],
     }
 
     await graph_manager.index_memory(1, metadata["canonical_summary"], metadata)
 
     stats = await graph_store.get_memory_entry_stats()
-    assert stats["graph_nodes"] >= 4
-    assert stats["graph_edges"] >= 3
-    assert stats["graph_entries"] >= 4
+    # S3: only explicit fact-level bindings produce edges. Two facts share one
+    # topic node; each fact contributes topic + participant edges (4 total).
+    assert stats["graph_nodes"] >= 5
+    assert stats["graph_edges"] >= 4
+    assert stats["graph_entries"] >= 6
     assert len(vector_db.docs) == 1
     vector_doc = next(iter(vector_db.docs.values()))
     assert vector_doc["metadata"]["graph_vector_granularity"] == "memory"
@@ -418,30 +468,74 @@ async def test_graph_store_snapshot_builds_ui_ready_subgraphs(tmp_path: Path):
         11,
         "Roadmap workshop with Alice",
         {
+            "memory_schema_version": "v3",
             "session_id": "test:private:s1",
             "persona_id": "persona_1",
             "importance": 0.82,
             "create_time": 10.0,
             "last_access_time": 12.0,
             "canonical_summary": "Roadmap workshop with Alice",
-            "topics": ["roadmap"],
-            "participants": ["Alice"],
-            "key_facts": ["Finalize Q2 roadmap"],
+            "key_facts": [
+                {
+                    "fact_id": "fact_11",
+                    "parent_id": "memory_11",
+                    "fact": "Finalize Q2 roadmap",
+                    "topic_refs": [
+                        {
+                            "topic_id": "topic_roadmap",
+                            "raw_name": "roadmap",
+                            "name": "roadmap",
+                            "decision": "created",
+                        }
+                    ],
+                    "participant_refs": [
+                        {
+                            "participant_id": "person_alice",
+                            "name": "Alice",
+                            "identity_key": None,
+                            "source": "mentioned",
+                        }
+                    ],
+                    "source_message_ids": [1],
+                }
+            ],
         },
     )
     await manager.index_memory(
         12,
         "Deployment sync with Bob",
         {
+            "memory_schema_version": "v3",
             "session_id": "test:private:s1",
             "persona_id": "persona_1",
             "importance": 0.74,
             "create_time": 11.0,
             "last_access_time": 13.0,
             "canonical_summary": "Deployment sync with Bob",
-            "topics": ["deployment"],
-            "participants": ["Bob"],
-            "key_facts": ["Prepare release checklist"],
+            "key_facts": [
+                {
+                    "fact_id": "fact_12",
+                    "parent_id": "memory_12",
+                    "fact": "Prepare release checklist",
+                    "topic_refs": [
+                        {
+                            "topic_id": "topic_deployment",
+                            "raw_name": "deployment",
+                            "name": "deployment",
+                            "decision": "created",
+                        }
+                    ],
+                    "participant_refs": [
+                        {
+                            "participant_id": "person_bob",
+                            "name": "Bob",
+                            "identity_key": None,
+                            "source": "mentioned",
+                        }
+                    ],
+                    "source_message_ids": [1],
+                }
+            ],
         },
     )
 

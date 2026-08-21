@@ -110,6 +110,13 @@ class MemoryEngineCrudMixin:
                     },
                 ):
                     raise RuntimeError("canonical parent activation failed")
+                # S3: canonical facts (with their explicit topic/participant
+                # bindings) are the only graph edge evidence; the extractor
+                # routes on memory_schema_version internally.
+                if self.graph_memory_manager is not None:
+                    await self.graph_memory_manager.index_memory(
+                        document_id, projection, metadata, None
+                    )
                 self._invalidate_search_cache()
                 return document_id
             except asyncio.CancelledError:
@@ -121,6 +128,10 @@ class MemoryEngineCrudMixin:
                         await asyncio.shield(
                             self.hybrid_retriever.delete_memory(document_id)
                         )
+                    if self.graph_memory_manager is not None:
+                        await asyncio.shield(
+                            self.graph_memory_manager.delete_memory(document_id)
+                        )
                 raise
             except Exception:
                 if document_id is not None:
@@ -130,6 +141,8 @@ class MemoryEngineCrudMixin:
                         logger.error("canonical fact rollback failed", exc_info=True)
                     if self.hybrid_retriever is not None:
                         await self.hybrid_retriever.delete_memory(document_id)
+                    if self.graph_memory_manager is not None:
+                        await self.graph_memory_manager.delete_memory(document_id)
                     if self.db_connection is not None:
                         await self.db_connection.execute(
                             "DELETE FROM memory_sources WHERE memory_id = ?",
@@ -1184,6 +1197,19 @@ class MemoryEngineCrudMixin:
                             metadata = {}
                     elif not isinstance(metadata, dict):
                         metadata = {}
+                    # S3: canonical parents keep only source fields in the
+                    # document projection; reattach their facts so online and
+                    # rebuild graph writes use the same evidence source.
+                    if (
+                        metadata.get("memory_schema_version") == "v3"
+                        and self.canonical_store is not None
+                    ):
+                        facts = await self.canonical_store.get_facts_by_document(
+                            int(row["id"])
+                        )
+                        if facts:
+                            metadata = dict(metadata)
+                            metadata["key_facts"] = facts
                     batch.append((int(row["id"]), str(row["text"] or ""), metadata))
 
                 last_id = int(rows[-1]["id"])

@@ -71,10 +71,15 @@ def test_memory_transfer_controls_use_lucide_and_preview_before_import() -> None
     assert "dry_run: false" in memory_page
 
 
-def test_graph_dashboard_requests_full_overview_and_expanded_queries() -> None:
+def test_graph_dashboard_first_entry_loads_limited_overview_and_full_button_is_explicit() -> None:
     graph_ui = (DASHBOARD / "graph-ui.js").read_text(encoding="utf-8")
 
-    assert 'full_graph: "true"' in graph_ui
+    # S3: first entry loads the limited overview without full_graph; the
+    # full-graph button explicitly switches to the full request.
+    assert "async function fetchOverview(full) {" in graph_ui
+    assert "var params = new URLSearchParams();" in graph_ui
+    assert 'if (full) params.set("full_graph", "true");' in graph_ui
+    assert "fetchOverview(true)" in graph_ui
     assert "limit_memories: 24" in graph_ui
     assert "limit_entries: 80" in graph_ui
     assert "limit_nodes: 80" in graph_ui

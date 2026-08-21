@@ -240,12 +240,16 @@ class MemoryEngine(MemoryEngineWriteOpsMixin, MemoryEngineCrudMixin, MemoryEngin
                 self.graph_vector_retriever,
                 self.graph_extractor,
             )
-            self.dual_route_retriever = DualRouteRetriever(
-                self.hybrid_retriever,
-                self.graph_retriever,
-                self.get_memory,
-                self.config,
-            )
+            # S3: a zero graph weight means the route is off. Do not build the
+            # dual retriever at all so graph search is truly bypassed (I02).
+            graph_route_weight = float(self.config.get("graph_route_weight", 0.35))
+            if graph_route_weight > 0:
+                self.dual_route_retriever = DualRouteRetriever(
+                    self.hybrid_retriever,
+                    self.graph_retriever,
+                    self.get_memory,
+                    self.config,
+                )
 
         if self._write_op_repair_enabled:
             await self._repair_incomplete_write_ops()

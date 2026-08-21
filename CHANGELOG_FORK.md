@@ -35,6 +35,17 @@
 - 新 canonical 链暂不生成图或 Atom，分别留待 S3、S4；未增加实例旧数据迁移、清理或补造逻辑。
 - 补充主动记忆契约、fact 搜索正文、真实 SQLite/FAISS 写入、双路候选、干净重建和故障零残留测试。
 
+### S3：按事实证据重建 topic 与图谱
+
+- 图谱只消费 S1/S2 canonical facts 的显式 topic/participant 绑定建边；删除 legacy 的 topic×fact、person×fact、person×person 全组合边，legacy 文档不再补造图边。
+- topic/person 节点改用 S2 稳定 ID（scope + 规范化名称），跨记忆同概念单节点复用；仅字符级规范化，不做近义合并。
+- `graph_edges` 新增多来源 `evidence`（fact_id/parent_id/source_message_ids）：删除一条记忆只移除自己的证据，最后来源消失才回收边与无引用节点。
+- canonical 写入接回图索引并与全量 rebuild 共用同一构建器与稳定节点 ID；`rebuild_graph_index` 从 canonical facts 重放，在线/重建图签名一致。
+- `graph_route_weight <= 0` 时图路线真正旁路：不创建双路检索器、不查询图、无零贡献候选占位。
+- 固定 I18 回归样本（弱图路线第一名被归一化为满信号）与零权重旁路正确行为；融合公式修复留待 S5。
+- 图谱页首次进入只加载受限概览；`full_graph=true` 仅在显式点击“全量图谱”按钮时发送。
+- 合成多会话样本结构验收全 PASS（零全组合、全边带证据、共享节点复用、删除安全、间接联想路径可达）；语义级独有命中由 S5 判定，生产图权重保持 0。
+
 ## [2.6.0-a1] - 2026-08-20
 
 ### 项目

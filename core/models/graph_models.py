@@ -30,6 +30,7 @@ class GraphEdge:
     weight: float = 1.0
     status: str = "active"
     metadata: dict[str, Any] = field(default_factory=dict)
+    evidence: list[dict[str, Any]] = field(default_factory=list)
 
     @property
     def edge_key(self) -> str:

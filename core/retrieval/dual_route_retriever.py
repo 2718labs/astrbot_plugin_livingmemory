@@ -40,7 +40,15 @@ class DualRouteRetriever:
         session_id: str | None = None,
         persona_id: str | None = None,
     ) -> list[HybridResult]:
-        """Run both retrieval routes and merge their memory candidates."""
+        """Run both retrieval routes and merge their memory candidates.
+
+        S3: a zero graph weight bypasses the graph route entirely, so weak
+        graph candidates can never occupy fusion slots (I02).
+        """
+        if self.graph_route_weight <= 0:
+            return await self.document_retriever.search(
+                query, k, session_id, persona_id
+            )
         doc_results, graph_results = await asyncio.gather(
             self.document_retriever.search(
                 query, max(k * 2, k), session_id, persona_id
