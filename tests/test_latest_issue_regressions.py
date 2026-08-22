@@ -89,11 +89,28 @@ def test_graph_toolbar_has_intermediate_desktop_breakpoints() -> None:
     assert "#graph-memory-id" in css
 
 
-def test_summary_prompts_use_neutral_facts_and_fact_level_reaction() -> None:
-    """S1 不再生成第一人称长摘要，人格只绑定到可选 fact reaction。"""
+def test_summary_prompts_keep_task_short_and_contract_authoritative() -> None:
+    """Built-in chat prompts do not repeat the output contract."""
     for prompt_name in ("private_chat_prompt.txt", "group_chat_prompt.txt"):
         prompt = (ROOT / "core" / "prompts" / prompt_name).read_text(encoding="utf-8")
-        assert "persona_reaction" in prompt
-        assert "一条 memory 只围绕一个中心" in prompt
-        assert "第一人称" not in prompt
-        assert "canonical_summary" not in prompt
+        assert "{conversation}" in prompt
+        assert "source_indexes" not in prompt
+        assert "persona_reaction" not in prompt
+
+    contract = MemoryProcessor._build_admission_output_contract(False)
+    assert "persona_reaction" in contract
+    assert "一条 memory 只围绕一个中心" in contract
+    assert "描述当前 Bot 自己时只用第一人称“我”" in contract
+    assert "source_indexes" not in contract
+    assert "summary" not in contract
+
+
+def test_persona_system_prompt_fallback_does_not_repeat_fact_rules() -> None:
+    prompt = MemoryProcessor._build_enhanced_prompt_fallback(
+        "base", "persona", "2026-08-22 12:00"
+    )
+
+    assert "## 当前人格" in prompt
+    assert "persona_reaction" in prompt
+    assert "source_indexes" not in prompt
+    assert "承诺、约定" not in prompt

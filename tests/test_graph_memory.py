@@ -302,7 +302,6 @@ async def test_graph_memory_manager_indexes_nodes_edges_and_entries(tmp_path: Pa
                         "source": "mentioned",
                     }
                 ],
-                "source_message_ids": [1, 2],
             },
             {
                 "fact_id": "fact_2",
@@ -326,7 +325,6 @@ async def test_graph_memory_manager_indexes_nodes_edges_and_entries(tmp_path: Pa
                         "source": "mentioned",
                     }
                 ],
-                "source_message_ids": [3],
             },
         ],
     }
@@ -518,7 +516,6 @@ async def test_graph_store_snapshot_builds_ui_ready_subgraphs(tmp_path: Path):
                             "source": "mentioned",
                         }
                     ],
-                    "source_message_ids": [1],
                 }
             ],
         },
@@ -555,7 +552,6 @@ async def test_graph_store_snapshot_builds_ui_ready_subgraphs(tmp_path: Path):
                             "source": "mentioned",
                         }
                     ],
-                    "source_message_ids": [1],
                 }
             ],
         },

@@ -854,9 +854,7 @@ def test_graph_extractor_ignores_atom_payloads() -> None:
                     "participant_refs": [
                         {"participant_id": "per1", "name": "张三"}
                     ],
-                    "time": None,
                     "importance": 0.8,
-                    "source_message_ids": [1],
                 }
             ],
             "source_session_id": "s1",

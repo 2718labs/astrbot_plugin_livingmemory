@@ -197,11 +197,6 @@ class GraphExtractor:
                     "source_memory_id": source_memory_id,
                     "fact_id": fact_id,
                     "parent_id": parent_id,
-                    "source_message_ids": [
-                        str(item)
-                        for item in (fact.get("source_message_ids") or [])
-                        if item
-                    ],
                 }
             ]
 

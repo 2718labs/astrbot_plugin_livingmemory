@@ -136,7 +136,6 @@ async def _add_canonical_fact(
                 "fact": text,
                 "topics": [],
                 "participants": [],
-                "source_message_ids": [f"msg_{suffix}"],
                 "importance": importance,
             }
         ],
@@ -307,10 +306,7 @@ async def test_s1_idempotency_reuses_active_record_and_topic_candidate(tmp_path:
                 ],
                 "participants": ["张三"],
                 "participant_refs": [],
-                "time": None,
                 "importance": 0.8,
-                "source": "user_explicit",
-                "source_message_ids": [1],
                 "persona_reaction": None,
             }
         ],

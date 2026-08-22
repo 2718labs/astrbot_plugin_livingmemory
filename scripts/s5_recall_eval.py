@@ -61,7 +61,6 @@ def _record(fact_id, parent_id, document_id, fact, search_text):
             "parent_id": parent_id,
             "fact": fact,
             "importance": 0.8,
-            "source_message_ids": [f"msg_{fact_id}"],
         },
         "search_text": search_text,
         "scope": "eval:private:user",

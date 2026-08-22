@@ -6,8 +6,7 @@ import hashlib
 import json
 import re
 import unicodedata
-from datetime import datetime, timedelta
-from typing import Any, Iterable
+from typing import Any
 
 from .conversation_models import Message
 
@@ -145,141 +144,6 @@ def stable_fact_id(parent_id: str, fact_key: Any) -> str:
     )
 
 
-def source_ids_for_indexes(
-    messages: list[Message], indexes: Iterable[int]
-) -> list[int | str]:
-    refs: list[int | str] = []
-    for index in indexes:
-        if index < 1 or index > len(messages):
-            raise ValueError(f"source index out of range: {index}")
-        ref = message_reference(messages[index - 1], index)
-        if ref not in refs:
-            refs.append(ref)
-    return refs
-
-
-def source_messages_for_indexes(
-    messages: list[Message], indexes: Iterable[int]
-) -> list[Message]:
-    return [messages[index - 1] for index in indexes]
-
-
-_WEEKDAYS = {"一": 0, "二": 1, "三": 2, "四": 3, "五": 4, "六": 5, "日": 6, "天": 6}
-
-
-def _time_of_day(raw: str) -> tuple[int, int] | None:
-    match = re.search(r"(?:(上午|中午|下午|晚上|凌晨))?(\d{1,2})[点时](?:(\d{1,2})分?)?", raw)
-    if not match:
-        return None
-    period, hour_text, minute_text = match.groups()
-    hour = int(hour_text)
-    minute = int(minute_text or 0)
-    if period in {"下午", "晚上"} and hour < 12:
-        hour += 12
-    if period == "中午" and hour < 11:
-        hour += 12
-    if period == "凌晨" and hour == 12:
-        hour = 0
-    if hour > 23 or minute > 59:
-        raise ValueError(f"invalid time expression: {raw}")
-    return hour, minute
-
-
-def _resolved_relative_date(raw: str, base: datetime) -> datetime | None:
-    for token, delta in (("前天", -2), ("昨天", -1), ("昨日", -1), ("今天", 0), ("今日", 0), ("明天", 1), ("明日", 1), ("后天", 2)):
-        if token in raw:
-            return base + timedelta(days=delta)
-
-    match = re.search(r"(下周|本周|这周|周)([一二三四五六日天])", raw)
-    if match:
-        prefix, weekday_text = match.groups()
-        target_weekday = _WEEKDAYS[weekday_text]
-        if prefix == "下周":
-            delta = 7 - base.weekday() + target_weekday
-        elif prefix in {"本周", "这周"}:
-            delta = target_weekday - base.weekday()
-        else:
-            delta = target_weekday - base.weekday()
-            if delta <= 0:
-                delta += 7
-        return base + timedelta(days=delta)
-
-    explicit = re.search(r"(20\d{2})[-/年](\d{1,2})[-/月](\d{1,2})日?", raw)
-    if explicit:
-        year, month, day = map(int, explicit.groups())
-        return base.replace(year=year, month=month, day=day)
-    return None
-
-
-def validate_and_normalize_time(
-    value: dict[str, Any] | None,
-    source_messages: list[Message],
-) -> dict[str, Any] | None:
-    """Resolve common relative expressions from their direct source time."""
-    if value is None:
-        return None
-    raw = str(value.get("raw") or "").strip()
-    normalized = str(value.get("normalized") or "").strip()
-    precision = str(value.get("precision") or "").strip()
-    if not raw or not normalized or precision not in {"day", "minute", "month", "year"}:
-        raise ValueError("time requires raw, normalized and a supported precision")
-    if not source_messages:
-        raise ValueError("time requires at least one direct source message")
-    source_text = "\n".join(Message.content_to_text(item.content) for item in source_messages)
-    if raw not in source_text:
-        raise ValueError(
-            "time.raw must appear in the cited message body, not only in its "
-            f"message timestamp: {raw}"
-        )
-
-    # 基准修正：优先用逐字包含 raw 的那条消息换算，避免跨天窗口拿错消息
-    # （例如 raw 出现在第二条消息时，不能再按第一条消息的时间戳算）
-    base_message = next(
-        (
-            item
-            for item in source_messages
-            if raw in Message.content_to_text(item.content)
-        ),
-        source_messages[0],
-    )
-    base = datetime.fromtimestamp(float(base_message.timestamp)).astimezone()
-    resolved = _resolved_relative_date(raw, base)
-    time_value = _time_of_day(raw)
-    if resolved is not None:
-        if time_value is not None:
-            resolved = resolved.replace(
-                hour=time_value[0], minute=time_value[1], second=0, microsecond=0
-            )
-            expected = resolved.strftime("%Y-%m-%dT%H:%M")
-            expected_precision = "minute"
-        else:
-            expected = resolved.strftime("%Y-%m-%d")
-            expected_precision = "day"
-        if normalized != expected:
-            # 降级保存：换算分歧不再拒绝整条记忆，标记 unverified 照常写入，
-            # 由后续生命周期/聚合机制负责纠错
-            return {
-                "raw": raw,
-                "normalized": normalized,
-                "precision": precision,
-                "unverified": True,
-            }
-        precision = expected_precision
-    else:
-        try:
-            if precision == "day":
-                datetime.strptime(normalized, "%Y-%m-%d")
-            elif precision == "minute":
-                datetime.strptime(normalized, "%Y-%m-%dT%H:%M")
-            elif precision == "month":
-                datetime.strptime(normalized, "%Y-%m")
-            else:
-                datetime.strptime(normalized, "%Y")
-        except ValueError as exc:
-            raise ValueError(f"invalid normalized time: {normalized}") from exc
-    return {"raw": raw, "normalized": normalized, "precision": precision}
-
-
 __all__ = [
     "MEMORY_GENERATION_VERSION",
     "MEMORY_SCHEMA_VERSION",
@@ -290,9 +154,6 @@ __all__ = [
     "normalize_concept_name",
     "parent_memory_id",
     "participant_id",
-    "source_ids_for_indexes",
-    "source_messages_for_indexes",
     "stable_fact_id",
     "topic_id",
-    "validate_and_normalize_time",
 ]

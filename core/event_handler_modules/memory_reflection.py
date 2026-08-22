@@ -426,7 +426,7 @@ class MemoryReflection:
 
                     if result.status == "skip":
                         logger.info(
-                            f"[{session_id}] 本窗口没有需要长期保存的事实，"
+                            f"[{session_id}] 本窗口没有之后需要记住或接续的事实，"
                             f"跳过候选={result.skipped_fact_count}"
                         )
                         records = ()

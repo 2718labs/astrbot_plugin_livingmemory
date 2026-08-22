@@ -124,38 +124,29 @@ class MemoryProcessor(MemoryProcessorParseMixin, MemoryProcessorBuildMixin):
 
     @staticmethod
     def _build_admission_output_contract(is_group_chat: bool) -> str:
-        """Return the non-overridable S1 memory-unit contract."""
+        """Return the compact, non-overridable memory-output contract."""
+        peer = "群成员" if is_group_chat else "对方"
         return (
-            "## 必须遵守的 S1 记忆产物格式\n"
-            '- 只输出一个 JSON object，顶层只能包含数组 "memories"。\n'
-            "- 同一窗口按可独立复用的中心拆分；可以输出零条、一条或多条 memory。\n"
-            '- 每条 memory 必须包含 "summary"、"topics"、"key_facts"、'
-            '"sentiment"、"importance"。summary 只写一句中性概览。\n'
-            '- "key_facts" 必须是对象数组，每项必须包含非空字符串 "fact"、'
-            '"action"、"topics"、"participants"、"time"、"importance"、'
-            '"source"、"source_indexes" 和 "persona_reaction"；"reason" 可选。\n'
-            '- source_indexes 使用对话中的 [M1]、[M2] 编号且至少一项；time 只表示 fact '
-            '正文明确提到的事件时间。time.raw 必须逐字来自所引用消息正文，禁止复制消息头的发送时间；'
-            '正文无时间表达时为 null，有时间时为 {"raw","normalized","precision"}；'
-            'persona_reaction 无价值时为 null。\n'
-            "- 先合并同一件事的前后说法：后面的明确否认、纠正、澄清或形成的约定，"
-            "覆盖前面的误解、试探和临时说法；不得把已被否认的旧说法另存为事实。\n"
-            "- 只提取本窗口中新确认的信息。助手自己复述的旧记忆、对用户过去行为的单方面声称、"
-            "人格设定和自我介绍，不得再次写成新记忆；除非用户在本窗口直接确认或补充。\n"
-            "- 每条 fact 独立判断：稳定身份、偏好、关系、计划、反复问题或"
-            "明确要求记住的内容用 store；寒暄、一次性玩笑、临时报错过程、"
-            "即时状态和重复内容用 skip。\n"
-            "- store 的判断标准是：fact 单独出现在几周或几个月后的另一场对话里，"
-            "仍有助于理解人物、关系或未完成事项。只还原本轮包袱、斗嘴过程或短暂心情的内容用 skip。\n"
-            "- 同一个玩笑在一个窗口内重复多次仍是一次性玩笑，不算反复问题；"
-            "次数、篇幅和语气强度不能代替长期价值。明确的互动偏好、边界及已接受的未来约定可用 store。\n"
-            "- 单次喊昵称、使用亲昵称呼或做出某个动作不自动等于稳定偏好。默认用 skip；"
-            "只有稳定身份或偏好、关系边界或约定、待办计划、持续问题、重要事件、明确要求记住可用 store；"
-            "真实发生过本身不等于值得长期保存。\n"
-            "- topics 和 participants 必须分别属于当前 fact，不能把整段聊天的标签复制给每条 fact。\n"
-            "- fact 必须写明主体并可脱离摘要独立理解；不要使用‘她/他/那个/后来’作为无来源指代。\n"
-            "- reaction 只写当前人格当时很短的情绪/想法，不复述 fact，不作为人物事实。\n"
-            "- 不要输出顶层 memory_action；程序会过滤 skip facts 并派生最终 summary。"
+            "## 输出与判断规则\n"
+            '- 只输出 {"memories":[{"key_facts":[...]}]}；最多 5 条 memory，'
+            '每条最多 5 个 fact，整个窗口合计最多 5 个 fact。\n'
+            '- 每个 fact 只写 "fact"、"topics"、"importance"；确有价值时可加 '
+            '"persona_reaction"。不要输出其他字段。\n'
+            '- fact 中的“今天、昨天、明天、下周”等相对时间，按说出该时间的消息日期'
+            '改写为具体日期；不要把消息发送时间本身写成事实。persona_reaction 格式为 '
+            '{"emotion","thought"}。\n'
+            "- 只输出值得长期接续的事实；寒暄、填充、临时报错、无后果的即时状态和重复内容直接不输出。\n"
+            "- 先读到窗口结尾。后面的明确否认、纠正、澄清或形成的约定覆盖前面的说法；"
+            "不得保存已被否认的版本。\n"
+            f"- 只提取本窗口新确认的信息。Bot 复述的旧记忆、人格设定、单方面推测，以及未经{peer}确认的建议或旧约定，不得写入。\n"
+            "- 承诺、约定、边界和偏好按普通事实保存，写清谁提出、是否接受；短期定时任务不由记忆系统代办。\n"
+            "- 单次玩笑、昵称或亲昵称呼不自动成为稳定偏好；单次重要冲突、修复或共同意义仍可保存。\n"
+            "- 一条 memory 只围绕一个中心；同一事件、同一段关系变化或同一结论的过程话语必须合并，"
+            "不要为了覆盖每句话而拆成多条 fact。\n"
+            "- 每条 fact 记录一个以后需要整体接续的事实或事件，允许包含同一事件的原因、发展与结果；"
+            "topics 只属于该 fact。\n"
+            f"- fact 必须中性、自包含，并使用{peer}的具体昵称。描述当前 Bot 自己时只用第一人称“我”；[Bot: ...] 不是用户。\n"
+            "- importance 为 0.0 到 1.0；没有事实时输出 {\"memories\":[]}。"
         )
 
     def _load_prompts_fallback(self) -> None:
@@ -175,17 +166,11 @@ class MemoryProcessor(MemoryProcessorParseMixin, MemoryProcessorBuildMixin):
 
         except Exception as e:
             logger.error(f"[MemoryProcessor] 加载提示词模板失败: {e}")
-            self.private_chat_prompt = """分析以下对话并生成JSON格式的记忆:
+            self.private_chat_prompt = """从以下私聊中提取以后仍需接续的事实:
 {conversation}
-
-输出格式:
-{"memories": [{"summary": "中性概览", "topics": ["主题"], "key_facts": [{"fact": "事实", "action": "store", "topics": ["主题"], "participants": ["参与者"], "time": null, "importance": 0.5, "source": "user_explicit", "source_indexes": [1], "persona_reaction": null}], "sentiment": "neutral", "importance": 0.5}]}
 """
-            self.group_chat_prompt = """分析以下群聊对话并生成JSON格式的记忆:
+            self.group_chat_prompt = """从以下群聊中提取以后仍需接续的事实:
 {conversation}
-
-输出格式:
-{"memories": [{"summary": "中性概览", "topics": ["主题"], "key_facts": [{"fact": "事实", "action": "store", "topics": ["主题"], "participants": ["参与者"], "time": null, "importance": 0.5, "source": "user_explicit", "source_indexes": [1], "persona_reaction": null}], "sentiment": "neutral", "importance": 0.5}]}
 """
 
     async def _build_system_prompt_with_persona(self, persona_id: str | None) -> str:
@@ -290,14 +275,7 @@ class MemoryProcessor(MemoryProcessorParseMixin, MemoryProcessorBuildMixin):
     @staticmethod
     def _build_base_prompt_fallback(current_date: str) -> str:
         """后备基础 system prompt（当 PromptManager 不可用时）"""
-        return (
-            "你正在总结本窗口中新确认的对话记忆。先读到窗口结尾，以最后的明确纠正、澄清和形成的约定为准，"
-            "不保存已被否认的中间说法，也不把助手自己复述的旧记忆再次写成新记忆。请严格按照JSON格式输出。\n"
-            f"当前日期时间: {current_date}\n"
-            "重要: time 只记录事实正文明确提到的事件时间；time.raw 必须来自"
-            "消息正文，不能复制消息头的发送时间。消息头时间只用于换算相对时间表达；"
-            "正文没有时间表达时写 null。"
-        )
+        return f"你负责从对话窗口提取可长期接续的事实，并严格输出指定 JSON。当前日期时间：{current_date}"
 
     @staticmethod
     def _build_enhanced_prompt_fallback(
@@ -306,21 +284,10 @@ class MemoryProcessor(MemoryProcessorParseMixin, MemoryProcessorBuildMixin):
         """后备增强 system prompt（当 PromptManager 不可用时）"""
         return (
             f"{base_prompt}\n\n"
-            f"## 你的人格设定\n"
+            f"## 当前人格\n"
             f"{persona_prompt}\n\n"
-            f"## 记忆总结要求\n"
-            f"在总结对话记忆时,你需要:\n"
-            f"1. **保持你的人格特色**: 使用符合上述人格设定的语气、用词习惯和表达方式\n"
-            f'2. **第一人称视角**: 以"我"的视角回顾对话,不要说"bot"、"助手"等第三人称\n'
-            f"3. **体现你的关注点**: 根据你的人格特点,侧重记录你会关注的信息\n"
-            f"4. **自然真实**: 让记忆读起来像是你本人在回忆这段对话,而不是机械的客观描述\n"
-            f"5. **最终状态**: 同一件事有前后变化时，以最后的明确纠正、澄清和约定为准，不保存已被否认的中间说法\n"
-            f"6. **新增证据**: 人格设定和你自己复述的旧记忆不是本窗口新事实，未经对方确认不得再次写入\n"
-            f"7. **时间转换**: time.raw 只能来自消息正文；消息头时间只用于换算正文中的相对时间，正文无时间表达时写 null（当前日期: {current_date}）\n\n"
-            f"例如:\n"
-            f'- 如果你是活泼可爱的性格,记忆中可以使用"呀"、"呢"、"~"等语气词\n'
-            f"- 如果你是专业严谨的性格,记忆应该用词准确、逻辑清晰、格式规范\n"
-            f"- 如果你是幽默风趣的性格,记忆中可以包含轻松的表达和有趣的观察"
+            "人格只用于理解 Bot 的身份以及可选的短句 persona_reaction，"
+            "不得把人格设定本身写成新事实。"
         )
 
     async def _call_llm_with_retry(
@@ -406,17 +373,38 @@ class MemoryProcessor(MemoryProcessorParseMixin, MemoryProcessorBuildMixin):
         return fixed
 
     async def _repair_llm_response_format(
-        self, response_text: str, is_group_chat: bool
+        self,
+        response_text: str,
+        is_group_chat: bool,
+        validation_error: InvalidMemoryOutputError | None = None,
     ) -> str:
-        """Ask the LLM once to reformat its own response without new facts."""
+        """Ask the LLM once to repair either structure or excessive fragmentation."""
+        if validation_error and str(validation_error).startswith("输出过碎："):
+            prompt = (
+                "下面是一次记忆提取的原始回答。事实被拆得太碎，请只基于原回答已有信息压缩整理；"
+                "不得新增事实，不得改变人物归属、否认、纠正或约定结果。\n"
+                "要求：\n"
+                '- 顶层只能包含数组 "memories"；最多 5 条 memory。\n'
+                '- 每条 memory 只包含 key_facts，每条最多 5 个 fact；整个窗口总 fact 最多 5 条。\n'
+                "- 合并同一事件、同一段关系变化或同一结论的过程话语，保留原因、发展和最终结果；"
+                "不要逐句摘录。\n"
+                "- 必须优先保留明确事实、重要冲突、关系变化、承诺、约定、边界、偏好、"
+                "后续纠正和最终结论；可删除仅用于铺垫的动作或重复说法。\n"
+                "- 合并后的 importance 取被合并事实中的最高值；topics 去重。\n"
+                "- 每条 key_fact 必须包含 fact、topics、importance；persona_reaction 可选。\n"
+                "只输出 JSON，不要解释。\n\n"
+                f"原始回答：\n{response_text}"
+            )
+            system_prompt = "你只负责把过碎的记忆事实压缩为少量完整事实，不补造新信息。"
+            return await self._call_llm_with_retry(prompt, system_prompt)
+
         prompt = (
             "下面是一次记忆提取的原始回答。只把它整理成合法 JSON；"
-            "不得新增、删除、合并、拆分或改写任何 fact，也不得改变 action 和 importance 的含义。\n"
+            "不得新增、删除、合并、拆分或改写任何 fact，也不得改变 importance。\n"
             "要求：\n"
-            '- 顶层只能包含数组 "memories"；每条 memory 必须包含 summary、topics、'
-            'key_facts、sentiment、importance。\n'
-            '- 每条 key_fact 必须包含 fact、action、topics、participants、time、importance、'
-            'source、source_indexes、persona_reaction；reason 可选。\n'
+            '- 顶层只能包含数组 "memories"；每条 memory 只包含 key_facts。\n'
+            '- 每条 key_fact 必须包含 fact、topics、importance；time 和 persona_reaction 可选。\n'
+            "- 删除其他字段；不得补造缺失内容。\n"
             "如果原回答缺少某个事实判断所需的信息，不要猜测或补造；保留缺失，"
             "让后续校验拒绝。只输出 JSON，不要解释。\n\n"
             f"原始回答：\n{response_text}"
@@ -500,7 +488,7 @@ class MemoryProcessor(MemoryProcessorParseMixin, MemoryProcessorBuildMixin):
                     f"[MemoryProcessor] 原始回答格式不合格，尝试一次格式修复: {first_error}"
                 )
                 repaired_text = await self._repair_llm_response_format(
-                    llm_response_text, is_group_chat
+                    llm_response_text, is_group_chat, first_error
                 )
                 try:
                     structured_data = self._parse_llm_response(
@@ -594,7 +582,7 @@ class MemoryProcessor(MemoryProcessorParseMixin, MemoryProcessorBuildMixin):
             persona_id=persona_id,
         )
         if result.status == "skip":
-            raise MemoryAdmissionSkipped("本窗口没有需要长期保存的事实")
+            raise MemoryAdmissionSkipped("本窗口没有之后需要记住或接续的事实")
         if result.status == "invalid":
             raise InvalidMemoryOutputError(result.error or "记忆总结结果不合格")
         records = result.iter_records()

@@ -134,14 +134,8 @@ class _DeterministicLLMProvider:
                     "key_facts": [
                         {
                             "fact": fact,
-                            "action": "store",
                             "topics": topics,
-                            "participants": ["Tester"],
-                            "time": None,
                             "importance": importance,
-                            "source": "user_explicit",
-                            "source_indexes": [1],
-                            "persona_reaction": None,
                         }
                         for fact in facts
                     ],

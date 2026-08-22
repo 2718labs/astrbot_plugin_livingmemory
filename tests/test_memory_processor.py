@@ -45,33 +45,16 @@ def _memory_json(
         fact, action, fact_importance = (
             item if isinstance(item, tuple) else (item, "store", importance)
         )
-        candidate_participants = [
-            name for name in (participants or []) if name in fact
-        ]
-        if not candidate_participants and "张三" in fact:
-            candidate_participants = ["张三"]
-        key_facts.append(
-            {
-                "fact": fact,
-                "action": action,
-                "topics": list(topics or []),
-                "participants": candidate_participants,
-                "time": None,
-                "importance": fact_importance,
-                "source": "user_explicit",
-                "source_indexes": [1],
-                "persona_reaction": None,
-            }
-        )
-    memory = {
-        "summary": summary,
-        "topics": topics or [],
-        "key_facts": key_facts,
-        "sentiment": sentiment,
-        "importance": importance,
-    }
-    if canonical_summary is not None:
-        memory["canonical_summary"] = canonical_summary
+        candidate = {
+            "fact": fact,
+            "topics": list(topics or []),
+            "importance": fact_importance,
+        }
+        # Old custom prompts remain readable, including their skip decision.
+        if action == "skip":
+            candidate["action"] = "skip"
+        key_facts.append(candidate)
+    memory = {"key_facts": key_facts}
     return json.dumps({"memories": [memory]}, ensure_ascii=False)
 
 
@@ -135,6 +118,9 @@ async def test_process_conversation_rejects_non_json_after_one_repair():
     assert result.status == "invalid"
     assert result.content == ""
     assert llm.text_chat.await_count == 2
+    repair_prompt = llm.text_chat.await_args_list[1].kwargs["prompt"]
+    assert "每条 memory 只包含 key_facts" in repair_prompt
+    assert "source_indexes" not in repair_prompt
 
 
 @pytest.mark.asyncio
@@ -149,6 +135,105 @@ async def test_process_conversation_accepts_one_format_repair():
     assert [item["fact"] for item in result.metadata["key_facts"]] == [
         "张三周三参加科目二考试"
     ]
+    assert llm.text_chat.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_fragmented_output_is_compacted_once_before_storage():
+    def _fact(index: int) -> dict:
+        return {
+            "fact": f"张三关于同一件事的过程片段 {index}",
+            "topics": ["同一件事"],
+            "importance": 0.5 + index / 100,
+        }
+
+    fragmented = json.dumps(
+        {
+            "memories": [
+                {"key_facts": [_fact(index) for index in range(1, 4)]},
+                {"key_facts": [_fact(index) for index in range(4, 8)]},
+            ]
+        },
+        ensure_ascii=False,
+    )
+    compacted = json.dumps(
+        {
+            "memories": [
+                {
+                    "key_facts": [
+                        {
+                            "fact": "张三完整说明了同一件事的原因、发展和最终结果",
+                            "topics": ["同一件事"],
+                            "importance": 0.57,
+                        }
+                    ]
+                }
+            ]
+        },
+        ensure_ascii=False,
+    )
+    llm = _DummyLLMProvider([fragmented, compacted])
+    processor = MemoryProcessor(llm_provider=llm, context=None)
+
+    result = await processor.process_conversation_result(_make_messages())
+
+    assert result.status == "store"
+    assert result.stored_fact_count == 1
+    assert result.metadata["key_facts"][0]["fact"] == (
+        "张三完整说明了同一件事的原因、发展和最终结果"
+    )
+    assert llm.text_chat.await_count == 2
+    repair_prompt = llm.text_chat.await_args_list[1].kwargs["prompt"]
+    assert "总 fact 最多 5 条" in repair_prompt
+    assert "合并同一事件" in repair_prompt
+    assert "不得新增事实" in repair_prompt
+
+
+def test_original_five_fact_capacity_is_preserved_across_multiple_memories():
+    processor = MemoryProcessor(llm_provider=Mock(), context=None)
+
+    def _fact(index: int) -> dict:
+        return {
+            "fact": f"可独立接续的事实 {index}",
+            "topics": [f"主题 {index}"],
+            "importance": 0.7,
+        }
+
+    payload = {
+        "memories": [
+            {"key_facts": [_fact(1), _fact(2)]},
+            {"key_facts": [_fact(3), _fact(4), _fact(5)]},
+        ]
+    }
+
+    parsed = processor._parse_llm_response(
+        json.dumps(payload, ensure_ascii=False), False
+    )
+
+    assert sum(len(unit["key_facts"]) for unit in parsed["memories"]) == 5
+
+
+@pytest.mark.asyncio
+async def test_fragmented_output_is_invalid_when_compaction_still_exceeds_limit():
+    facts = [
+        {
+            "fact": f"张三关于同一件事的过程片段 {index}",
+            "topics": ["同一件事"],
+            "importance": 0.6,
+        }
+        for index in range(1, 8)
+    ]
+    fragmented = json.dumps(
+        {"memories": [{"key_facts": facts[:3]}, {"key_facts": facts[3:]}]},
+        ensure_ascii=False,
+    )
+    llm = _DummyLLMProvider([fragmented, fragmented])
+    processor = MemoryProcessor(llm_provider=llm, context=None)
+
+    result = await processor.process_conversation_result(_make_messages())
+
+    assert result.status == "invalid"
+    assert (result.error or "").startswith("输出过碎：")
     assert llm.text_chat.await_count == 2
 
 
@@ -171,16 +256,16 @@ async def test_all_skipped_and_low_importance_facts_make_valid_skip():
     assert result.skipped_fact_count == 2
 
 
-def test_strict_format_gate_accepts_complete_fence_and_rejects_missing_action():
+def test_strict_format_gate_accepts_complete_fence_and_rejects_missing_importance():
     processor = MemoryProcessor(llm_provider=Mock(), context=None)
     valid = _memory_json("张三周三参加科目二考试", topics=["驾考"])
 
     parsed = processor._parse_llm_response(f"```json\n{valid}\n```", False)
 
-    assert parsed["memories"][0]["key_facts"][0]["action"] == "store"
+    assert parsed["memories"][0]["key_facts"][0]["fact"] == "张三周三参加科目二考试"
     invalid = json.loads(valid)
-    del invalid["memories"][0]["key_facts"][0]["action"]
-    with pytest.raises(ValueError, match="action"):
+    del invalid["memories"][0]["key_facts"][0]["importance"]
+    with pytest.raises(ValueError, match="importance"):
         processor._parse_llm_response(json.dumps(invalid, ensure_ascii=False), False)
 
     conflicting = json.loads(valid)
@@ -555,12 +640,11 @@ async def test_process_group_chat_sets_interaction_type():
     """群聊路径应将 interaction_type 设置为 group_chat。"""
     llm = _DummyLLMProvider(
         _memory_json(
-            ("张三认为 ChatGPT 效率提升 30%", "store", 0.75),
-            ("李四认为需要仔细审查 AI 生成代码", "store", 0.7),
+            ("李四认为 ChatGPT 写代码效率提升了 30%", "store", 0.75),
             topics=["AI工具", "工作效率"],
             sentiment="positive",
             importance=0.75,
-            participants=["张三", "李四"],
+            participants=["李四"],
         )
     )
     processor = MemoryProcessor(llm_provider=llm, context=None)
@@ -604,11 +688,10 @@ async def test_process_group_chat_uses_neutral_derived_summary():
     """群聊 v3 只保留由 facts 派生的中性 summary。"""
     llm = _DummyLLMProvider(
         _memory_json(
-            "张三建议公司内部部署私有化 LLM",
-            "李四提醒注意数据安全",
-            topics=["AI工具", "数据安全"],
+            ("李四认为 ChatGPT 写代码效率提升了 30%", "store", 0.8),
+            topics=["AI工具", "工作效率"],
             sentiment="positive",
-            participants=["张三", "李四"],
+            participants=["李四"],
         )
     )
     processor = MemoryProcessor(llm_provider=llm, context=None)
@@ -622,13 +705,12 @@ async def test_process_group_chat_uses_neutral_derived_summary():
     assert "canonical_summary" in metadata
     assert "persona_summary" not in metadata
     assert metadata.get("summary_schema_version") == "v3"
-    assert "私有化 LLM" in metadata["canonical_summary"]
-    assert "私有化 LLM" in content
-    assert "数据安全" in content
+    assert "效率提升" in metadata["canonical_summary"]
+    assert "效率提升" in content
 
 
 @pytest.mark.asyncio
-async def test_process_group_chat_missing_participants_is_invalid():
+async def test_process_group_chat_derives_participants_from_named_speakers():
     payload = json.loads(
         _memory_json(
             ("张三确认参加周五会议", "store", 0.5),
@@ -636,7 +718,6 @@ async def test_process_group_chat_missing_participants_is_invalid():
             importance=0.5,
         )
     )
-    del payload["memories"][0]["key_facts"][0]["participants"]
     llm = _DummyLLMProvider(json.dumps(payload, ensure_ascii=False))
     processor = MemoryProcessor(llm_provider=llm, context=None)
 
@@ -646,9 +727,9 @@ async def test_process_group_chat_missing_participants_is_invalid():
         persona_id=None,
     )
 
-    assert result.status == "invalid"
-    assert "participants" in (result.error or "")
-    assert llm.text_chat.await_count == 2
+    assert result.status == "store"
+    assert result.metadata["key_facts"][0]["participants"] == ["张三"]
+    assert llm.text_chat.await_count == 1
 
 
 @pytest.mark.asyncio
@@ -674,13 +755,21 @@ async def test_process_group_chat_long_content():
     """群聊长内容（多条消息）应正常处理，不崩溃。"""
     long_messages = []
     for i in range(20):
+        if i == 0:
+            content = "我提出采用新讨论方案"
+        elif i == 1:
+            content = "我确认负责整理结论"
+        else:
+            content = (
+                f"成员{i % 5} 说：这是第 {i + 1} 条消息，内容比较详细，包含了很多信息。"
+                * 3
+            )
         long_messages.append(
             Message(
                 id=i + 1,
                 session_id="aiocqhttp:GroupMessage:99999",
                 role="user",
-                content=f"成员{i % 5} 说：这是第 {i + 1} 条消息，内容比较详细，包含了很多信息。"
-                * 3,
+                content=content,
                 sender_id=str(10000 + i % 5),
                 sender_name=f"成员{i % 5}",
                 group_id="99999",
@@ -829,7 +918,7 @@ async def test_s1_mixed_window_splits_into_multiple_single_center_records():
 
 
 @pytest.mark.asyncio
-async def test_s1_source_retry_keeps_parent_fact_and_idempotency_ids_stable():
+async def test_s1_repeat_window_keeps_ids_stable_across_fact_paraphrase():
     first = _unit_from_json(
         _memory_json("张三长期喜欢爵士乐", topics=["音乐偏好"])
     )
@@ -856,18 +945,20 @@ async def test_s1_source_retry_keeps_parent_fact_and_idempotency_ids_stable():
 
 
 @pytest.mark.asyncio
-async def test_s1_fact_source_time_and_reaction_are_bound_to_the_fact():
+async def test_s1_absolute_date_and_reaction_are_bound_to_fact_without_time_object():
     messages = _make_messages()
-    messages[0].content = "我周三参加科目二考试"
+    messages[0].content = "我下周三参加科目二考试"
     messages[0].timestamp = datetime(2026, 8, 20, 9, 0).timestamp()
     unit = _unit_from_json(
-        _memory_json("张三周三参加科目二考试", topics=["驾考"])
+        _memory_json("张三将在2026年8月26日参加科目二考试", topics=["驾考"])
     )
     fact = unit["key_facts"][0]
+    # A stale custom prompt may still emit the retired field. It is not part
+    # of the authoritative contract and must not reach storage.
     fact["time"] = {
-        "raw": "周三",
-        "normalized": "2026-08-26",
-        "precision": "day",
+        "raw": "七声",
+        "normalized": "2026-08-19",
+        "precision": "exact",
     }
     fact["persona_reaction"] = {
         "emotion": "有些替他紧张",
@@ -881,8 +972,9 @@ async def test_s1_fact_source_time_and_reaction_are_bound_to_the_fact():
     result = await processor.process_conversation_result(messages)
 
     stored_fact = result.metadata["key_facts"][0]
-    assert stored_fact["source_message_ids"] == [1]
-    assert stored_fact["time"] == fact["time"]
+    assert "source_message_ids" not in stored_fact
+    assert "time" not in stored_fact
+    assert stored_fact["fact"] == "张三将在2026年8月26日参加科目二考试"
     assert stored_fact["persona_reaction"] == fact["persona_reaction"]
     assert result.metadata["source_window"]["first_message_id"] == 1
     assert result.metadata["source_window"]["last_message_id"] == 2
@@ -890,13 +982,13 @@ async def test_s1_fact_source_time_and_reaction_are_bound_to_the_fact():
 
 
 @pytest.mark.asyncio
-async def test_s1_message_timestamp_stays_source_metadata_when_fact_has_no_time():
+async def test_s1_message_timestamp_stays_source_metadata_without_fact_time():
     messages = _make_messages()
-    messages[0].content = "张三说宝是她的开机键"
+    messages[0].content = "记忆助手说宝是她的开机键"
     messages[0].timestamp = datetime(2026, 8, 19, 10, 8).timestamp()
     messages[1].timestamp = datetime(2026, 8, 19, 10, 9).timestamp()
     unit = _unit_from_json(
-        _memory_json("张三说宝是她的开机键", topics=["称呼习惯"])
+        _memory_json("记忆助手说宝是她的开机键", topics=["称呼习惯"])
     )
     processor = MemoryProcessor(
         llm_provider=_DummyLLMProvider(
@@ -908,80 +1000,22 @@ async def test_s1_message_timestamp_stays_source_metadata_when_fact_has_no_time(
     result = await processor.process_conversation_result(messages)
 
     assert result.status == "store"
-    assert result.metadata["key_facts"][0]["time"] is None
+    assert "time" not in result.metadata["key_facts"][0]
     assert result.metadata["source_time_label"] == "2026-08-19"
 
 
 @pytest.mark.asyncio
-async def test_s1_message_timestamp_cannot_be_copied_into_fact_time():
+async def test_s1_retired_time_field_cannot_invalidate_an_otherwise_valid_fact():
     messages = _make_messages()
-    messages[0].content = "张三说宝是她的开机键"
+    messages[0].content = "记忆助手说宝是她的开机键"
     messages[0].timestamp = datetime(2026, 8, 19, 10, 8).timestamp()
     unit = _unit_from_json(
-        _memory_json("张三说宝是她的开机键", topics=["称呼习惯"])
+        _memory_json("记忆助手说宝是她的开机键", topics=["称呼习惯"])
     )
     unit["key_facts"][0]["time"] = {
-        "raw": "2026-08-19",
-        "normalized": "2026-08-19",
-        "precision": "day",
-    }
-    processor = MemoryProcessor(
-        llm_provider=_DummyLLMProvider(
-            json.dumps({"memories": [unit]}, ensure_ascii=False)
-        ),
-        context=None,
-    )
-
-    result = await processor.process_conversation_result(messages)
-
-    assert result.status == "invalid"
-    assert "cited message body" in (result.error or "")
-    assert "message timestamp" in (result.error or "")
-
-
-@pytest.mark.asyncio
-async def test_s1_mismatched_relative_time_is_saved_unverified():
-    # 换算分歧不再拒绝整条记忆：时间保留模型结果并标记 unverified
-    messages = _make_messages()
-    messages[0].content = "我周三参加科目二考试"
-    messages[0].timestamp = datetime(2026, 8, 20, 9, 0).timestamp()
-    unit = _unit_from_json(
-        _memory_json("张三周三参加科目二考试", topics=["驾考"])
-    )
-    unit["key_facts"][0]["time"] = {
-        "raw": "周三",
-        "normalized": "2026-08-27",
-        "precision": "day",
-    }
-    response = json.dumps({"memories": [unit]}, ensure_ascii=False)
-    processor = MemoryProcessor(
-        llm_provider=_DummyLLMProvider(response), context=None
-    )
-
-    result = await processor.process_conversation_result(messages)
-
-    assert result.status == "store"
-    stored_time = result.metadata["key_facts"][0]["time"]
-    assert stored_time["normalized"] == "2026-08-27"
-    assert stored_time["unverified"] is True
-
-
-@pytest.mark.asyncio
-async def test_s1_relative_time_uses_the_message_that_contains_raw():
-    # 跨天窗口：raw 出现在第二条消息，基准必须取第二条，不能误杀正确结果
-    messages = _make_messages()
-    messages[0].content = "前天我去爬了山"
-    messages[0].timestamp = datetime(2026, 8, 18, 23, 50).timestamp()
-    messages[1].content = "昨天报名了驾考"
-    messages[1].timestamp = datetime(2026, 8, 19, 9, 0).timestamp()
-    unit = _unit_from_json(
-        _memory_json("张三昨天报名了驾考", topics=["驾考"])
-    )
-    unit["key_facts"][0]["source_indexes"] = [1, 2]
-    unit["key_facts"][0]["time"] = {
-        "raw": "昨天",
-        "normalized": "2026-08-18",
-        "precision": "day",
+        "raw": "2026-08-19 10:03:07",
+        "normalized": "2026-08-19 10:03:07",
+        "precision": "exact",
     }
     processor = MemoryProcessor(
         llm_provider=_DummyLLMProvider(
@@ -993,29 +1027,186 @@ async def test_s1_relative_time_uses_the_message_that_contains_raw():
     result = await processor.process_conversation_result(messages)
 
     assert result.status == "store"
-    stored_time = result.metadata["key_facts"][0]["time"]
-    assert stored_time["normalized"] == "2026-08-18"
-    assert "unverified" not in stored_time
+    assert "time" not in result.metadata["key_facts"][0]
 
 
-def test_s1_output_contract_distinguishes_fact_time_from_message_timestamp():
+def test_s1_output_contract_rewrites_relative_time_inside_fact_text():
     contract = MemoryProcessor._build_admission_output_contract(False)
 
-    assert "time.raw 必须逐字来自所引用消息正文" in contract
-    assert "禁止复制消息头的发送时间" in contract
+    assert "相对时间" in contract
+    assert "改写为具体日期" in contract
+    assert "不要把消息发送时间本身写成事实" in contract
+    assert '"time"' not in contract
 
 
-def test_s0_output_contract_uses_final_correction_and_future_reuse_value():
+def test_s1_output_contract_keeps_bot_and_user_roles_distinct():
+    contract = MemoryProcessor._build_admission_output_contract(False)
+
+    assert "描述当前 Bot 自己时只用第一人称“我”" in contract
+    assert "[Bot: ...] 不是用户" in contract
+    assert "source_indexes" not in contract
+
+
+def test_s1_output_contract_prevents_utterance_level_fragmentation():
+    contract = MemoryProcessor._build_admission_output_contract(False)
+
+    assert "每条最多 5 个 fact" in contract
+    assert "整个窗口合计最多 5 个 fact" in contract
+    assert "同一事件、同一段关系变化或同一结论的过程话语必须合并" in contract
+    assert "不要为了覆盖每句话而拆成多条 fact" in contract
+    assert "允许包含同一事件的原因、发展与结果" in contract
+
+
+def test_s0_output_contract_keeps_agreements_as_ordinary_facts():
     contract = MemoryProcessor._build_admission_output_contract(False)
 
     assert "后面的明确否认、纠正、澄清或形成的约定" in contract
-    assert "不得把已被否认的旧说法另存为事实" in contract
-    assert "几周或几个月后的另一场对话" in contract
-    assert "同一个玩笑在一个窗口内重复多次仍是一次性玩笑" in contract
-    assert "明确的互动偏好、边界及已接受的未来约定" in contract
-    assert "助手自己复述的旧记忆" in contract
-    assert "单次喊昵称、使用亲昵称呼或做出某个动作不自动等于稳定偏好" in contract
-    assert "真实发生过本身不等于值得长期保存" in contract
+    assert "不得保存已被否认的版本" in contract
+    assert "承诺、约定、边界和偏好按普通事实保存" in contract
+    assert "短期定时任务不由记忆系统代办" in contract
+    assert "未经对方确认的建议或旧约定，不得写入" in contract
+    assert "几周或几个月后的另一场对话" not in contract
+    assert "单次玩笑、昵称或亲昵称呼不自动成为稳定偏好" in contract
+    assert "单次重要冲突、修复或共同意义仍可保存" in contract
+    assert "Bot 复述的旧记忆" in contract
+
+
+@pytest.mark.asyncio
+async def test_legacy_fact_source_fields_are_discarded():
+    unit = _unit_from_json(
+        _memory_json("张三过去答应每天九点打卡", topics=["作息"])
+    )
+    fact = unit["key_facts"][0]
+    fact["source"] = "inferred"
+    fact["source_indexes"] = [2]
+    processor = MemoryProcessor(
+        llm_provider=_DummyLLMProvider(
+            json.dumps({"memories": [unit]}, ensure_ascii=False)
+        ),
+        context=None,
+    )
+
+    result = await processor.process_conversation_result(_make_messages())
+
+    assert result.status == "store"
+    stored_fact = result.metadata["key_facts"][0]
+    assert "source" not in stored_fact
+    assert "source_message_ids" not in stored_fact
+
+
+@pytest.mark.asyncio
+async def test_bot_third_person_wording_does_not_reject_the_whole_window():
+    messages = _make_messages()
+    messages[0].sender_name = "张三"
+    messages[0].content = "我周三参加科目二考试"
+    messages[1].sender_name = "记忆助手"
+    messages[1].content = "知道了"
+    unit = _unit_from_json(
+        _memory_json(
+            "记忆助手周三参加科目二考试",
+            topics=["驾考"],
+            participants=["记忆助手"],
+        )
+    )
+    processor = MemoryProcessor(
+        llm_provider=_DummyLLMProvider(
+            json.dumps({"memories": [unit]}, ensure_ascii=False)
+        ),
+        context=None,
+    )
+
+    result = await processor.process_conversation_result(messages)
+
+    assert result.status == "store"
+    assert result.metadata["key_facts"][0]["fact"] == "记忆助手周三参加科目二考试"
+
+
+@pytest.mark.asyncio
+async def test_bot_fact_reuses_first_person_persona_semantics():
+    messages = [
+        Message(
+            id=1,
+            session_id="s1",
+            role="user",
+            content="别再反复解释这个称呼了",
+            sender_id="u1",
+            sender_name="张三",
+            platform="test",
+            metadata={},
+        ),
+        Message(
+            id=2,
+            session_id="s1",
+            role="assistant",
+            content="我答应以后不再反复解释这个称呼",
+            sender_id="2783785959",
+            sender_name="2783785959",
+            platform="test",
+            metadata={"is_bot_message": True},
+        ),
+    ]
+    payload = json.loads(
+        _memory_json(
+            ("我答应以后不再反复解释这个称呼", "store", 0.8),
+            topics=["互动边界"],
+            participants=[],
+        )
+    )
+    llm = _DummyLLMProvider(json.dumps(payload, ensure_ascii=False))
+    processor = MemoryProcessor(llm_provider=llm, context=None)
+
+    result = await processor.process_conversation_result(
+        messages=messages, persona_id="Angelica"
+    )
+
+    assert result.status == "store"
+    stored_fact = result.metadata["key_facts"][0]
+    assert stored_fact["fact"] == "我答应以后不再反复解释这个称呼"
+    assert stored_fact["participant_refs"] == []
+
+
+@pytest.mark.asyncio
+async def test_bot_reply_can_bind_window_user_without_repeating_nickname():
+    messages = [
+        Message(
+            id=1,
+            session_id="s1",
+            role="user",
+            content="别再反复解释这个称呼了",
+            sender_id="u1",
+            sender_name="张三",
+            platform="test",
+            metadata={},
+        ),
+        Message(
+            id=2,
+            session_id="s1",
+            role="assistant",
+            content="行，以后不挂在嘴边解释",
+            sender_id="bot",
+            sender_name="Bot",
+            platform="test",
+            metadata={"is_bot_message": True},
+        ),
+    ]
+    payload = json.loads(
+        _memory_json(
+            ("我答应张三以后不再反复解释这个称呼", "store", 0.8),
+            topics=["互动边界"],
+            participants=["张三"],
+        )
+    )
+    processor = MemoryProcessor(
+        llm_provider=_DummyLLMProvider(json.dumps(payload, ensure_ascii=False)),
+        context=None,
+    )
+
+    result = await processor.process_conversation_result(messages=messages)
+
+    assert result.status == "store"
+    participant_ref = result.metadata["key_facts"][0]["participant_refs"][0]
+    assert participant_ref["participant_id"] == "test:u1"
+    assert participant_ref["source"] == "message_sender"
 
 
 @pytest.mark.asyncio

@@ -7,10 +7,15 @@ from typing import Any
 from astrbot.api import logger
 
 from ..models.memory_processing import InvalidMemoryOutputError
+from ..utils.memory_facts import unique_strings
 
 
 class MemoryProcessorParseMixin:
     """Parse automatic summaries and project admitted facts."""
+
+    MAX_MEMORY_UNITS = 5
+    MAX_FACTS_PER_MEMORY = 5
+    MAX_FACTS_PER_WINDOW = 5
 
     def _parse_llm_response(
         self, response_text: str, is_group_chat: bool
@@ -52,8 +57,20 @@ class MemoryProcessorParseMixin:
         raw_units = data["memories"]
         if not isinstance(raw_units, list):
             raise InvalidMemoryOutputError("memories 必须是数组")
-        if len(raw_units) > 5:
-            raise InvalidMemoryOutputError("memories 最多允许 5 条")
+        if len(raw_units) > self.MAX_MEMORY_UNITS:
+            raise InvalidMemoryOutputError(
+                f"输出过碎：memories 最多允许 {self.MAX_MEMORY_UNITS} 条"
+            )
+        total_facts = sum(
+            len(item.get("key_facts") or [])
+            for item in raw_units
+            if isinstance(item, dict) and isinstance(item.get("key_facts"), list)
+        )
+        if total_facts > self.MAX_FACTS_PER_WINDOW:
+            raise InvalidMemoryOutputError(
+                f"输出过碎：单个窗口总 fact 最多允许 {self.MAX_FACTS_PER_WINDOW} 条，"
+                f"实际 {total_facts} 条"
+            )
         return {
             "memories": [
                 self._validate_memory_unit(item, index, is_group_chat)
@@ -67,41 +84,25 @@ class MemoryProcessorParseMixin:
         label = f"memories[{unit_index}]"
         if not isinstance(item, dict):
             raise InvalidMemoryOutputError(f"{label} 必须是 object")
-        required = {"summary", "topics", "key_facts", "sentiment", "importance"}
+        required = {"key_facts"}
         missing = sorted(required.difference(item))
         if missing:
             raise InvalidMemoryOutputError(
                 f"{label} 缺少字段: {', '.join(missing)}"
             )
-        summary = item["summary"]
-        if not isinstance(summary, str):
-            raise InvalidMemoryOutputError(f"{label}.summary 必须是字符串")
-        topics = self._strict_string_list(
-            item["topics"], f"{label}.topics", max_items=5
-        )
-        sentiment = item["sentiment"]
-        if sentiment not in {"positive", "neutral", "negative"}:
-            raise InvalidMemoryOutputError(
-                f"{label}.sentiment 必须是 positive、neutral 或 negative"
-            )
-        importance = self._strict_importance(
-            item["importance"], f"{label}.importance"
-        )
         raw_facts = item["key_facts"]
         if not isinstance(raw_facts, list):
             raise InvalidMemoryOutputError(f"{label}.key_facts 必须是数组")
-        if len(raw_facts) > 5:
-            raise InvalidMemoryOutputError(f"{label}.key_facts 最多允许 5 条")
-        return {
-            "summary": summary.strip(),
-            "topics": topics,
-            "key_facts": [
-                self._validate_candidate_fact(fact, unit_index, fact_index)
-                for fact_index, fact in enumerate(raw_facts)
-            ],
-            "sentiment": sentiment,
-            "importance": importance,
-        }
+        if len(raw_facts) > self.MAX_FACTS_PER_MEMORY:
+            raise InvalidMemoryOutputError(
+                f"输出过碎：{label}.key_facts 最多允许 "
+                f"{self.MAX_FACTS_PER_MEMORY} 条"
+            )
+        facts = [
+            self._validate_candidate_fact(fact, unit_index, fact_index)
+            for fact_index, fact in enumerate(raw_facts)
+        ]
+        return {"key_facts": facts}
 
     def _validate_candidate_fact(
         self, item: Any, unit_index: int, fact_index: int
@@ -109,17 +110,7 @@ class MemoryProcessorParseMixin:
         label = f"memories[{unit_index}].key_facts[{fact_index}]"
         if not isinstance(item, dict):
             raise InvalidMemoryOutputError(f"{label} 必须是 object")
-        missing = {
-            "fact",
-            "action",
-            "topics",
-            "participants",
-            "time",
-            "importance",
-            "source",
-            "source_indexes",
-            "persona_reaction",
-        }.difference(item)
+        missing = {"fact", "topics", "importance"}.difference(item)
         if missing:
             raise InvalidMemoryOutputError(
                 f"{label} 缺少字段: {', '.join(sorted(missing))}"
@@ -128,79 +119,25 @@ class MemoryProcessorParseMixin:
         fact = item["fact"]
         if not isinstance(fact, str) or not fact.strip():
             raise InvalidMemoryOutputError(f"{label}.fact 必须是非空字符串")
-        action = item["action"]
-        if action not in {"store", "skip"}:
-            raise InvalidMemoryOutputError(f"{label}.action 只能是 store 或 skip")
         importance = self._strict_importance(
             item["importance"], f"{label}.importance"
         )
         topics = self._strict_string_list(
             item["topics"], f"{label}.topics", max_items=5
         )
-        participants = self._strict_string_list(
-            item["participants"], f"{label}.participants", max_items=10
-        )
-        source = item["source"]
-        if source not in {
-            "user_explicit",
-            "assistant_explicit",
-            "assistant_observed",
-            "group_consensus",
-            "inferred",
-        }:
-            raise InvalidMemoryOutputError(f"{label}.source 取值不合法")
-        source_indexes = item["source_indexes"]
-        if not isinstance(source_indexes, list) or not source_indexes:
-            raise InvalidMemoryOutputError(
-                f"{label}.source_indexes 必须是非空整数数组"
-            )
-        normalized_indexes: list[int] = []
-        for source_index in source_indexes:
-            if isinstance(source_index, bool) or not isinstance(source_index, int):
-                raise InvalidMemoryOutputError(
-                    f"{label}.source_indexes 必须是非空整数数组"
-                )
-            if source_index not in normalized_indexes:
-                normalized_indexes.append(source_index)
-
-        time_value = self._validate_fact_time_shape(item["time"], f"{label}.time")
         reaction = self._validate_persona_reaction(
-            item["persona_reaction"], f"{label}.persona_reaction"
+            item.get("persona_reaction"), f"{label}.persona_reaction"
         )
-        if "reason" in item and not isinstance(item["reason"], str):
-            raise InvalidMemoryOutputError(f"{label}.reason 必须是字符串")
 
-        normalized = dict(item)
-        normalized["fact"] = fact.strip()
-        normalized["action"] = action
-        normalized["topics"] = topics
-        normalized["participants"] = participants
-        normalized["time"] = time_value
-        normalized["importance"] = importance
-        normalized["source"] = source
-        normalized["source_indexes"] = normalized_indexes
-        normalized["persona_reaction"] = reaction
-        if "reason" in normalized:
-            normalized["reason"] = normalized["reason"].strip()
-        return normalized
-
-    @staticmethod
-    def _validate_fact_time_shape(value: Any, label: str) -> dict[str, str] | None:
-        if value is None:
-            return None
-        if not isinstance(value, dict):
-            raise InvalidMemoryOutputError(f"{label} 必须是 object 或 null")
-        if set(value) != {"raw", "normalized", "precision"}:
-            raise InvalidMemoryOutputError(
-                f"{label} 必须且只能包含 raw、normalized、precision"
-            )
-        normalized: dict[str, str] = {}
-        for field in ("raw", "normalized", "precision"):
-            item = value[field]
-            if not isinstance(item, str) or not item.strip():
-                raise InvalidMemoryOutputError(f"{label}.{field} 必须是非空字符串")
-            normalized[field] = item.strip()
-        return normalized
+        # Accept and discard fields emitted by an older custom prompt. The
+        # canonical contract keeps only values the model must actually judge.
+        return {
+            "fact": fact.strip(),
+            "topics": topics,
+            "importance": importance,
+            "persona_reaction": reaction,
+            "_legacy_skip": item.get("action") == "skip",
+        }
 
     @staticmethod
     def _validate_persona_reaction(
@@ -274,7 +211,7 @@ class MemoryProcessorParseMixin:
         for unit_index, unit in enumerate(structured_data["memories"]):
             stored_facts: list[dict[str, Any]] = []
             for candidate in unit["key_facts"]:
-                if candidate["action"] == "skip" or candidate["importance"] <= 0.2:
+                if candidate.pop("_legacy_skip", False) or candidate["importance"] <= 0.2:
                     skipped_count += 1
                     continue
                 fact = candidate["fact"]
@@ -287,11 +224,17 @@ class MemoryProcessorParseMixin:
                 stored_facts.append(candidate)
             if not stored_facts:
                 continue
-            admitted = dict(unit)
-            admitted["key_facts"] = stored_facts
-            admitted["importance"] = max(
-                candidate["importance"] for candidate in stored_facts
-            )
+            admitted = {
+                "summary": stored_facts[0]["fact"],
+                "topics": unique_strings(
+                    topic for candidate in stored_facts for topic in candidate["topics"]
+                ),
+                "key_facts": stored_facts,
+                "sentiment": "neutral",
+                "importance": max(
+                    candidate["importance"] for candidate in stored_facts
+                ),
+            }
             admitted_units.append((unit_index, admitted))
             stored_count += len(stored_facts)
 

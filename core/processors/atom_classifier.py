@@ -219,8 +219,6 @@ def classify_metadata_atoms(
                 {
                     "fact_id": fact.get("fact_id"),
                     "parent_id": fact.get("parent_id"),
-                    "source_message_ids": fact.get("source_message_ids", []),
-                    "time": fact.get("time"),
                 }
             )
         atoms.extend(classified)

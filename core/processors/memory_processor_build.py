@@ -15,11 +15,8 @@ from ..models.memory_contract import (
     normalize_concept_name,
     parent_memory_id,
     participant_id,
-    source_ids_for_indexes,
-    source_messages_for_indexes,
     stable_fact_id,
     topic_id,
-    validate_and_normalize_time,
 )
 from ..models.memory_processing import InvalidMemoryOutputError, MemoryWriteRecord
 from ..utils.memory_facts import fact_texts, unique_strings
@@ -168,24 +165,35 @@ class MemoryProcessorBuildMixin:
                 "source": "mentioned",
             }
 
+        def _participant_refs_for_fact(fact_text: str) -> list[dict[str, Any]]:
+            """Bind named human speakers deterministically from the window."""
+            text_key = concept_key(fact_text)
+            refs: list[dict[str, Any]] = []
+            for identity in identities:
+                if bool(identity.get("is_bot")):
+                    continue
+                aliases = unique_strings(
+                    [
+                        str(identity.get("display_name") or ""),
+                        *(str(item) for item in (identity.get("aliases") or [])),
+                    ]
+                )
+                alias_keys = {concept_key(alias) for alias in aliases if alias}
+                if not any(alias_key in text_key for alias_key in alias_keys):
+                    continue
+                ref = _resolve_participant(str(identity["display_name"]))
+                if ref["participant_id"] not in {
+                    item["participant_id"] for item in refs
+                }:
+                    refs.append(ref)
+            return refs
+
         records: list[MemoryWriteRecord] = []
-        seen_unit_keys: dict[str, int] = {}
         for original_unit_index, unit in admitted_units:
             prepared_facts: list[dict[str, Any]] = []
             for candidate in unit["key_facts"]:
-                indexes = candidate["source_indexes"]
-                try:
-                    direct_ids = source_ids_for_indexes(messages, indexes)
-                    direct_messages = source_messages_for_indexes(messages, indexes)
-                    normalized_time = validate_and_normalize_time(
-                        candidate["time"], direct_messages
-                    )
-                except ValueError as exc:
-                    raise InvalidMemoryOutputError(str(exc)) from exc
                 topic_refs = [_resolve_topic(name) for name in candidate["topics"]]
-                participant_refs = [
-                    _resolve_participant(name) for name in candidate["participants"]
-                ]
+                participant_refs = _participant_refs_for_fact(candidate["fact"])
                 prepared_facts.append(
                     {
                         "fact": candidate["fact"],
@@ -195,22 +203,13 @@ class MemoryProcessorBuildMixin:
                             ref["name"] for ref in participant_refs
                         ),
                         "participant_refs": participant_refs,
-                        "time": normalized_time,
                         "importance": candidate["importance"],
-                        "source": candidate["source"],
-                        "source_message_ids": direct_ids,
                         "persona_reaction": candidate["persona_reaction"],
                     }
                 )
 
             unit_key: dict[str, Any] = {
-                "source_message_ids": sorted(
-                    {
-                        str(source_id)
-                        for fact in prepared_facts
-                        for source_id in fact["source_message_ids"]
-                    }
-                ),
+                "source_order": original_unit_index,
                 "topic_ids": sorted(
                     {
                         ref["topic_id"]
@@ -225,42 +224,16 @@ class MemoryProcessorBuildMixin:
                         for ref in fact["participant_refs"]
                     }
                 ),
-                "times": sorted(
-                    {
-                        str(fact["time"]["normalized"])
-                        for fact in prepared_facts
-                        if fact["time"]
-                    }
-                ),
             }
-            serialized_unit_key = json.dumps(
-                unit_key, ensure_ascii=False, sort_keys=True
-            )
-            occurrence = seen_unit_keys.get(serialized_unit_key, 0)
-            seen_unit_keys[serialized_unit_key] = occurrence + 1
-            if occurrence:
-                unit_key["occurrence"] = occurrence
-                unit_key["source_order"] = original_unit_index
-
             parent_id = parent_memory_id(source_window["fingerprint"], unit_key)
-            signature_counts: dict[str, int] = {}
-            for fact in prepared_facts:
+            for fact_index, fact in enumerate(prepared_facts):
                 fact_key: dict[str, Any] = {
-                    "source_message_ids": [str(item) for item in fact["source_message_ids"]],
+                    "fact_order": fact_index,
                     "topic_ids": [ref["topic_id"] for ref in fact["topic_refs"]],
                     "participant_ids": [
                         ref["participant_id"] for ref in fact["participant_refs"]
                     ],
-                    "time": fact["time"],
-                    "source": fact["source"],
                 }
-                serialized_fact_key = json.dumps(
-                    fact_key, ensure_ascii=False, sort_keys=True
-                )
-                fact_occurrence = signature_counts.get(serialized_fact_key, 0)
-                signature_counts[serialized_fact_key] = fact_occurrence + 1
-                if fact_occurrence:
-                    fact_key["occurrence"] = fact_occurrence
                 fact["parent_id"] = parent_id
                 fact["fact_id"] = stable_fact_id(parent_id, fact_key)
 
@@ -400,7 +373,7 @@ class MemoryProcessorBuildMixin:
             source_reference=source_reference,
         )
         unit_key = {
-            "source_message_ids": [str(item) for item in source_window["message_ids"]],
+            "facts": [concept_key(item) for item in fact_values],
             "topic_ids": [item["topic_id"] for item in topic_refs],
             "participant_ids": [item["participant_id"] for item in participant_refs],
             "origin": origin,
@@ -409,9 +382,6 @@ class MemoryProcessorBuildMixin:
         prepared_facts: list[dict[str, Any]] = []
         for index, text in enumerate(fact_values):
             fact_key = {
-                "source_message_ids": [
-                    str(item) for item in source_window["message_ids"]
-                ],
                 "fact": concept_key(text),
                 "index": index,
             }
@@ -424,10 +394,7 @@ class MemoryProcessorBuildMixin:
                     "topic_refs": topic_refs,
                     "participants": participant_names,
                     "participant_refs": participant_refs,
-                    "time": None,
                     "importance": normalized_importance,
-                    "source": "user_explicit",
-                    "source_message_ids": list(source_window["message_ids"]),
                     "persona_reaction": None,
                 }
             )

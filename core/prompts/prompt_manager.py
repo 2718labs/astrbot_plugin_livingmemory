@@ -36,8 +36,8 @@ PROMPT_REGISTRY: dict[str, dict[str, Any]] = {
         "name_en": "Group Chat Memory Prompt",
         "description": "群聊场景下总结对话历史、提取结构化记忆的提示词模板",
         "description_en": "Template for summarizing group chat history and extracting structured memories",
-        "usage_note": "⚠️ JSON 顶层输出 memories；每个 fact 必须包含准入决定、独立 topic/participant、来源编号及可选时间/人格反应。格式错误将拒绝写入。",
-        "usage_note_en": "⚠️ JSON output uses top-level memories; each fact needs admission, its own topic/participants, source indexes, and optional time/persona reaction.",
+        "usage_note": "JSON 顶层输出 memories；模型只需生成 fact、topics、importance 及可选人格反应。相对时间直接改写进 fact 正文。",
+        "usage_note_en": "JSON uses top-level memories; the model emits fact, topics, importance, and an optional persona reaction. Relative time is rewritten inside the fact text.",
         "category": "memory_processing",
         "file": "group_chat_prompt.txt",
         "variables": ["{conversation}", "{current_date}"],
@@ -48,8 +48,8 @@ PROMPT_REGISTRY: dict[str, dict[str, Any]] = {
         "name_en": "Private Chat Memory Prompt",
         "description": "私聊场景下总结对话历史、提取结构化记忆的提示词模板",
         "description_en": "Template for summarizing private chat history and extracting structured memories",
-        "usage_note": "⚠️ JSON 顶层输出 memories；每个 fact 必须包含准入决定、独立 topic/participant、来源编号及可选时间/人格反应。格式错误将拒绝写入。",
-        "usage_note_en": "⚠️ JSON output uses top-level memories; each fact needs admission, its own topic/participants, source indexes, and optional time/persona reaction.",
+        "usage_note": "JSON 顶层输出 memories；模型只需生成 fact、topics、importance 及可选人格反应。相对时间直接改写进 fact 正文。",
+        "usage_note_en": "JSON uses top-level memories; the model emits fact, topics, importance, and an optional persona reaction. Relative time is rewritten inside the fact text.",
         "category": "memory_processing",
         "file": "private_chat_prompt.txt",
         "variables": ["{conversation}", "{current_date}"],
@@ -66,14 +66,9 @@ PROMPT_REGISTRY: dict[str, dict[str, Any]] = {
         "file": "memory_system_prompt_base.txt",
         "variables": ["{current_date}"],
         "default": (
-            "你正在提取本窗口中新确认、可独立复用的对话事实。先读到窗口结尾，以最后的明确纠正、"
-            "澄清和形成的约定为准，不保存已被否认的中间说法，也不把助手自己复述的旧记忆"
-            "再次写成新记忆。请严格按照 JSON 格式输出，"
-            "不写第一人称长篇总结。\n"
-            "当前日期时间: {current_date}\n"
-            "重要: time 只记录事实正文明确提到的事件时间；time.raw 必须来自"
-            "消息正文，禁止复制消息头的发送时间。消息头时间只用于换算相对时间表达；"
-            "正文没有时间表达时写 null，程序会再次校验。"
+            "你负责从对话窗口提取可长期接续的事实，并严格输出指定 JSON。"
+            "将事实正文中的相对时间改写为具体日期，不单独输出时间字段。"
+            "当前日期时间：{current_date}"
         ),
     },
     "memory_system_prompt_with_persona": {
@@ -89,18 +84,10 @@ PROMPT_REGISTRY: dict[str, dict[str, Any]] = {
         "variables": ["{base_prompt}", "{persona_prompt}", "{current_date}"],
         "default": (
             "{base_prompt}\n\n"
-            "## 你的人格设定\n"
+            "## 当前人格\n"
             "{persona_prompt}\n\n"
-            "## 记忆提取要求\n"
-            "事实和 summary 必须中性、完整、自包含，不得使用人格化口吻重写事实。\n"
-            "同一件事有前后变化时，以窗口结束时成立的最终说法为准；人格化玩笑、"
-            "比喻和自我解释不能覆盖对方后续的否认或澄清。\n"
-            "人格设定和你自己复述的旧记忆只是上下文，不是本窗口新学到的事实；"
-            "未经对方直接确认，不得再次写入。\n"
-            "人格设定只用于每条 fact 可选的 persona_reaction：emotion 和 thought "
-            "各最多一小句；不复述 fact、不编造反应，没有价值时写 null。\n"
-            "time 只记录 fact 正文明确提到的事件时间；消息头时间不是事件时间，"
-            "只能用于换算正文中的相对时间表达（当前日期: {current_date}），程序会再次校验。"
+            "人格只用于理解 Bot 的身份以及可选的短句 persona_reaction，"
+            "不得把人格设定本身写成新事实。"
         ),
     },
     "memory_injection_header": {
