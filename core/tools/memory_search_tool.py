@@ -137,6 +137,7 @@ class MemorySearchTool(FunctionTool[AstrAgentContext]):
                 session_id=recall_session_id,
                 persona_id=recall_persona_id,
             )
+            memories = list(memories or [])[:limited_k]
             packer = getattr(self.memory_engine, "pack_memory_hits", None)
             packed = packer(memories) if callable(packer) else None
             if packed is None or not isinstance(getattr(packed, "hits", None), list):

@@ -171,9 +171,6 @@ class CanonicalMemoryStore:
         """Build the only text allowed into fact FTS/vector projections."""
         parts = [str(fact.get("fact") or "").strip()]
         parts.extend(str(item).strip() for item in fact.get("participants", []) or [])
-        time_value = fact.get("time")
-        if isinstance(time_value, dict):
-            parts.append(str(time_value.get("normalized") or "").strip())
         parts.extend(str(item).strip() for item in fact.get("topics", []) or [])
         return " ".join(unique_strings(item for item in parts if item))
 
@@ -260,7 +257,7 @@ class CanonicalMemoryStore:
                 for fact in facts:
                     search_text = self.fact_search_text(fact)
                     tokens = await self.text_processor.tokenize_async(
-                        search_text, remove_stopwords=True
+                        search_text, remove_stopwords=False
                     )
                     processed_text = " ".join(tokens)
                     cursor = await self.db.execute(
@@ -490,7 +487,7 @@ class CanonicalMemoryStore:
                     )
                     inserted_vector_ids.append(vector_id)
                     tokens = await self.text_processor.tokenize_async(
-                        str(row["search_text"]), remove_stopwords=True
+                        str(row["search_text"]), remove_stopwords=False
                     )
                     await self.db.execute(
                         f"INSERT INTO {self.FTS_TABLE}(content, fact_id, parent_id) VALUES (?, ?, ?)",
@@ -888,7 +885,7 @@ class CanonicalMemoryStore:
         if self.db is None or self.fact_vector_db is None or not query.strip():
             return {"bm25": [], "vector": []}
         tokens = await self.text_processor.tokenize_async(
-            query, remove_stopwords=True
+            query, remove_stopwords=False
         )
         fts_query = " OR ".join(
             f'"{str(token).replace(chr(34), chr(34) * 2)}"'
@@ -1048,7 +1045,7 @@ class CanonicalMemoryStore:
                     )
                 )
                 tokens = await self.text_processor.tokenize_async(
-                    str(row["search_text"]), remove_stopwords=True
+                    str(row["search_text"]), remove_stopwords=False
                 )
                 await self.db.execute(
                     f"INSERT INTO {self.FTS_TABLE}(content, fact_id, parent_id) "

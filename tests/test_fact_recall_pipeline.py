@@ -22,6 +22,20 @@ class _TextProcessor:
         return [item.casefold() for item in str(text).split() if item]
 
 
+class _StopwordSensitiveTextProcessor:
+    def __init__(self):
+        self.remove_stopwords_values = []
+
+    async def tokenize_async(self, text, remove_stopwords=True):
+        self.remove_stopwords_values.append(remove_stopwords)
+        value = str(text)
+        tokens = ["记得"] if "记得" in value else ["张三"]
+        for token in ("想", "一直", "和", "在", "一起"):
+            if token in value and not remove_stopwords:
+                tokens.append(token)
+        return tokens
+
+
 def _record(fact_id: str, text: str, *, importance: float = 0.8):
     return {
         "fact_id": fact_id,
@@ -56,6 +70,21 @@ async def test_lightweight_query_abstains_before_search():
     retriever = CanonicalFactRetriever(store, _TextProcessor())
 
     bundle = await retriever.search("哈哈", limit=4)
+
+    assert bundle.hits == []
+    assert bundle.explanation == "lightweight_message_without_history_reference"
+    store.search_candidates.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_lightweight_query_with_pronoun_also_abstains_before_search():
+    store = SimpleNamespace(
+        search_candidates=AsyncMock(),
+        get_fact_records=AsyncMock(),
+    )
+    retriever = CanonicalFactRetriever(store, _TextProcessor())
+
+    bundle = await retriever.search("你在吗", limit=4)
 
     assert bundle.hits == []
     assert bundle.explanation == "lightweight_message_without_history_reference"
@@ -112,6 +141,37 @@ async def test_weak_vector_candidate_is_rejected_instead_of_filling_top_k():
 
 
 @pytest.mark.asyncio
+async def test_fact_recall_preserves_meaningful_stopword_phrase_overlap():
+    processor = _StopwordSensitiveTextProcessor()
+    store = SimpleNamespace(
+        search_candidates=AsyncMock(
+            return_value={
+                "bm25": [
+                    {"fact_id": "fact_phrase", "parent_id": "parent_shared", "score": -4.0}
+                ],
+                "vector": [
+                    {"fact_id": "fact_phrase", "parent_id": "parent_shared", "score": 0.48}
+                ],
+            }
+        ),
+        get_fact_records=AsyncMock(
+            return_value={
+                "fact_phrase": _record(
+                    "fact_phrase", "张三说想一直和记忆助手在一起。"
+                )
+            }
+        ),
+    )
+    retriever = CanonicalFactRetriever(store, processor)
+
+    bundle = await retriever.search("你还记得我说想一直和你在一起吗", limit=4)
+
+    assert [hit.metadata["fact_id"] for hit in bundle.hits] == ["fact_phrase"]
+    assert processor.remove_stopwords_values
+    assert all(value is False for value in processor.remove_stopwords_values)
+
+
+@pytest.mark.asyncio
 async def test_weak_graph_route_cannot_displace_strong_fact():
     store = SimpleNamespace(
         search_candidates=AsyncMock(
@@ -153,7 +213,9 @@ async def test_weak_graph_route_cannot_displace_strong_fact():
     assert breakdown["graph_calibrated"] == 0.0
 
 
-def _hit(fact_id: str, content: str, reaction=None) -> HybridResult:
+def _hit(
+    fact_id: str, content: str, reaction=None, *, parent_id: str = "parent"
+) -> HybridResult:
     return HybridResult(
         doc_id=1,
         final_score=0.9,
@@ -163,7 +225,7 @@ def _hit(fact_id: str, content: str, reaction=None) -> HybridResult:
         content=content,
         metadata={
             "fact_id": fact_id,
-            "parent_id": "parent",
+            "parent_id": parent_id,
             "persona_reaction": reaction,
             "topics": ["must not be injected"],
         },
@@ -172,7 +234,7 @@ def _hit(fact_id: str, content: str, reaction=None) -> HybridResult:
 
 def test_fact_packer_keeps_complete_facts_and_stops_at_hard_budget():
     first = _hit("f1", "first complete fact")
-    second = _hit("f2", "second complete fact")
+    second = _hit("f2", "second complete fact", parent_id="parent-2")
     renderer = lambda hits: "|".join(hit.content for hit in hits)
     budget = token_upper_bound("first complete fact")
 
@@ -186,6 +248,33 @@ def test_fact_packer_keeps_complete_facts_and_stops_at_hard_budget():
     assert [hit.metadata["fact_id"] for hit in packed.hits] == ["f1"]
     assert packed.token_count <= packed.token_budget
     assert packed.dropped == [{"fact_id": "f2", "reason": "total_budget"}]
+
+
+def test_fact_packer_keeps_independent_facts_from_one_parent():
+    first = _hit("f1", "the directly relevant fact")
+    sibling = _hit("f2", "another fact from the same source window")
+
+    packed = pack_fact_hits(
+        [first, sibling],
+        token_budget=1000,
+        single_fact_budget=500,
+    )
+
+    assert [hit.metadata["fact_id"] for hit in packed.hits] == ["f1", "f2"]
+    assert packed.dropped == []
+
+
+def test_chinese_fact_budget_is_counted_in_token_like_units_not_utf8_bytes():
+    fact = _hit("f1", "张三今年要参加考研，考试在十二月，目前正在重新开始复习。")
+
+    packed = pack_fact_hits(
+        [fact],
+        token_budget=1200,
+        single_fact_budget=32,
+    )
+
+    assert [hit.metadata["fact_id"] for hit in packed.hits] == ["f1"]
+    assert packed.token_count <= packed.token_budget
 
 
 def test_minimal_fact_format_separates_optional_reaction():
@@ -203,3 +292,12 @@ def test_minimal_fact_format_separates_optional_reaction():
     assert "must not be injected" not in payload
     assert "Importance" not in payload
     assert "Memory write time" not in payload
+
+
+def test_fact_injection_uses_absolute_date_already_written_in_fact_text():
+    hit = _hit("f1", "张三将在2026年8月8日早上九点复习")
+
+    entry = fact_entry_text(hit)
+
+    assert "张三将在2026年8月8日早上九点复习" in entry
+    assert "时间：" not in entry

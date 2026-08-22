@@ -254,10 +254,13 @@ class MemoryRecall:
 
                 recalled_memories = await self.memory_engine.search_memories(
                     query=query_for_search,
-                    k=self.config_manager.get("recall_engine.top_k", 5),
+                    k=top_k,
                     session_id=recall_session_id,
                     persona_id=recall_persona_id,
                 )
+                # top_k 是自动注入条目数的唯一数量收口；后续装配只处理
+                # 重复项与 token 预算，不再按 parent 二次减少独立事实。
+                recalled_memories = list(recalled_memories or [])[:top_k]
 
                 if recalled_memories:
                     packer = getattr(self.memory_engine, "pack_memory_hits", None)

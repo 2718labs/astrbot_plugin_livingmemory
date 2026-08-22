@@ -38,6 +38,7 @@ class CanonicalFactRetriever:
         "好的",
         "行",
         "在吗",
+        "你在吗",
         "早",
         "早安",
         "晚安",
@@ -63,6 +64,7 @@ class CanonicalFactRetriever:
         "你说过",
         "答应",
         "约定",
+        "来着",
         "remember",
         "last time",
         "before",
@@ -203,12 +205,12 @@ class CanonicalFactRetriever:
             )
 
         query_tokens = await self.text_processor.tokenize_async(
-            cleaned_query, remove_stopwords=True
+            cleaned_query, remove_stopwords=False
         )
         tokenized_facts = await asyncio.gather(
             *(
                 self.text_processor.tokenize_async(
-                    str(record.get("search_text") or ""), remove_stopwords=True
+                    str(record.get("search_text") or ""), remove_stopwords=False
                 )
                 for record in records.values()
             )
@@ -312,8 +314,6 @@ class CanonicalFactRetriever:
                 "importance": importance,
                 "status": record["status"],
                 "create_time": create_time,
-                "time": fact.get("time"),
-                "source_message_ids": fact.get("source_message_ids", []),
                 "persona_reaction": reaction,
                 "has_source": bool(record.get("source_window")),
                 "retrieval_route": route,

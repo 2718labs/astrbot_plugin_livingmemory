@@ -34,7 +34,8 @@ def test_explicit_memory_uses_same_v3_fact_contract_and_stable_ids():
     assert fact["fact"] == "张三喝咖啡时不加糖"
     assert fact["topics"] == ["咖啡偏好"]
     assert fact["participants"] == ["张三"]
-    assert fact["source"] == "user_explicit"
+    assert "source" not in fact
+    assert "source_message_ids" not in fact
 
 
 def test_fact_search_projection_excludes_persona_reaction():
@@ -43,7 +44,6 @@ def test_fact_search_projection_excludes_persona_reaction():
             "fact": "张三周三要考科目二",
             "topics": ["驾考"],
             "participants": ["张三"],
-            "time": {"normalized": "2026-08-26"},
             "persona_reaction": {
                 "emotion": "担心",
                 "thought": "希望她不要紧张",
@@ -53,6 +53,5 @@ def test_fact_search_projection_excludes_persona_reaction():
 
     assert "张三周三要考科目二" in search_text
     assert "驾考" in search_text
-    assert "2026-08-26" in search_text
     assert "担心" not in search_text
     assert "希望她不要紧张" not in search_text

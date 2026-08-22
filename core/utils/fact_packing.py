@@ -2,13 +2,28 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
 
+def estimate_token_count(text: str) -> int:
+    """Estimate text tokens without treating every UTF-8 byte as one token.
+
+    AstrBot cannot expose one exact tokenizer for every OpenAI-compatible
+    provider.  Count CJK/non-ASCII characters conservatively as one token and
+    ASCII text as roughly four characters per token.  This keeps the configured
+    budgets in token-like units while avoiding the old 3x penalty on Chinese.
+    """
+    value = str(text or "")
+    non_ascii = sum(ord(char) > 127 for char in value)
+    ascii_chars = len(value) - non_ascii
+    return int(math.ceil(non_ascii + ascii_chars / 4))
+
+
 def token_upper_bound(text: str) -> int:
-    """Return a model-independent upper bound for byte-based tokenizers."""
-    return len(str(text or "").encode("utf-8"))
+    """Backward-compatible name for the provider-independent token estimate."""
+    return estimate_token_count(text)
 
 
 def _reaction_text(value: Any) -> str:
@@ -29,11 +44,6 @@ def fact_entry_text(hit: Any, *, include_reaction: bool = True) -> str:
     content = str(getattr(hit, "content", "") or "").strip()
     metadata = getattr(hit, "metadata", {}) or {}
     lines = [f"- {content}"]
-    time_value = metadata.get("time")
-    if isinstance(time_value, dict):
-        normalized = str(time_value.get("normalized") or "").strip()
-        if normalized and normalized not in content:
-            lines.append(f"  时间：{normalized}")
     if include_reaction:
         reaction = _reaction_text(metadata.get("persona_reaction"))
         if reaction:
@@ -138,6 +148,7 @@ def pack_fact_hits(
 
 __all__ = [
     "PackedFacts",
+    "estimate_token_count",
     "fact_entry_text",
     "format_fact_hits_for_injection",
     "pack_fact_hits",

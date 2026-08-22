@@ -155,6 +155,64 @@ async def test_handle_memory_recall_injects_extra_user_content(handler, memory_e
 
 
 @pytest.mark.asyncio
+async def test_automatic_injection_uses_top_k_even_for_same_parent_facts(
+    memory_engine, conversation_manager
+):
+    """top_k controls the final fact count; parent grouping must not reduce it."""
+    test_handler = EventHandler(
+        context=Mock(),
+        config_manager=ConfigManager(
+            {
+                "recall_engine": {
+                    "top_k": 4,
+                    "injection_method": "extra_user_content",
+                    "injection_token_budget": 1200,
+                    "single_fact_token_budget": 320,
+                },
+                "filtering_settings": {
+                    "use_session_filtering": False,
+                    "use_persona_filtering": True,
+                },
+            }
+        ),
+        memory_engine=memory_engine,
+        memory_processor=Mock(),
+        conversation_manager=conversation_manager,
+    )
+    recalled = []
+    for index in range(1, 6):
+        hit = Mock(
+            content=f"同一段对话中的独立事实 {index}",
+            final_score=1.0 - index / 100,
+            metadata={
+                "fact_id": f"fact-{index}",
+                "parent_id": "one-parent",
+                "importance": 0.8,
+            },
+        )
+        hit.doc_id = index
+        recalled.append(hit)
+    # 即使底层错误地多回一条，自动注入仍由 top_k=4 最终收口。
+    memory_engine.search_memories = AsyncMock(return_value=recalled)
+
+    event = _make_event(group=False)
+    event.get_message_str.return_value = "回忆这些独立事实"
+    req = _make_req("回忆这些独立事实")
+
+    with patch(
+        "astrbot_plugin_livingmemory.core.event_handler_modules.memory_recall.get_persona_id",
+        new=AsyncMock(return_value="persona_1"),
+    ):
+        await test_handler.handle_memory_recall(event, req)
+
+    assert memory_engine.search_memories.await_args.kwargs["k"] == 4
+    injected = req.extra_user_content_parts[0].text
+    for index in range(1, 5):
+        assert f"独立事实 {index}" in injected
+    assert "独立事实 5" not in injected
+
+
+@pytest.mark.asyncio
 async def test_s0_baseline_uses_final_top4_after_recent_merge(
     tmp_path, conversation_manager
 ):
@@ -170,7 +228,7 @@ async def test_s0_baseline_uses_final_top4_after_recent_merge(
 
     relevant = [
         _result(1, "目标事实：张三周三参加科目二考试", 0.95),
-        _result(2, "张三最近在练习倒车入库", 0.85),
+        _result(2, "李四最近在练习倒车入库", 0.85),
         _result(3, "不会进入最终四条的弱候选", 0.40),
         _result(4, "最近记忆：已预约考试", 0.35),
     ]
