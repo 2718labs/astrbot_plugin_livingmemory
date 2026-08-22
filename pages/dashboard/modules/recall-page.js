@@ -97,9 +97,12 @@ export class RecallPage {
 
     if (statsEl) statsEl.classList.remove("hidden");
     if (countText) {
+      const candidates = Number(data.candidate_count ?? count);
+      const budget = Number(data.injection_token_budget || 0);
+      const used = Number(data.injection_token_upper_bound || 0);
       countText.textContent = count === 0
-        ? window.t("recall.noMatch")
-        : window.t("recall.resultsCount", count);
+        ? window.t("recall.noMatch") + " · " + window.t("recall.emptyStats", candidates, data.explanation || "abstained")
+        : window.t("recall.packStats", candidates, count, used, budget);
     }
     if (timeText) {
       const time = data.elapsed_time_ms || elapsed;
@@ -110,7 +113,11 @@ export class RecallPage {
     if (!resultsEl) return;
 
     if (count === 0) {
-      resultsEl.innerHTML = '<div class="table-empty">' + window.t("recall.noMatch") + '</div>';
+      const rejected = Array.isArray(data.rejected) ? data.rejected.length : 0;
+      resultsEl.innerHTML = '<div class="table-empty">' + window.t("recall.noMatch") +
+        '<br><span class="text-secondary">' + esc(rejected
+          ? window.t("recall.rejected", data.explanation || "abstained", rejected)
+          : (data.explanation || "abstained")) + '</span></div>';
       return;
     }
 
@@ -126,6 +133,8 @@ export class RecallPage {
       const importance = normalizeImportance(mem.metadata?.importance || 0.5).toFixed(1);
       const type = mem.metadata?.memory_type || "GENERAL";
       const status = mem.metadata?.status || "active";
+      const factId = mem.fact_id || mem.metadata?.fact_id || "--";
+      const route = mem.metadata?.retrieval_route || "fact";
 
       const scoreNum = Number(score);
       const scoreCls = scoreNum >= 0.75 ? "high" : scoreNum >= 0.45 ? "medium" : "low";
@@ -134,15 +143,20 @@ export class RecallPage {
       html += '<div class="result-card-header recall-result-header">';
       html += '<span class="result-rank recall-result-rank">#' + (idx + 1) + '</span>';
       html += '<span class="cell-mono recall-result-id">ID: ' + memoryId + '</span>';
+      html += '<span class="cell-mono recall-result-id">' + window.t("recall.factId") + ': ' + esc(String(factId)) + '</span>';
       html += '<span class="result-score-badge ' + scoreCls + ' recall-result-score">Score: ' + score + '</span>';
       html += statusPill(status);
       html += '<span class="type-tag">' + esc(type) + '</span>';
+      html += '<span class="type-tag">' + esc(route) + '</span>';
       html += '</div>';
       html += '<div class="result-content recall-result-content">' + esc(content) + '</div>';
       html += '<div class="recall-result-meta text-secondary">';
       html += '<span>' + window.t("detail.importance") + ': ' + importance + '/10</span>';
       if (mem.metadata?.session_id) {
         html += '<span>Session: ' + esc(String(mem.metadata.session_id)) + '</span>';
+      }
+      if (mem.metadata?.selection_reason) {
+        html += '<span>' + esc(String(mem.metadata.selection_reason)) + '</span>';
       }
       html += '</div>';
       html += '</div>';

@@ -248,9 +248,10 @@ def format_memories_for_fake_tool_call(
             )
 
         display_content = _memory_injection_content(content, metadata)
+        fact_id = metadata.get("fact_id") if isinstance(metadata, dict) else None
         serialized_results.append(
             {
-                "id": memory_id,
+                "id": fact_id or memory_id,
                 "content": display_content,
                 "score": round(score, 4) if isinstance(score, float) else score,
                 "importance": metadata.get("importance", 0.5),
@@ -258,6 +259,14 @@ def format_memories_for_fake_tool_call(
                 "persona_id": metadata.get("persona_id"),
                 "create_time": metadata.get("create_time"),
                 "last_access_time": metadata.get("last_access_time"),
+                **(
+                    {
+                        "parent_memory_id": memory_id,
+                        "parent_id": metadata.get("parent_id"),
+                    }
+                    if fact_id
+                    else {}
+                ),
             }
         )
 

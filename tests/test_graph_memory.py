@@ -8,6 +8,8 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+from astrbot.core.db.vec_db.faiss_impl.vec_db import FaissVecDB
+from astrbot.core.provider.provider import EmbeddingProvider
 from astrbot_plugin_livingmemory.core.managers.graph_memory_manager import (
     GraphMemoryManager,
 )
@@ -18,6 +20,7 @@ from astrbot_plugin_livingmemory.core.models.graph_models import (
     GraphNode,
 )
 from astrbot_plugin_livingmemory.core.processors.graph_extractor import GraphExtractor
+from astrbot_plugin_livingmemory.core.processors.memory_processor import MemoryProcessor
 from astrbot_plugin_livingmemory.core.processors.text_processor import TextProcessor
 from astrbot_plugin_livingmemory.core.retrieval.graph_keyword_retriever import (
     GraphKeywordRetriever,
@@ -34,6 +37,25 @@ from astrbot_plugin_livingmemory.storage.graph_store import GraphStore
 class _FakeRetrieveResult:
     similarity: float
     data: dict
+
+
+class _DeterministicEmbeddingProvider(EmbeddingProvider):
+    def __init__(self, dim: int = 24):
+        super().__init__({"id": "graph-test-embedding", "type": "test"}, {})
+        self._dim = dim
+
+    async def get_embedding(self, text: str) -> list[float]:
+        vector = [0.0] * self._dim
+        for idx, byte in enumerate(text.encode("utf-8")):
+            vector[idx % self._dim] += ((byte % 31) + 1) / 31.0
+        norm = sum(value * value for value in vector) ** 0.5 or 1.0
+        return [value / norm for value in vector]
+
+    async def get_embeddings(self, text: list[str]) -> list[list[float]]:
+        return [await self.get_embedding(item) for item in text]
+
+    def get_dim(self) -> int:
+        return self._dim
 
 
 class _FakeDocumentStorage:
@@ -687,9 +709,22 @@ async def test_graph_keyword_retriever_supports_configurable_second_hop(
 @pytest.mark.asyncio
 async def test_memory_engine_dual_route_promotes_graph_hits(tmp_path: Path):
     doc_db_path = tmp_path / "memory.db"
+    document_vectors = FaissVecDB(
+        doc_store_path=str(doc_db_path),
+        index_store_path=str(tmp_path / "memory.index"),
+        embedding_provider=_DeterministicEmbeddingProvider(),
+    )
+    fact_vectors = FaissVecDB(
+        doc_store_path=str(tmp_path / "facts.db"),
+        index_store_path=str(tmp_path / "facts.index"),
+        embedding_provider=_DeterministicEmbeddingProvider(),
+    )
+    await document_vectors.initialize()
+    await fact_vectors.initialize()
     engine = MemoryEngine(
         db_path=str(doc_db_path),
-        faiss_db=_FakeFaissDB(),
+        faiss_db=document_vectors,
+        fact_vector_db=fact_vectors,
         graph_vector_db=_FakeFaissDB(),
         config={
             "fallback_enabled": True,
@@ -700,29 +735,36 @@ async def test_memory_engine_dual_route_promotes_graph_hits(tmp_path: Path):
     )
     await engine.initialize()
 
-    matching_id = await engine.add_memory(
-        content="项目讨论记录",
-        session_id="test:private:s1",
-        persona_id="persona_1",
+    processor = MemoryProcessor(llm_provider=object())
+    matching = processor.build_explicit_memory_record(
+        memory="项目讨论记录",
+        source_scope="test:private:s1",
+        topics=["项目讨论"],
+        key_facts=["张三安排明天下午三点开会"],
+        participants=["张三"],
         importance=0.8,
-        metadata={
-            "topics": ["项目讨论"],
-            "participants": ["张三"],
-            "key_facts": ["明天下午三点开会"],
-            "canonical_summary": "项目讨论记录",
-        },
+        origin="test_fixture",
     )
-    other_id = await engine.add_memory(
-        content="普通对话记录",
+    matching_id = await engine.add_canonical_memory(
+        metadata=matching.metadata,
         session_id="test:private:s1",
         persona_id="persona_1",
+        importance=matching.importance,
+    )
+    other = processor.build_explicit_memory_record(
+        memory="普通对话记录",
+        source_scope="test:private:s1",
+        topics=["闲聊"],
+        key_facts=["王五说天气不错"],
+        participants=["王五"],
         importance=0.5,
-        metadata={
-            "topics": ["闲聊"],
-            "participants": ["王五"],
-            "key_facts": ["天气不错"],
-            "canonical_summary": "普通对话记录",
-        },
+        origin="test_fixture",
+    )
+    other_id = await engine.add_canonical_memory(
+        metadata=other.metadata,
+        session_id="test:private:s1",
+        persona_id="persona_1",
+        importance=other.importance,
     )
 
     assert matching_id != other_id
@@ -735,7 +777,8 @@ async def test_memory_engine_dual_route_promotes_graph_hits(tmp_path: Path):
     )
     assert results
     assert results[0].doc_id == matching_id
-    assert (results[0].score_breakdown or {}).get("graph_keyword_score", 0.0) > 0
+    assert results[0].metadata["fact_id"]
+    assert (results[0].score_breakdown or {}).get("graph_keyword_raw", 0.0) > 0
 
     await engine.close()
 

@@ -19,6 +19,7 @@ from ..processors.graph_extractor import GraphExtractor
 from ..processors.text_processor import TextProcessor
 from ..retrieval.bm25_retriever import BM25Retriever
 from ..retrieval.dual_route_retriever import DualRouteRetriever
+from ..retrieval.fact_retriever import CanonicalFactRetriever
 from ..retrieval.graph_keyword_retriever import GraphKeywordRetriever
 from ..retrieval.graph_retriever import GraphRetriever
 from ..retrieval.graph_vector_retriever import GraphVectorRetriever
@@ -136,6 +137,7 @@ class MemoryEngine(MemoryEngineWriteOpsMixin, MemoryEngineCrudMixin, MemoryEngin
         self.graph_retriever = None
         self.graph_memory_manager = None
         self.dual_route_retriever = None
+        self.fact_retriever = None
         self.atom_store = None
         self.atom_lifecycle_manager = None
         self.atom_retriever = None
@@ -248,6 +250,16 @@ class MemoryEngine(MemoryEngineWriteOpsMixin, MemoryEngineCrudMixin, MemoryEngin
                     self.get_memory,
                     self.config,
                 )
+
+        # S5: canonical facts are the production retrieval unit. The legacy
+        # document and dual-route retrievers remain available for maintenance
+        # and comparison, but search_memories() no longer consumes them.
+        self.fact_retriever = CanonicalFactRetriever(
+            self.canonical_store,
+            self.text_processor,
+            self.graph_retriever if float(self.config.get("graph_route_weight", 0.0)) > 0 else None,
+            self.config,
+        )
 
         if self._write_op_repair_enabled:
             await self._repair_incomplete_write_ops()

@@ -179,6 +179,8 @@
     "detail.created":     { zh: "创建时间", en: "Created", ru: "Создано" },
     "detail.lastAccess":  { zh: "最后访问", en: "Last Access", ru: "Доступ" },
     "detail.notFound":    { zh: "未找到对应的记录", en: "Record not found", ru: "Запись не найдена" },
+    "detail.factLifecycle":{ zh: "事实 {0} · {1} · 检索 {2} · 注入 {3}", en: "Fact {0} · {1} · retrieved {2} · injected {3}", ru: "Факт {0} · {1} · найдено {2} · внедрено {3}" },
+    "detail.personaReaction":{ zh: "当时反应：{0}", en: "Reaction then: {0}", ru: "Реакция тогда: {0}" },
 
     /* ---- Edit Modal ---- */
     "edit.title":         { zh: "编辑记忆", en: "Edit Memory", ru: "Редактировать память" },
@@ -375,6 +377,10 @@
     "recall.empty":       { zh: "暂无召回结果 · 请输入查询内容并执行召回", en: "No results · Enter a query and run recall", ru: "Нет результатов · Введите запрос и запустите поиск" },
     "recall.noMatch":     { zh: "未找到匹配的记忆", en: "No matching memories found", ru: "Совпадений не найдено" },
     "recall.noResults":   { zh: "未找到匹配的记忆", en: "No matching memories found", ru: "Совпадений не найдено" },
+    "recall.emptyStats":  { zh: "候选 {0} · {1}", en: "{0} candidates · {1}", ru: "Кандидатов: {0} · {1}" },
+    "recall.packStats":   { zh: "候选 {0} · 最终 {1} · 预算 {2}/{3}", en: "{0} candidates · {1} injected · budget {2}/{3}", ru: "Кандидатов: {0} · внедрено: {1} · бюджет {2}/{3}" },
+    "recall.rejected":    { zh: "{0} · 拒绝 {1} 条", en: "{0} · {1} rejected", ru: "{0} · отклонено: {1}" },
+    "recall.factId":      { zh: "事实", en: "Fact", ru: "Факт" },
     "recall.enterQuery":  { zh: "请输入查询内容", en: "Please enter a query", ru: "Введите запрос" },
     "recall.queryRequired":{ zh: "请输入查询内容", en: "Please enter a query", ru: "Введите запрос" },
     "recall.searching":   { zh: "执行中...", en: "Running...", ru: "Поиск..." },

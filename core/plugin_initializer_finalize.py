@@ -115,7 +115,7 @@ class InitializerFinalizeMixin:
                     "recall_engine.min_similarity_for_retrieval", 0.0
                 ),
                 "recent_memory_count": self.config_manager.get(
-                    "recall_engine.recent_memory_count", 2
+                    "recall_engine.recent_memory_count", 0
                 ),
                 "recent_memory_max_age_hours": self.config_manager.get(
                     "recall_engine.recent_memory_max_age_hours", 72
@@ -135,6 +135,30 @@ class InitializerFinalizeMixin:
                 "fallback_enabled": self.config_manager.get(
                     "recall_engine.fallback_to_vector", True
                 ),
+                "fact_candidate_k": self.config_manager.get(
+                    "recall_engine.fact_candidate_k", 20
+                ),
+                "fact_min_lexical_score": self.config_manager.get(
+                    "recall_engine.fact_min_lexical_score", 0.34
+                ),
+                "fact_min_vector_similarity": self.config_manager.get(
+                    "recall_engine.fact_min_vector_similarity", 0.62
+                ),
+                "fact_min_graph_score": self.config_manager.get(
+                    "recall_engine.fact_min_graph_score", 0.62
+                ),
+                "fact_min_final_score": self.config_manager.get(
+                    "recall_engine.fact_min_final_score", 0.42
+                ),
+                "injection_token_budget": self.config_manager.get(
+                    "recall_engine.injection_token_budget", 1200
+                ),
+                "single_fact_token_budget": self.config_manager.get(
+                    "recall_engine.single_fact_token_budget", 320
+                ),
+                "include_persona_reaction": self.config_manager.get(
+                    "recall_engine.include_persona_reaction", True
+                ),
                 "cleanup_days_threshold": self.config_manager.get(
                     "forgetting_agent.cleanup_days_threshold", 30
                 ),
@@ -150,10 +174,10 @@ class InitializerFinalizeMixin:
                 "stopwords_path": str(stopwords_dir),
                 "graph_memory_enabled": graph_memory_enabled,
                 "document_route_weight": self.config_manager.get(
-                    "graph_memory.document_route_weight", 0.65
+                    "graph_memory.document_route_weight", 1.0
                 ),
                 "graph_route_weight": self.config_manager.get(
-                    "graph_memory.graph_route_weight", 0.35
+                    "graph_memory.graph_route_weight", 0.0
                 ),
                 "cross_route_bonus": self.config_manager.get(
                     "graph_memory.cross_route_bonus", 0.08

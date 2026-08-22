@@ -60,6 +60,9 @@ class MemoryEngineBatchMixin:
                 uuid_rows = await cursor.fetchall()
                 found_ids = [int(row["id"]) for row in uuid_rows]
                 if found_ids:
+                    if self.canonical_store is not None:
+                        for memory_id in found_ids:
+                            await self.canonical_store.delete_by_document(memory_id)
                     deleted_vector_ids = await self.vector_retriever.delete_documents(
                         found_ids
                     )
@@ -269,6 +272,9 @@ class MemoryEngineBatchMixin:
         )
         await self.db_connection.commit()
 
+        if self.canonical_store is not None:
+            await self.canonical_store.archive_documents(archived_ids)
+
         embedding_storage = getattr(self.faiss_db, "embedding_storage", None)
         embedding_delete = getattr(embedding_storage, "delete", None)
         if callable(embedding_delete):
@@ -309,6 +315,7 @@ class MemoryEngineBatchMixin:
         content = str(memory.get("text") or "")
         vector_inserted = False
         fts_inserted = False
+        canonical_restored = False
         metadata["status"] = "active"
         metadata["restored_at"] = time.time()
         metadata.pop("archived_at", None)
@@ -326,6 +333,12 @@ class MemoryEngineBatchMixin:
                 await self.graph_memory_manager.index_memory(
                     memory_id, content, metadata
                 )
+
+            if self.canonical_store is not None:
+                restored = await self.canonical_store.restore_document(memory_id)
+                canonical_restored = restored
+                if metadata.get("memory_schema_version") == "v3" and not restored:
+                    raise RuntimeError("canonical facts could not be restored")
 
             await self.db_connection.execute(
                 "UPDATE documents SET metadata = ? WHERE id = ?",
@@ -345,6 +358,8 @@ class MemoryEngineBatchMixin:
                 await embedding_delete([memory_id])
             if self.graph_memory_manager is not None:
                 await self.graph_memory_manager.delete_memory(memory_id)
+            if canonical_restored and self.canonical_store is not None:
+                await self.canonical_store.archive_documents([memory_id])
             if self.atom_store is not None:
                 await self.atom_store.delete_by_parent(memory_id)
             raise

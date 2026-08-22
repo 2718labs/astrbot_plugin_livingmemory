@@ -134,10 +134,10 @@
                 "default": 0.0
             },
             "recent_memory_count": {
-                "description": "近期记忆保留数量",
-                "hint": "在每次召回中为当前范围内的近期记忆保留槽位，避免只依赖向量相似度。设为 0 可关闭。",
+                "description": "近期记忆固定槽位（已废弃）",
+                "hint": "S5 起近期程度只作为相关候选的轻量排序信号，不再绕过相关性占用固定槽位。该值保留用于读取旧配置，不再影响生产召回。",
                 "type": "int",
-                "default": 2
+                "default": 0
             },
             "recent_memory_max_age_hours": {
                 "description": "近期记忆时间窗口（小时）",
@@ -189,6 +189,54 @@
                 "hint": "仅使用该时间范围内的历史消息扩展召回查询，避免新话题被过久之前的上下文干扰。设为 0 表示不限制时间。",
                 "type": "int",
                 "default": 7200
+            },
+            "fact_candidate_k": {
+                "description": "事实候选池大小",
+                "hint": "先取较多事实判断相关性；候选数量不等于最终注入数量。",
+                "type": "int",
+                "default": 20
+            },
+            "fact_min_lexical_score": {
+                "description": "事实关键词相关性门槛",
+                "hint": "关键词证据低于该值时，必须由足够强的向量或图证据支持才能进入候选。",
+                "type": "float",
+                "default": 0.34
+            },
+            "fact_min_vector_similarity": {
+                "description": "事实向量相关性门槛",
+                "hint": "用于拒绝只有很弱语义相似的事实；应通过固定正负样本校准。",
+                "type": "float",
+                "default": 0.62
+            },
+            "fact_min_graph_score": {
+                "description": "图路线可信度门槛",
+                "hint": "图路线低于该绝对门槛时不贡献分数，避免弱路线第一名被包装成满信号。",
+                "type": "float",
+                "default": 0.62
+            },
+            "fact_min_final_score": {
+                "description": "最终事实相关性门槛",
+                "hint": "所有有效路线校准后仍低于该值时返回空结果。",
+                "type": "float",
+                "default": 0.42
+            },
+            "injection_token_budget": {
+                "description": "单轮事实注入硬预算",
+                "hint": "预算覆盖注入说明、完整事实、必要时间和可选人格反应；放不下下一条时停止，不截断事实。",
+                "type": "int",
+                "default": 1200
+            },
+            "single_fact_token_budget": {
+                "description": "单条事实注入上限",
+                "hint": "超过上限的异常长事实不会被截成残句，而是跳过并留待校对。",
+                "type": "int",
+                "default": 320
+            },
+            "include_persona_reaction": {
+                "description": "附带当时反应",
+                "hint": "仅随命中的事实、且在同一预算内附带简短情绪或想法；不会参与搜索和排序。",
+                "type": "bool",
+                "default": true
             },
             "search_cache_enabled": {
                 "description": "启用短期检索缓存",
@@ -347,16 +395,16 @@
                 "default": true
             },
             "document_route_weight": {
-                "description": "文档路权重",
-                "hint": "文档路融合分数在最终双路排序中的占比。",
+                "description": "事实路权重",
+                "hint": "canonical fact 路在最终双路排序中的占比。图路关闭时事实路独立评分。",
                 "type": "float",
-                "default": 0.65
+                "default": 1.0
             },
             "graph_route_weight": {
                 "description": "图路权重",
-                "hint": "图路融合分数在最终双路排序中的占比。",
+                "hint": "图路融合分数占比。完成独有收益和弱图回归前默认 0；显式调高才启用生产图召回。",
                 "type": "float",
-                "default": 0.35
+                "default": 0.0
             },
             "cross_route_bonus": {
                 "description": "双路命中加分",

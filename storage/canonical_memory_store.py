@@ -91,6 +91,10 @@ class CanonicalMemoryStore:
                 importance REAL NOT NULL,
                 vector_doc_id INTEGER UNIQUE,
                 status TEXT NOT NULL,
+                last_retrieved_at REAL,
+                retrieval_count INTEGER NOT NULL DEFAULT 0,
+                last_injected_at REAL,
+                injection_count INTEGER NOT NULL DEFAULT 0,
                 created_at REAL NOT NULL,
                 updated_at REAL NOT NULL,
                 FOREIGN KEY(parent_id) REFERENCES memory_parents(parent_id)
@@ -112,6 +116,19 @@ class CanonicalMemoryStore:
             );
             """
         )
+        cursor = await self.db.execute("PRAGMA table_info(memory_facts)")
+        existing_columns = {str(row["name"]) for row in await cursor.fetchall()}
+        lifecycle_columns = {
+            "last_retrieved_at": "REAL",
+            "retrieval_count": "INTEGER NOT NULL DEFAULT 0",
+            "last_injected_at": "REAL",
+            "injection_count": "INTEGER NOT NULL DEFAULT 0",
+        }
+        for column, declaration in lifecycle_columns.items():
+            if column not in existing_columns:
+                await self.db.execute(
+                    f"ALTER TABLE memory_facts ADD COLUMN {column} {declaration}"
+                )
         await self.db.commit()
 
     async def close(self) -> None:
@@ -376,17 +393,157 @@ class CanonicalMemoryStore:
             )
             await self.db.commit()
 
+    async def archive_documents(self, document_ids: list[int]) -> int:
+        """Archive canonical facts and remove both searchable projections."""
+        if self.db is None:
+            return 0
+        unique_ids = list(dict.fromkeys(int(item) for item in document_ids))
+        if not unique_ids:
+            return 0
+        placeholders = ",".join("?" * len(unique_ids))
+        async with self._write_lock:
+            cursor = await self.db.execute(
+                f"""
+                SELECT p.parent_id, f.vector_doc_id
+                FROM memory_parents p
+                JOIN memory_facts f ON f.parent_id = p.parent_id
+                WHERE p.document_id IN ({placeholders})
+                  AND p.status = 'active' AND f.status = 'active'
+                """,
+                unique_ids,
+            )
+            rows = await cursor.fetchall()
+            parent_ids = list(dict.fromkeys(str(row["parent_id"]) for row in rows))
+            vector_ids = [
+                int(row["vector_doc_id"])
+                for row in rows
+                if row["vector_doc_id"] is not None
+            ]
+            if not parent_ids:
+                return 0
+            if vector_ids and self.fact_vector_db is not None:
+                deleted = await delete_faiss_documents_by_ids(
+                    self.fact_vector_db, vector_ids
+                )
+                if deleted is None:
+                    raise RuntimeError("fact vector storage cannot archive by integer id")
+            parent_placeholders = ",".join("?" * len(parent_ids))
+            await self.db.execute(
+                f"DELETE FROM {self.FTS_TABLE} WHERE parent_id IN ({parent_placeholders})",
+                parent_ids,
+            )
+            now = time.time()
+            await self.db.execute(
+                f"""
+                UPDATE memory_facts
+                SET status = 'archived', vector_doc_id = NULL, updated_at = ?
+                WHERE parent_id IN ({parent_placeholders}) AND status = 'active'
+                """,
+                (now, *parent_ids),
+            )
+            await self.db.execute(
+                f"""
+                UPDATE memory_parents SET status = 'archived', updated_at = ?
+                WHERE parent_id IN ({parent_placeholders}) AND status = 'active'
+                """,
+                (now, *parent_ids),
+            )
+            await self.db.commit()
+            return len(parent_ids)
+
+    async def restore_document(self, document_id: int) -> bool:
+        """Restore archived canonical facts and rebuild their projections."""
+        if self.db is None or self.fact_vector_db is None:
+            return False
+        async with self._write_lock:
+            cursor = await self.db.execute(
+                """
+                SELECT p.parent_id, f.id, f.fact_id, f.search_text, f.scope,
+                       f.persona_id, f.importance
+                FROM memory_parents p
+                JOIN memory_facts f ON f.parent_id = p.parent_id
+                WHERE p.document_id = ? AND p.status = 'archived'
+                ORDER BY f.id ASC
+                """,
+                (int(document_id),),
+            )
+            rows = await cursor.fetchall()
+            if not rows:
+                return False
+            parent_id = str(rows[0]["parent_id"])
+            inserted_vector_ids: list[int] = []
+            try:
+                for row in rows:
+                    vector_id = int(
+                        await self.fact_vector_db.insert(
+                            content=str(row["search_text"]),
+                            metadata={
+                                "fact_id": str(row["fact_id"]),
+                                "parent_id": parent_id,
+                                "session_id": str(row["scope"]),
+                                "persona_id": row["persona_id"],
+                                "importance": float(row["importance"]),
+                                "status": "active",
+                                "schema_version": MEMORY_SCHEMA_VERSION,
+                            },
+                        )
+                    )
+                    inserted_vector_ids.append(vector_id)
+                    tokens = await self.text_processor.tokenize_async(
+                        str(row["search_text"]), remove_stopwords=True
+                    )
+                    await self.db.execute(
+                        f"INSERT INTO {self.FTS_TABLE}(content, fact_id, parent_id) VALUES (?, ?, ?)",
+                        (" ".join(tokens), str(row["fact_id"]), parent_id),
+                    )
+                    await self.db.execute(
+                        "UPDATE memory_facts SET vector_doc_id = ?, status = 'active', updated_at = ? WHERE id = ?",
+                        (vector_id, time.time(), int(row["id"])),
+                    )
+                await self.db.execute(
+                    "UPDATE memory_parents SET status = 'active', updated_at = ? WHERE parent_id = ?",
+                    (time.time(), parent_id),
+                )
+                await self.db.commit()
+                return True
+            except asyncio.CancelledError:
+                await asyncio.shield(self._rollback_restored_parent(parent_id, inserted_vector_ids))
+                raise
+            except Exception:
+                await self._rollback_restored_parent(parent_id, inserted_vector_ids)
+                raise
+
+    async def _rollback_restored_parent(
+        self, parent_id: str, vector_ids: list[int]
+    ) -> None:
+        if self.db is None:
+            return
+        if vector_ids and self.fact_vector_db is not None:
+            await delete_faiss_documents_by_ids(self.fact_vector_db, vector_ids)
+        await self.db.execute(
+            f"DELETE FROM {self.FTS_TABLE} WHERE parent_id = ?", (parent_id,)
+        )
+        await self.db.execute(
+            "UPDATE memory_facts SET vector_doc_id = NULL, status = 'archived' WHERE parent_id = ?",
+            (parent_id,),
+        )
+        await self.db.execute(
+            "UPDATE memory_parents SET status = 'archived' WHERE parent_id = ?",
+            (parent_id,),
+        )
+        await self.db.commit()
+
     async def get_facts_by_document(self, document_id: int) -> list[dict[str, Any]]:
         if self.db is None:
             return []
         cursor = await self.db.execute(
             """
-            SELECT f.fact_json
+            SELECT f.fact_json, f.status, f.importance,
+                   f.last_retrieved_at, f.retrieval_count,
+                   f.last_injected_at, f.injection_count
             FROM memory_facts f
             JOIN memory_parents p ON p.parent_id = f.parent_id
             WHERE p.document_id = ?
-              AND p.status = 'active'
-              AND f.status = 'active'
             ORDER BY f.id ASC
             """,
             (int(document_id),),
@@ -399,8 +556,264 @@ class CanonicalMemoryStore:
             except (json.JSONDecodeError, TypeError):
                 continue
             if isinstance(value, dict):
+                value["lifecycle"] = {
+                    "status": str(row["status"]),
+                    "importance": float(row["importance"]),
+                    "last_retrieved_at": row["last_retrieved_at"],
+                    "retrieval_count": int(row["retrieval_count"] or 0),
+                    "last_injected_at": row["last_injected_at"],
+                    "injection_count": int(row["injection_count"] or 0),
+                }
                 facts.append(value)
         return facts
+
+    async def get_fact_records(
+        self, fact_ids: list[str]
+    ) -> dict[str, dict[str, Any]]:
+        """Load authoritative facts and their parent/source metadata in one query."""
+        if self.db is None:
+            return {}
+        unique_ids = list(
+            dict.fromkeys(str(fact_id).strip() for fact_id in fact_ids if fact_id)
+        )
+        if not unique_ids:
+            return {}
+        placeholders = ",".join("?" * len(unique_ids))
+        cursor = await self.db.execute(
+            f"""
+            SELECT f.fact_id, f.parent_id, f.fact_json, f.search_text,
+                   f.scope, f.persona_id, f.importance, f.status,
+                   f.last_retrieved_at, f.retrieval_count,
+                   f.last_injected_at, f.injection_count,
+                   f.created_at, f.updated_at,
+                   p.document_id, p.overview, p.source_json,
+                   d.metadata AS document_metadata
+            FROM memory_facts f
+            JOIN memory_parents p ON p.parent_id = f.parent_id
+            JOIN documents d ON d.id = p.document_id
+            WHERE f.fact_id IN ({placeholders})
+              AND f.status = 'active'
+              AND p.status = 'active'
+              AND COALESCE(json_extract(d.metadata, '$.status'), 'active') = 'active'
+            """,
+            unique_ids,
+        )
+        records: dict[str, dict[str, Any]] = {}
+        for row in await cursor.fetchall():
+            try:
+                fact = json.loads(row["fact_json"])
+            except (json.JSONDecodeError, TypeError):
+                continue
+            if not isinstance(fact, dict):
+                continue
+            try:
+                source = json.loads(row["source_json"])
+            except (json.JSONDecodeError, TypeError):
+                source = {}
+            try:
+                document_metadata = json.loads(row["document_metadata"])
+            except (json.JSONDecodeError, TypeError):
+                document_metadata = {}
+            fact_id = str(row["fact_id"])
+            records[fact_id] = {
+                "fact_id": fact_id,
+                "parent_id": str(row["parent_id"]),
+                "document_id": int(row["document_id"]),
+                "fact": fact,
+                "search_text": str(row["search_text"] or ""),
+                "scope": str(row["scope"] or ""),
+                "persona_id": row["persona_id"],
+                "importance": float(row["importance"]),
+                "status": str(row["status"]),
+                "overview": str(row["overview"] or ""),
+                "source_window": source if isinstance(source, dict) else {},
+                "document_metadata": (
+                    document_metadata if isinstance(document_metadata, dict) else {}
+                ),
+                "last_retrieved_at": row["last_retrieved_at"],
+                "retrieval_count": int(row["retrieval_count"] or 0),
+                "last_injected_at": row["last_injected_at"],
+                "injection_count": int(row["injection_count"] or 0),
+                "created_at": float(row["created_at"]),
+                "updated_at": float(row["updated_at"]),
+            }
+        return records
+
+    async def record_fact_event(self, fact_ids: list[str], event: str) -> int:
+        """Record candidate or injection events without conflating the two."""
+        if self.db is None or event not in {"retrieved", "injected"}:
+            return 0
+        unique_ids = list(
+            dict.fromkeys(str(fact_id).strip() for fact_id in fact_ids if fact_id)
+        )
+        if not unique_ids:
+            return 0
+        placeholders = ",".join("?" * len(unique_ids))
+        now = time.time()
+        timestamp_column = (
+            "last_retrieved_at" if event == "retrieved" else "last_injected_at"
+        )
+        count_column = "retrieval_count" if event == "retrieved" else "injection_count"
+        async with self._write_lock:
+            cursor = await self.db.execute(
+                f"""
+                UPDATE memory_facts
+                SET {timestamp_column} = ?,
+                    {count_column} = MIN(COALESCE({count_column}, 0) + 1, 1000000)
+                WHERE fact_id IN ({placeholders}) AND status = 'active'
+                """,
+                (now, *unique_ids),
+            )
+            if event == "injected":
+                await self.db.execute(
+                    f"""
+                    UPDATE documents
+                    SET metadata = CASE
+                        WHEN json_valid(metadata) THEN json_set(
+                            json_set(metadata, '$.last_access_time', ?),
+                            '$.access_count',
+                            MIN(COALESCE(CAST(json_extract(metadata, '$.access_count') AS INTEGER), 0) + 1, 1000000)
+                        )
+                        ELSE json_set('{{}}', '$.last_access_time', ?, '$.access_count', 1)
+                    END
+                    WHERE id IN (
+                        SELECT DISTINCT p.document_id
+                        FROM memory_facts f
+                        JOIN memory_parents p ON p.parent_id = f.parent_id
+                        WHERE f.fact_id IN ({placeholders})
+                    )
+                    """,
+                    (now, now, *unique_ids),
+                )
+            await self.db.commit()
+            return int(cursor.rowcount or 0)
+
+    async def update_document_importance(
+        self, document_id: int, importance: float
+    ) -> int:
+        """Apply a parent-level manual edit to all authoritative child facts."""
+        if self.db is None:
+            return 0
+        normalized = max(0.0, min(1.0, float(importance)))
+        now = time.time()
+        async with self._write_lock:
+            cursor = await self.db.execute(
+                """
+                SELECT f.id, f.fact_json
+                FROM memory_facts f
+                JOIN memory_parents p ON p.parent_id = f.parent_id
+                WHERE p.document_id = ? AND f.status = 'active'
+                """,
+                (int(document_id),),
+            )
+            updates: list[tuple[float, str, float, int]] = []
+            for row in await cursor.fetchall():
+                try:
+                    fact = json.loads(row["fact_json"])
+                except (json.JSONDecodeError, TypeError):
+                    continue
+                if not isinstance(fact, dict):
+                    continue
+                fact["importance"] = normalized
+                updates.append(
+                    (
+                        normalized,
+                        json.dumps(fact, ensure_ascii=False, sort_keys=True),
+                        now,
+                        int(row["id"]),
+                    )
+                )
+            if updates:
+                await self.db.executemany(
+                    "UPDATE memory_facts SET importance = ?, fact_json = ?, updated_at = ? WHERE id = ?",
+                    updates,
+                )
+                await self.db.commit()
+            return len(updates)
+
+    async def apply_daily_decay(
+        self,
+        decay_rate: float,
+        *,
+        days: int = 1,
+        protected_threshold: float = 1.0,
+        injection_window_days: float = 30.0,
+        max_injection_count: float = 10.0,
+        count_decay_multiplier: float = 0.5,
+    ) -> int:
+        """Decay authoritative facts; only actual injection slows the decay."""
+        if self.db is None or decay_rate <= 0 or days <= 0:
+            return 0
+        rate = min(1.0, float(decay_rate))
+        now = time.time()
+        window_start = now - max(1.0, float(injection_window_days)) * 86400.0
+        count_multiplier = max(0.0, min(1.0, float(count_decay_multiplier)))
+        async with self._write_lock:
+            cursor = await self.db.execute(
+                """
+                SELECT id, fact_json, importance, last_injected_at, injection_count
+                FROM memory_facts
+                WHERE status = 'active'
+                """
+            )
+            updates: list[tuple[float, str, int, float, int]] = []
+            for row in await cursor.fetchall():
+                importance = max(0.0, min(1.0, float(row["importance"])))
+                if importance >= protected_threshold:
+                    continue
+                injection_count = float(row["injection_count"] or 0)
+                last_injected = float(row["last_injected_at"] or 0)
+                recent_factor = 1.0 if last_injected >= window_start else 0.5
+                use_factor = min(
+                    1.0, injection_count / max(1.0, max_injection_count)
+                )
+                effective_rate = rate * (1 - 0.5 * use_factor * recent_factor)
+                decayed = max(
+                    0.01, round(importance * ((1 - effective_rate) ** days), 4)
+                )
+                try:
+                    fact = json.loads(row["fact_json"])
+                except (json.JSONDecodeError, TypeError):
+                    fact = {}
+                if isinstance(fact, dict):
+                    fact["importance"] = decayed
+                updates.append(
+                    (
+                        decayed,
+                        json.dumps(fact, ensure_ascii=False, sort_keys=True),
+                        int(injection_count * count_multiplier),
+                        now,
+                        int(row["id"]),
+                    )
+                )
+            if not updates:
+                return 0
+            await self.db.executemany(
+                """
+                UPDATE memory_facts
+                SET importance = ?, fact_json = ?, injection_count = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                updates,
+            )
+            await self.db.execute(
+                """
+                UPDATE documents
+                SET metadata = json_set(
+                    CASE WHEN json_valid(metadata) THEN metadata ELSE '{}' END,
+                    '$.importance',
+                    COALESCE((
+                        SELECT MAX(f.importance)
+                        FROM memory_parents p
+                        JOIN memory_facts f ON f.parent_id = p.parent_id
+                        WHERE p.document_id = documents.id AND f.status = 'active'
+                    ), json_extract(metadata, '$.importance'), 0.5)
+                )
+                WHERE id IN (SELECT document_id FROM memory_parents)
+                """
+            )
+            await self.db.commit()
+        return len(updates)
 
     async def get_topic_candidates(
         self, scope: str, limit: int = 50

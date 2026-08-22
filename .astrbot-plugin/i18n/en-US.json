@@ -98,9 +98,41 @@
         "description": "Minimum Vector Similarity",
         "hint": "Filter vector candidates below this similarity. Keyword-only matches remain eligible. Range: 0-1; 0 disables the filter."
       },
+      "fact_candidate_k": {
+        "description": "Fact Candidate Pool Size",
+        "hint": "Number of canonical facts examined before relevance rejection and final packing. This does not control how many facts are injected."
+      },
+      "fact_min_lexical_score": {
+        "description": "Minimum Fact Lexical Score",
+        "hint": "Minimum direct term-overlap evidence for a canonical fact. Higher values return fewer keyword matches."
+      },
+      "fact_min_vector_similarity": {
+        "description": "Minimum Fact Vector Similarity",
+        "hint": "Minimum absolute vector similarity for a canonical fact to count as reliable evidence."
+      },
+      "fact_min_graph_score": {
+        "description": "Minimum Fact Graph Score",
+        "hint": "Minimum absolute graph-route score. A weak graph route contributes nothing instead of being normalized to full strength."
+      },
+      "fact_min_final_score": {
+        "description": "Minimum Final Fact Score",
+        "hint": "Final relevance threshold after reliable route signals, importance, and the small recency tie-break are combined."
+      },
+      "injection_token_budget": {
+        "description": "Memory Injection Budget",
+        "hint": "Hard per-request upper bound for the complete fact payload, measured conservatively by UTF-8 bytes."
+      },
+      "single_fact_token_budget": {
+        "description": "Single Fact Budget",
+        "hint": "Maximum size of one complete fact plus its optional reaction. Oversized facts are skipped, never cut into fragments."
+      },
+      "include_persona_reaction": {
+        "description": "Include Persona Reaction",
+        "hint": "Attach a brief stored persona reaction only when its fact is selected and both fit within the same budget."
+      },
       "recent_memory_count": {
-        "description": "Reserved Recent Memories",
-        "hint": "Reserve this many recall slots for recent memories in the current scope. Set to 0 to disable."
+        "description": "Reserved Recent Memories (deprecated)",
+        "hint": "Deprecated and ignored by fact retrieval. Recent memories no longer bypass relevance ranking or reserve injection slots."
       },
       "recent_memory_max_age_hours": {
         "description": "Recent Memory Window (hours)",

@@ -9,7 +9,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 import aiosqlite
 import pytest
@@ -1001,6 +1001,53 @@ class TestTestRecall:
         item = result["data"]["results"][0]
         assert item["score_breakdown"]["graph_vector_score"] == 0.4
         assert item["metadata"]["document_keyword_score"] == 0.1
+
+    @pytest.mark.asyncio
+    async def test_recall_reports_final_fact_pack_and_rejections(self, api):
+        hit = SimpleNamespace(
+            doc_id=7,
+            content="陪伴插件名为 CompanionLite",
+            final_score=0.88,
+            metadata={
+                "fact_id": "fact_companion",
+                "parent_id": "memory_tools",
+                "session_id": "s1",
+                "importance": 0.8,
+                "retrieval_route": "fact",
+                "selection_reason": "relevance_threshold_passed",
+            },
+            score_breakdown={"fact_vector_raw": 0.91},
+        )
+        engine = api.plugin.initializer.memory_engine
+        engine.explain_memory_search = AsyncMock(
+            return_value={
+                "results": [hit],
+                "candidate_count": 3,
+                "rejected": [
+                    {
+                        "fact_id": "fact_noise",
+                        "reason": "insufficient_relevance_evidence",
+                    }
+                ],
+                "explanation": "relevant_canonical_facts_selected",
+            }
+        )
+        engine.pack_memory_hits = Mock(
+            return_value=SimpleNamespace(
+                hits=[hit], token_count=210, token_budget=1200, dropped=[]
+            )
+        )
+        req = _mock_page_request(get_json={"query": "陪伴插件叫什么", "k": 5})
+
+        with _patch_page_request(req):
+            result = await api.test_recall()
+
+        data = result["data"]
+        assert data["candidate_count"] == 3
+        assert data["injected_fact_count"] == 1
+        assert data["injection_token_upper_bound"] == 210
+        assert data["results"][0]["fact_id"] == "fact_companion"
+        assert data["rejected"][0]["fact_id"] == "fact_noise"
 
 
 class TestGraphEndpoints:

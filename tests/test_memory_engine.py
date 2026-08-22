@@ -105,6 +105,81 @@ class _FakeFaissDB:
         return None
 
 
+async def _add_canonical_fact(
+    engine: MemoryEngine,
+    text: str,
+    *,
+    suffix: str,
+    importance: float = 0.8,
+    session_id: str = "test:private:s1",
+    persona_id: str = "persona_1",
+) -> tuple[int, str]:
+    parent_id = f"memory_{suffix}"
+    fact_id = f"fact_{suffix}"
+    metadata = {
+        "idempotency_key": f"idem_{suffix}",
+        "memory_schema_version": "v3",
+        "summary_schema_version": "v3",
+        "generation_version": "test-s5",
+        "parent_id": parent_id,
+        "summary": text,
+        "canonical_summary": text,
+        "source_window": {
+            "fingerprint": f"src_{suffix}",
+            "scope": session_id,
+            "message_ids": [f"msg_{suffix}"],
+        },
+        "key_facts": [
+            {
+                "fact_id": fact_id,
+                "parent_id": parent_id,
+                "fact": text,
+                "topics": [],
+                "participants": [],
+                "source_message_ids": [f"msg_{suffix}"],
+                "importance": importance,
+            }
+        ],
+    }
+
+    async def _update_metadata(doc_id, updates):
+        engine.faiss_db.docs[doc_id]["metadata"].update(updates)
+        return True
+
+    engine.hybrid_retriever.update_metadata = AsyncMock(side_effect=_update_metadata)
+    memory_id = await engine.add_canonical_memory(
+        metadata=metadata,
+        session_id=session_id,
+        persona_id=persona_id,
+        importance=importance,
+    )
+    parent_metadata = dict(engine.faiss_db.docs[memory_id]["metadata"])
+    parent_metadata.update(
+        {
+            "status": "active",
+            "importance": importance,
+            "session_id": session_id,
+            "persona_id": persona_id,
+            "create_time": time.time(),
+        }
+    )
+    await engine.db_connection.execute(
+        """
+        INSERT OR REPLACE INTO documents(
+            id, doc_id, text, metadata, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, datetime('now'), datetime('now'))
+        """,
+        (
+            memory_id,
+            f"uuid-{memory_id}",
+            text,
+            json.dumps(parent_metadata, ensure_ascii=False),
+        ),
+    )
+    await engine.db_connection.commit()
+    return memory_id, fact_id
+
+
 def test_memory_engine_atom_enabled_honors_explicit_false(tmp_path: Path):
     engine = MemoryEngine(
         db_path=str(tmp_path / "memory.db"),
@@ -137,6 +212,7 @@ async def test_initialize_drops_legacy_documents_fts_triggers(tmp_path: Path):
     engine = MemoryEngine(
         db_path=str(db_path),
         faiss_db=_FakeFaissDB(),
+        fact_vector_db=_FakeFaissDB(),
         config={"fallback_enabled": True, "rrf_k": 60},
     )
     await engine.initialize()
@@ -158,16 +234,15 @@ async def test_memory_engine_add_search_get_delete(tmp_path: Path):
     engine = MemoryEngine(
         db_path=str(db_path),
         faiss_db=_FakeFaissDB(),
+        fact_vector_db=_FakeFaissDB(),
         config={"fallback_enabled": True, "rrf_k": 60},
     )
     await engine.initialize()
 
-    memory_id = await engine.add_memory(
-        content="我喜欢吃苹果",
-        session_id="test:private:s1",
-        persona_id="persona_1",
-        importance=0.8,
-        metadata={"topics": ["饮食"]},
+    memory_id, fact_id = await _add_canonical_fact(
+        engine,
+        "我喜欢吃苹果",
+        suffix="apple",
     )
     assert memory_id > 0
 
@@ -183,6 +258,8 @@ async def test_memory_engine_add_search_get_delete(tmp_path: Path):
     )
     assert len(searched) >= 1
     assert searched[0].doc_id == memory_id
+    assert searched[0].metadata["fact_id"] == fact_id
+    assert searched[0].content == "我喜欢吃苹果"
 
     ok_delete = await engine.delete_memory(memory_id)
     assert ok_delete is True
@@ -542,43 +619,26 @@ async def test_daily_decay_skips_protected_importance_threshold(tmp_path: Path):
     engine = MemoryEngine(
         db_path=str(tmp_path / "protected_decay.db"),
         faiss_db=_FakeFaissDB(),
+        fact_vector_db=_FakeFaissDB(),
         config={"protected_importance_threshold": 0.8},
     )
     await engine.initialize()
-    now = time.time()
-    rows = [
-        (101, "uuid-101", "protected", 0.9),
-        (102, "uuid-102", "decaying", 0.5),
-    ]
-    for memory_id, uuid, text, importance in rows:
-        metadata = json.dumps(
-            {
-                "importance": importance,
-                "create_time": now,
-                "last_access_time": now,
-                "access_count": 0,
-            }
-        )
-        await engine.db_connection.execute(
-            "INSERT INTO documents "
-            "(id, doc_id, text, metadata, created_at, updated_at) "
-            "VALUES (?, ?, ?, ?, datetime('now'), datetime('now'))",
-            (memory_id, uuid, text, metadata),
-        )
-    await engine.db_connection.commit()
+    _, protected_fact = await _add_canonical_fact(
+        engine, "protected", suffix="protected", importance=0.9
+    )
+    _, decaying_fact = await _add_canonical_fact(
+        engine, "decaying", suffix="decaying", importance=0.5
+    )
 
     affected = await engine.apply_daily_decay(0.1)
     cursor = await engine.db_connection.execute(
-        "SELECT id, metadata FROM documents WHERE id IN (101, 102) ORDER BY id"
+        "SELECT fact_id, importance FROM memory_facts ORDER BY fact_id"
     )
-    stored = {
-        int(row["id"]): json.loads(row["metadata"])["importance"]
-        for row in await cursor.fetchall()
-    }
+    stored = {str(row["fact_id"]): float(row["importance"]) for row in await cursor.fetchall()}
 
     assert affected == 1
-    assert stored[101] == 0.9
-    assert stored[102] == 0.45
+    assert stored[protected_fact] == 0.9
+    assert stored[decaying_fact] == 0.45
     await engine.close()
 
 
@@ -770,6 +830,7 @@ async def test_memory_engine_search_cache_reuses_results_and_invalidates_on_writ
     engine = MemoryEngine(
         db_path=str(db_path),
         faiss_db=faiss,
+        fact_vector_db=_FakeFaissDB(),
         config={
             "fallback_enabled": True,
             "search_cache_enabled": True,
@@ -779,23 +840,22 @@ async def test_memory_engine_search_cache_reuses_results_and_invalidates_on_writ
     )
     await engine.initialize()
 
-    await engine.add_memory(
-        content="缓存测试：用户喜欢苹果",
-        session_id="test:private:s1",
+    await _add_canonical_fact(
+        engine,
+        "缓存测试：用户喜欢苹果",
+        suffix="cache_apple",
         persona_id="p1",
-        importance=0.8,
-        metadata={},
     )
 
     calls = 0
-    original_search = engine.hybrid_retriever.search
+    original_search = engine.canonical_store.search_candidates
 
     async def counted_search(*args, **kwargs):
         nonlocal calls
         calls += 1
         return await original_search(*args, **kwargs)
 
-    engine.hybrid_retriever.search = counted_search
+    engine.canonical_store.search_candidates = counted_search
 
     first = await engine.search_memories(
         query="苹果", k=3, session_id="test:private:s1", persona_id="p1"
@@ -806,12 +866,11 @@ async def test_memory_engine_search_cache_reuses_results_and_invalidates_on_writ
     assert [item.doc_id for item in second] == [item.doc_id for item in first]
     assert calls == 1
 
-    await engine.add_memory(
-        content="缓存测试：用户喜欢香蕉",
-        session_id="test:private:s1",
+    await _add_canonical_fact(
+        engine,
+        "缓存测试：用户喜欢香蕉",
+        suffix="cache_banana",
         persona_id="p1",
-        importance=0.8,
-        metadata={},
     )
     await engine.search_memories(
         query="苹果", k=3, session_id="test:private:s1", persona_id="p1"
@@ -827,6 +886,7 @@ async def test_memory_engine_write_ops_record_completed_add(tmp_path: Path):
     engine = MemoryEngine(
         db_path=str(db_path),
         faiss_db=_FakeFaissDB(),
+        fact_vector_db=_FakeFaissDB(),
         config={"fallback_enabled": True},
     )
     await engine.initialize()
@@ -972,6 +1032,7 @@ async def test_memory_engine_access_count_increments_and_slows_decay(tmp_path: P
     engine = MemoryEngine(
         db_path=str(db_path),
         faiss_db=_FakeFaissDB(),
+        fact_vector_db=_FakeFaissDB(),
         config={
             "access_decay_window_days": 30,
             "access_decay_max_count": 10,
@@ -980,85 +1041,84 @@ async def test_memory_engine_access_count_increments_and_slows_decay(tmp_path: P
     )
     await engine.initialize()
 
-    now = time.time()
-    low_access_id = await engine.add_memory(
-        content="低访问记忆",
+    low_access_id, low_fact_id = await _add_canonical_fact(
+        engine,
+        "低访问记忆",
+        suffix="low_access",
         session_id="s1",
         persona_id="p1",
-        importance=0.8,
-        metadata={},
     )
-    high_access_id = await engine.add_memory(
-        content="高访问记忆",
+    high_access_id, high_fact_id = await _add_canonical_fact(
+        engine,
+        "高访问记忆",
+        suffix="high_access",
         session_id="s1",
         persona_id="p1",
-        importance=0.8,
-        metadata={},
     )
 
-    await engine.db_connection.execute(
-        """
-        INSERT OR REPLACE INTO documents(
-            id, doc_id, text, metadata, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, datetime('now'), datetime('now'))
-        """,
-        (
-            low_access_id,
-            f"uuid-{low_access_id}",
-            "低访问记忆",
-            json.dumps(
-                {
-                    "importance": 0.8,
-                    "last_access_time": now,
-                    "access_count": 0,
-                }
-            ),
-        ),
-    )
-    await engine.db_connection.execute(
-        """
-        INSERT OR REPLACE INTO documents(
-            id, doc_id, text, metadata, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, datetime('now'), datetime('now'))
-        """,
-        (
-            high_access_id,
-            f"uuid-{high_access_id}",
-            "高访问记忆",
-            json.dumps(
-                {
-                    "importance": 0.8,
-                    "last_access_time": now,
-                    "access_count": 10,
-                }
-            ),
-        ),
-    )
-    await engine.db_connection.commit()
-
-    await engine._update_access_time_internal(low_access_id)
-    cursor = await engine.db_connection.execute(
-        "SELECT metadata FROM documents WHERE id = ?",
-        (low_access_id,),
-    )
-    row = await cursor.fetchone()
-    assert json.loads(row["metadata"])["access_count"] == 1
+    low_hit = Mock(metadata={"fact_id": low_fact_id})
+    high_hit = Mock(metadata={"fact_id": high_fact_id})
+    await engine.mark_memories_injected([low_hit])
+    for _ in range(10):
+        await engine.mark_memories_injected([high_hit])
 
     affected = await engine.apply_daily_decay(decay_rate=0.1, days=1)
     assert affected >= 2
 
     cursor = await engine.db_connection.execute(
-        "SELECT id, metadata FROM documents WHERE id IN (?, ?)",
-        (low_access_id, high_access_id),
+        "SELECT fact_id, importance, injection_count FROM memory_facts WHERE fact_id IN (?, ?)",
+        (low_fact_id, high_fact_id),
     )
     rows = await cursor.fetchall()
-    metadata_by_id = {row["id"]: json.loads(row["metadata"]) for row in rows}
-    assert (
-        metadata_by_id[high_access_id]["importance"]
-        > metadata_by_id[low_access_id]["importance"]
+    facts = {str(row["fact_id"]): row for row in rows}
+    assert float(facts[high_fact_id]["importance"]) > float(
+        facts[low_fact_id]["importance"]
     )
-    assert metadata_by_id[high_access_id]["access_count"] == 5
+    assert int(facts[high_fact_id]["injection_count"]) == 5
 
+    await engine.close()
+
+
+@pytest.mark.asyncio
+async def test_fact_retrieved_and_injected_events_are_not_conflated(tmp_path: Path):
+    engine = MemoryEngine(
+        db_path=str(tmp_path / "fact_events.db"),
+        faiss_db=_FakeFaissDB(),
+        fact_vector_db=_FakeFaissDB(),
+        config={"search_cache_enabled": False},
+    )
+    await engine.initialize()
+    _, fact_id = await _add_canonical_fact(
+        engine,
+        "用户喜欢无糖咖啡",
+        suffix="event_split",
+    )
+
+    hits = await engine.search_memories(
+        "无糖咖啡",
+        k=4,
+        session_id="test:private:s1",
+        persona_id="persona_1",
+    )
+    await asyncio.sleep(0.05)
+    cursor = await engine.db_connection.execute(
+        "SELECT retrieval_count, injection_count FROM memory_facts WHERE fact_id = ?",
+        (fact_id,),
+    )
+    row = await cursor.fetchone()
+    assert int(row["retrieval_count"]) == 1
+    assert int(row["injection_count"]) == 0
+
+    packed = engine.pack_memory_hits(hits)
+    assert [item.metadata["fact_id"] for item in packed.hits] == [fact_id]
+    await engine.mark_memories_injected(packed.hits)
+    cursor = await engine.db_connection.execute(
+        "SELECT retrieval_count, injection_count FROM memory_facts WHERE fact_id = ?",
+        (fact_id,),
+    )
+    row = await cursor.fetchone()
+    assert int(row["retrieval_count"]) == 1
+    assert int(row["injection_count"]) == 1
     await engine.close()
 
 

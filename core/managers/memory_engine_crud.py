@@ -113,8 +113,16 @@ class MemoryEngineCrudMixin:
                 # bindings) are the only graph edge evidence; the extractor
                 # routes on memory_schema_version internally.
                 if self.graph_memory_manager is not None:
+                    graph_metadata = dict(metadata)
+                    graph_metadata.update(
+                        {
+                            "session_id": session_id,
+                            "persona_id": persona_id,
+                            "importance": importance,
+                        }
+                    )
                     await self.graph_memory_manager.index_memory(
-                        document_id, projection, metadata
+                        document_id, projection, graph_metadata
                     )
                 self._invalidate_search_cache()
                 return document_id
@@ -706,11 +714,15 @@ class MemoryEngineCrudMixin:
         cache_key = self._search_cache_key(query, k, session_id, persona_id)
         cached_results = self._get_cached_search_results(cache_key)
         if cached_results is not None:
-            self._create_tracked_task(
-                self._update_access_times_internal(
-                    [result.doc_id for result in cached_results]
+            fact_ids = [
+                str(result.metadata.get("fact_id") or "")
+                for result in cached_results
+                if isinstance(result.metadata, dict)
+            ]
+            if self.canonical_store is not None and fact_ids:
+                self._create_tracked_task(
+                    self.canonical_store.record_fact_event(fact_ids, "retrieved")
                 )
-            )
             return cached_results
 
         # 如果session_id是unified_msg_origin格式，自动触发旧数据迁移
@@ -726,37 +738,96 @@ class MemoryEngineCrudMixin:
         # 因为现在数据库中存储的就是完整格式
         # session_id 和 persona_id 保持原样传递给检索器
 
-        # 执行混合检索 / 双路检索
-        if self.dual_route_retriever is not None:
-            results = await self.dual_route_retriever.search(
-                query,
-                k,
-                session_id,
-                persona_id,
+        if self.fact_retriever is None:
+            # Unit/maintenance adapters may inject only the legacy retriever
+            # without calling initialize(). Production initialization always
+            # installs CanonicalFactRetriever above.
+            retriever = self.dual_route_retriever or self.hybrid_retriever
+            if retriever is None:
+                raise RuntimeError("canonical fact retriever is not initialized")
+            results = await retriever.search(query, k, session_id, persona_id)
+            results = self._filter_by_retrieval_policy(results)
+            results = await self._merge_recent_memories(
+                results, k, session_id, persona_id
             )
-        else:
-            if self.hybrid_retriever is None:
-                raise RuntimeError("混合检索器未初始化")
-            results = await self.hybrid_retriever.search(
-                query, k, session_id, persona_id
-            )
-
-        results = self._filter_by_retrieval_policy(results)
-        results = await self._merge_recent_memories(
-            results,
-            k,
-            session_id,
-            persona_id,
+            if results:
+                self._create_tracked_task(
+                    self._update_access_times_internal([r.doc_id for r in results])
+                )
+            self._set_cached_search_results(cache_key, results)
+            return results
+        bundle = await self.fact_retriever.search(
+            query,
+            limit=max(1, int(k)),
+            scope=session_id,
+            persona_id=persona_id,
         )
+        results = bundle.hits
 
-        # 异步更新访问时间(不阻塞返回)
-        if results:
+        # S6: entering the accepted candidate list is only "retrieved". It no
+        # longer reinforces decay; the injection adapter records "injected".
+        fact_ids = [
+            str(result.metadata.get("fact_id") or "")
+            for result in results
+            if isinstance(result.metadata, dict)
+        ]
+        if self.canonical_store is not None and fact_ids:
             self._create_tracked_task(
-                self._update_access_times_internal([r.doc_id for r in results])
+                self.canonical_store.record_fact_event(fact_ids, "retrieved")
             )
 
         self._set_cached_search_results(cache_key, results)
         return results
+
+    async def explain_memory_search(
+        self,
+        query: str,
+        k: int = 5,
+        session_id: str | None = None,
+        persona_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Run the production fact policy without mutating lifecycle counters."""
+        if self.fact_retriever is None or not str(query or "").strip():
+            return {
+                "results": [],
+                "candidate_count": 0,
+                "rejected": [],
+                "explanation": "empty_query",
+            }
+        bundle = await self.fact_retriever.search(
+            query,
+            limit=max(1, int(k)),
+            scope=session_id,
+            persona_id=persona_id,
+        )
+        return {
+            "results": bundle.hits,
+            "candidate_count": bundle.candidate_count,
+            "rejected": bundle.rejected,
+            "explanation": bundle.explanation,
+        }
+
+    def pack_memory_hits(self, results: list[HybridResult]):
+        """Apply the same hard budget used by automatic and Agent injection."""
+        from ..utils.fact_packing import pack_fact_hits
+
+        return pack_fact_hits(
+            results,
+            token_budget=int(self.config.get("injection_token_budget", 1200)),
+            single_fact_budget=int(self.config.get("single_fact_token_budget", 320)),
+            include_reaction=bool(self.config.get("include_persona_reaction", True)),
+        )
+
+    async def mark_memories_injected(self, results: list[HybridResult]) -> int:
+        """Record only facts that were actually placed in the model request."""
+        if self.canonical_store is None:
+            return 0
+        fact_ids = [
+            str(result.metadata.get("fact_id") or "")
+            for result in results
+            if isinstance(result.metadata, dict) and result.metadata.get("fact_id")
+        ]
+        return await self.canonical_store.record_fact_event(fact_ids, "injected")
 
     async def get_memory(self, memory_id: int) -> dict[str, Any] | None:
         """
@@ -945,6 +1016,14 @@ class MemoryEngineCrudMixin:
 
             if success:
                 logger.info(f"[更新] 元数据更新成功 (memory_id={memory_id})")
+                if (
+                    self.canonical_store is not None
+                    and "importance" in metadata_updates
+                ):
+                    await self.canonical_store.update_document_importance(
+                        memory_id,
+                        float(metadata_updates["importance"]),
+                    )
                 if self.graph_memory_manager is not None:
                     await self.graph_memory_manager.index_memory(
                         memory_id,
@@ -1227,99 +1306,35 @@ class MemoryEngineCrudMixin:
         return await self.update_memory(memory_id, {"importance": new_importance})
 
     async def apply_daily_decay(self, decay_rate: float, days: int = 1) -> int:
-        """
-        批量应用重要性衰减
-
-        Args:
-            decay_rate: 每日衰减率 (0-1)
-            days: 衰减天数（用于补偿错过的天数）
-
-        Returns:
-            int: 受影响的记忆数量
-        """
+        """Apply decay to authoritative facts, not their parent projection."""
         if decay_rate <= 0 or days <= 0:
             return 0
-
-        if self.db_connection is None:
-            logger.error("[衰减] 数据库连接未初始化")
+        if self.canonical_store is None:
+            logger.error("[衰减] canonical fact store 未初始化")
             return 0
-
         try:
-            if decay_rate >= 1:
-                decay_rate = 1.0
-            access_window_days = float(
-                self.config.get("access_decay_window_days", 30.0)
+            affected = await self.canonical_store.apply_daily_decay(
+                min(1.0, float(decay_rate)),
+                days=int(days),
+                protected_threshold=clamp_float(
+                    self.config.get("protected_importance_threshold"), default=1.0
+                ),
+                injection_window_days=float(
+                    self.config.get("access_decay_window_days", 30.0)
+                ),
+                max_injection_count=float(
+                    self.config.get("access_decay_max_count", 10.0)
+                ),
+                count_decay_multiplier=float(
+                    self.config.get("access_count_decay_multiplier", 0.5)
+                ),
             )
-            max_access_count = float(self.config.get("access_decay_max_count", 10.0))
-            access_decay_multiplier = float(
-                self.config.get("access_count_decay_multiplier", 0.5)
-            )
-            protected_threshold = clamp_float(
-                self.config.get("protected_importance_threshold"), default=1.0
-            )
-            access_window_start = time.time() - max(1.0, access_window_days) * 86400.0
-            access_decay_multiplier = max(0.0, min(1.0, access_decay_multiplier))
-            cursor = await self.db_connection.execute(
-                "SELECT id, metadata FROM documents WHERE json_extract(metadata, '$.importance') IS NOT NULL OR metadata LIKE '%\"importance\"%'"
-            )
-            rows = await cursor.fetchall()
-
-            safe_json_dict = self._safe_json_dict
-
-            def _compute_updates() -> list[tuple[str, int]]:
-                updates: list[tuple[str, int]] = []
-                for row in rows:
-                    metadata = safe_json_dict(row["metadata"])
-                    importance = clamp_float(metadata.get("importance"), default=0.5)
-                    if importance >= protected_threshold:
-                        continue
-                    access_count = safe_float(metadata.get("access_count"), 0.0)
-                    last_access_time = safe_float(
-                        metadata.get("last_access_time"), 0.0
-                    )
-
-                    recent_access_factor = (
-                        1.0 if last_access_time >= access_window_start else 0.5
-                    )
-                    access_factor = min(1.0, access_count / max(1.0, max_access_count))
-                    effective_decay_rate = decay_rate * (
-                        1 - 0.5 * access_factor * recent_access_factor
-                    )
-                    decay_factor = (1 - effective_decay_rate) ** days
-                    metadata["importance"] = max(
-                        0.01,
-                        round(importance * decay_factor, 4),
-                    )
-                    metadata["access_count"] = int(
-                        access_count * access_decay_multiplier
-                    )
-                    updates.append(
-                        (json.dumps(metadata, ensure_ascii=False), int(row["id"]))
-                    )
-                return updates
-
-            # 卸载逐行 JSON 解析与数值计算，避免阻塞事件循环。
-            updates = await asyncio.to_thread(_compute_updates)
-
-            if not updates:
-                return 0
-
-            await self.db_connection.executemany(
-                "UPDATE documents SET metadata = ? WHERE id = ?",
-                updates,
-            )
-
-            await self.db_connection.commit()
-            affected = len(updates)
-
             logger.info(
-                f"[衰减] 批量衰减完成: 衰减率={decay_rate}, 天数={days}, "
-                f"访问窗口={access_window_days:.1f}天, 影响记录={affected}"
+                f"[衰减] canonical facts 衰减完成: 衰减率={decay_rate}, "
+                f"天数={days}, 影响事实={affected}"
             )
-
             self._invalidate_search_cache()
             return affected
-
         except asyncio.CancelledError:
             raise
         except Exception as e:

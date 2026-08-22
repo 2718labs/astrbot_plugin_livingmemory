@@ -1,6 +1,7 @@
 """供 Agent 主动调用的长期记忆回忆工具。"""
 
 import asyncio
+import inspect
 import json
 from dataclasses import field
 from typing import Any
@@ -136,12 +137,35 @@ class MemorySearchTool(FunctionTool[AstrAgentContext]):
                 session_id=recall_session_id,
                 persona_id=recall_persona_id,
             )
+            packer = getattr(self.memory_engine, "pack_memory_hits", None)
+            packed = packer(memories) if callable(packer) else None
+            if packed is None or not isinstance(getattr(packed, "hits", None), list):
+                from ..utils.fact_packing import pack_fact_hits
+
+                packed = pack_fact_hits(
+                    memories,
+                    token_budget=int(
+                        self.config_manager.get(
+                            "recall_engine.injection_token_budget", 1200
+                        )
+                    ),
+                    single_fact_budget=int(
+                        self.config_manager.get(
+                            "recall_engine.single_fact_token_budget", 320
+                        )
+                    ),
+                    include_reaction=self.config_manager.get(
+                        "recall_engine.include_persona_reaction", True
+                    ),
+                )
+            memories = packed.hits
 
             serialized_results = []
             for memory in memories:
                 metadata = memory.metadata if isinstance(memory.metadata, dict) else {}
+                fact_id = metadata.get("fact_id")
                 item = {
-                    "id": memory.doc_id,
+                    "id": fact_id or memory.doc_id,
                     "content": memory.content,
                     "score": memory.final_score,
                     "importance": metadata.get("importance"),
@@ -150,6 +174,9 @@ class MemorySearchTool(FunctionTool[AstrAgentContext]):
                     "create_time": metadata.get("create_time"),
                     "last_access_time": metadata.get("last_access_time"),
                 }
+                if fact_id:
+                    item["parent_memory_id"] = memory.doc_id
+                    item["parent_id"] = metadata.get("parent_id")
                 if include_source and metadata.get("has_source"):
                     get_source = getattr(
                         self.memory_engine, "get_memory_source", None
@@ -157,6 +184,13 @@ class MemorySearchTool(FunctionTool[AstrAgentContext]):
                     if callable(get_source):
                         item["source_messages"] = await get_source(memory.doc_id)
                 serialized_results.append(item)
+
+            if memories:
+                marker = getattr(self.memory_engine, "mark_memories_injected", None)
+                if callable(marker):
+                    marked = marker(memories)
+                    if inspect.isawaitable(marked):
+                        await marked
 
             return _json_result(
                 {
@@ -166,6 +200,9 @@ class MemorySearchTool(FunctionTool[AstrAgentContext]):
                         "persona_filtered": use_persona_filtering,
                     },
                     "count": len(serialized_results),
+                    "candidate_count": len(memories) + len(packed.dropped),
+                    "injection_token_upper_bound": packed.token_count,
+                    "injection_token_budget": packed.token_budget,
                     "results": serialized_results,
                 }
             )

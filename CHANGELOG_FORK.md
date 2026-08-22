@@ -56,6 +56,24 @@
 - 不迁移、不清洗实例旧 Atom 数据；新链路不再创建 `memory_atoms` 表，生产检索路径（从未经过 Atom）前后一致。
 - 对照脚本 `code/scripts/s4_atom_eval.py` 与报告 `code/artifacts/s4_atom_eval_report.json` 全 PASS；新增停用行为回归测试（初始化三组件为 None、replace/restore 不生成 Atom、extract 忽略 atom 载荷）。
 
+### S5：事实级召回与预算注入
+
+- 生产 `search_memories()` 从十轮 document 切换为 canonical fact；命中事实只回链 parent 来源，不再默认带回整篇 summary、同 parent 其他 facts、topics 或评分元数据。
+- 增加轻量消息前置空结果和搜索后相关性拒绝；recent 不再预留固定槽位，也不能绕过事实相关性。
+- 候选路线保留词面、向量、图的绝对原始信号；修复 document/graph 各自按本路线最高分归一化造成弱路线满信号的问题，图路线默认权重保持 0。
+- 自动召回与 Agent 主动召回共用完整事实 packer：候选数量与最终注入数量分离，总预算和单事实预算均可配置，放不下时停止而不截断；persona reaction 作为独立短句计入同一预算。
+- 召回调试接口与页面显示候选/最终数量、预算、路线、事实 ID 和拒绝原因；调试查询不改变事实生命周期。
+- 修复 canonical 图写入缺少实际 session/persona 作用域的问题，使显式启用的图路线能在事实召回中命中同作用域证据。
+- 新增固定正负样本评测、弱图回归、多事实 parent 隔离、预算和真实 SQLite/FAISS 事件注入测试。
+
+### S6：事实生命周期与必要校对体验
+
+- canonical fact 增加 `retrieved` 与 `injected` 两套时间/次数；候选命中不再等同实际使用，只有真正送入模型的事实影响后续衰减。
+- 每日衰减、重要度更新、归档、恢复和删除统一作用到事实真源及其 FTS/向量投影，父 document 不再绕过事实状态召回；批量删除同时清理 canonical 子记录。
+- 暂不实现 `adopted`：当前没有可靠信号证明模型回答实际采用某条事实，因此不建立空字段或伪计数。
+- 记忆详情页将 fact、persona reaction、状态、检索次数和实际注入次数分开展示；注入提示缩为“相关历史作背景、当前消息优先、自然使用且不主动报菜名”的短契约。
+- S0–S6 完成后将 `Stest` 标记为 Ready；整体 A/B、长周期回放与体验盲测仍需独立运行，当前结果不冒充最终净收益结论。
+
 ## [2.6.0-a1] - 2026-08-20
 
 ### 项目

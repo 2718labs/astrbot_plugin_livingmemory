@@ -4,6 +4,8 @@
 """
 
 import asyncio
+import json
+import inspect
 import time
 from datetime import datetime
 from typing import TYPE_CHECKING
@@ -18,8 +20,12 @@ from ..memory_scope import is_event_memory_allowed, resolve_memory_scope
 from ..utils import (
     OperationContext,
     format_memories_for_fake_tool_call,
-    format_memories_for_injection,
     get_persona_id,
+)
+from ..utils.fact_packing import (
+    format_fact_hits_for_injection,
+    pack_fact_hits,
+    token_upper_bound,
 )
 
 if TYPE_CHECKING:
@@ -166,6 +172,15 @@ class MemoryRecall:
                     logger.warning(f"[{session_id}] 原始用户消息为空，跳过记忆召回")
                     return
 
+                fact_retriever = getattr(self.memory_engine, "fact_retriever", None)
+                query_gate = getattr(fact_retriever, "query_gate_reason", None)
+                gate_reason = query_gate(actual_query) if callable(query_gate) else None
+                if isinstance(gate_reason, str) and gate_reason:
+                    logger.info(
+                        f"[{session_id}] 当前消息无需长期记忆: {gate_reason}"
+                    )
+                    return
+
                 # 获取过滤配置
                 filtering_config = self.config_manager.filtering_settings
                 use_persona_filtering = filtering_config.get(
@@ -245,8 +260,37 @@ class MemoryRecall:
                 )
 
                 if recalled_memories:
+                    packer = getattr(self.memory_engine, "pack_memory_hits", None)
+                    packed = packer(recalled_memories) if callable(packer) else None
+                    if packed is None or not isinstance(
+                        getattr(packed, "hits", None), list
+                    ):
+                        packed = pack_fact_hits(
+                            recalled_memories,
+                            token_budget=int(
+                                self.config_manager.get(
+                                    "recall_engine.injection_token_budget", 1200
+                                )
+                            ),
+                            single_fact_budget=int(
+                                self.config_manager.get(
+                                    "recall_engine.single_fact_token_budget", 320
+                                )
+                            ),
+                            include_reaction=self.config_manager.get(
+                                "recall_engine.include_persona_reaction", True
+                            ),
+                        )
+                    recalled_memories = packed.hits
+                    if not recalled_memories:
+                        logger.info(
+                            f"[{session_id}] 相关候选均未通过注入预算，跳过长期记忆"
+                        )
+                        return
                     logger.info(
-                        f"[{session_id}] 检索到 {len(recalled_memories)} 条记忆"
+                        f"[{session_id}] 相关事实={len(recalled_memories) + len(packed.dropped)}，"
+                        f"最终注入事实={len(recalled_memories)}，"
+                        f"预算={packed.token_count}/{packed.token_budget}"
                     )
 
                     # 格式化并注入记忆
@@ -294,28 +338,61 @@ class MemoryRecall:
                             f"{injection_method}: {fallback_reason}"
                         )
 
-                    memory_str = format_memories_for_injection(memory_list)
+                    memory_str = format_fact_hits_for_injection(
+                        recalled_memories,
+                        include_reaction=self.config_manager.get(
+                            "recall_engine.include_persona_reaction", True
+                        ),
+                    )
+                    injected = False
 
                     if injection_method == "user_message_before":
                         req.prompt = memory_str + "\n\n" + (req.prompt or "")
+                        injected = True
                         logger.info(
                             f"[{session_id}] 成功向用户消息前注入 {len(recalled_memories)} 条记忆"
                         )
                     elif injection_method == "user_message_after":
                         req.prompt = (req.prompt or "") + "\n\n" + memory_str
+                        injected = True
                         logger.info(
                             f"[{session_id}] 成功向用户消息后注入 {len(recalled_memories)} 条记忆"
                         )
                     elif injection_method == "fake_tool_call":
-                        fake_messages = format_memories_for_fake_tool_call(
-                            memory_list,
-                            query=actual_query,
-                            k=self.config_manager.get("recall_engine.top_k", 5),
-                            session_filtered=recall_session_id is not None,
-                            persona_filtered=use_persona_filtering,
+                        fake_messages = []
+                        budget = int(
+                            self.config_manager.get(
+                                "recall_engine.injection_token_budget", 1200
+                            )
                         )
+                        while recalled_memories:
+                            memory_list = [
+                                {
+                                    "id": getattr(mem, "doc_id", None),
+                                    "content": mem.content,
+                                    "score": mem.final_score,
+                                    "metadata": mem.metadata,
+                                    "timestamp": mem.metadata.get("create_time"),
+                                }
+                                for mem in recalled_memories
+                            ]
+                            fake_messages = format_memories_for_fake_tool_call(
+                                memory_list,
+                                query=actual_query,
+                                k=len(recalled_memories),
+                                session_filtered=recall_session_id is not None,
+                                persona_filtered=use_persona_filtering,
+                            )
+                            if token_upper_bound(
+                                json.dumps(fake_messages, ensure_ascii=False)
+                            ) <= budget:
+                                break
+                            recalled_memories.pop()
+                        if not recalled_memories:
+                            fake_messages = []
                         if fake_messages:
                             req.contexts.extend(fake_messages)
+                            injected = True
                             logger.info(
                                 f"[{session_id}] 成功以伪造工具调用方式注入 "
                                 f"{len(recalled_memories)} 条记忆"
@@ -326,10 +403,19 @@ class MemoryRecall:
                         req.extra_user_content_parts.append(
                             TextPart(text=memory_str).mark_as_temp()
                         )
+                        injected = True
                         logger.info(
                             f"[{session_id}] 成功向用户消息末尾注入 "
                             f"{len(recalled_memories)} 条记忆"
                         )
+                    if injected:
+                        marker = getattr(
+                            self.memory_engine, "mark_memories_injected", None
+                        )
+                        if callable(marker):
+                            marked = marker(recalled_memories)
+                            if inspect.isawaitable(marked):
+                                await marked
                 else:
                     logger.info(f"[{session_id}] 未找到相关记忆")
 

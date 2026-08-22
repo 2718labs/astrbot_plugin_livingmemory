@@ -64,7 +64,10 @@ class RecallEngineConfig(BaseModel):
         description="召回记忆的最低向量相似度，0 表示不过滤",
     )
     recent_memory_count: int = Field(
-        default=2, ge=0, le=20, description="每次召回保留的近期记忆数量"
+        default=0,
+        ge=0,
+        le=20,
+        description="[已废弃] S5 起不再为近期记忆保留固定槽位",
     )
     recent_memory_max_age_hours: int = Field(
         default=72, ge=0, le=8760, description="近期记忆时间窗口，0 表示不限制"
@@ -106,6 +109,30 @@ class RecallEngineConfig(BaseModel):
     )
     search_cache_max_size: int = Field(
         default=256, ge=0, le=10000, description="检索缓存最大条目数"
+    )
+    fact_candidate_k: int = Field(
+        default=20, ge=1, le=100, description="事实召回候选池大小"
+    )
+    fact_min_lexical_score: float = Field(
+        default=0.34, ge=0.0, le=1.0, description="事实关键词相关性门槛"
+    )
+    fact_min_vector_similarity: float = Field(
+        default=0.62, ge=0.0, le=1.0, description="事实向量相关性门槛"
+    )
+    fact_min_graph_score: float = Field(
+        default=0.62, ge=0.0, le=1.0, description="图路线绝对可信度门槛"
+    )
+    fact_min_final_score: float = Field(
+        default=0.42, ge=0.0, le=1.0, description="最终事实相关性门槛"
+    )
+    injection_token_budget: int = Field(
+        default=1200, ge=128, le=16000, description="单轮长期事实注入硬预算"
+    )
+    single_fact_token_budget: int = Field(
+        default=320, ge=32, le=8000, description="单条完整事实注入上限"
+    )
+    include_persona_reaction: bool = Field(
+        default=True, description="预算允许时随命中事实附带简短人格反应"
     )
 
 
@@ -244,10 +271,13 @@ class GraphMemoryConfig(BaseModel):
 
     enabled: bool = Field(default=True, description="是否启用图记忆双路检索")
     document_route_weight: float = Field(
-        default=0.65, ge=0.0, le=1.0, description="文档路权重"
+        default=1.0, ge=0.0, le=1.0, description="事实路权重"
     )
     graph_route_weight: float = Field(
-        default=0.35, ge=0.0, le=1.0, description="图路权重"
+        default=0.0,
+        ge=0.0,
+        le=1.0,
+        description="图路权重；完成独有收益验收前默认关闭",
     )
     cross_route_bonus: float = Field(
         default=0.08, ge=0.0, le=0.5, description="双路同时命中的额外加分"
@@ -292,14 +322,11 @@ class GraphMemoryConfig(BaseModel):
 
     @model_validator(mode="after")
     def validate_route_weights(self):
-        """Normalize route weights to sum to 1.0 for numerically stable fusion."""
+        """Keep user-facing weights stable; retrievers normalize active routes."""
         total = self.document_route_weight + self.graph_route_weight
         if total <= 0:
-            self.document_route_weight = 0.65
-            self.graph_route_weight = 0.35
-        elif total != 1.0:
-            self.document_route_weight = self.document_route_weight / total
-            self.graph_route_weight = self.graph_route_weight / total
+            self.document_route_weight = 1.0
+            self.graph_route_weight = 0.0
         return self
 
 
@@ -433,6 +460,17 @@ def merge_config_with_defaults(user_config: dict[str, Any]) -> dict[str, Any]:
         return result
 
     merged = deep_merge(default_config, user_config)
+    user_graph = user_config.get("graph_memory")
+    if isinstance(user_graph, dict):
+        merged_graph = merged.get("graph_memory")
+        if isinstance(merged_graph, dict):
+            if (
+                "graph_route_weight" in user_graph
+                and "document_route_weight" not in user_graph
+            ):
+                merged_graph["document_route_weight"] = max(
+                    0.0, 1.0 - float(user_graph["graph_route_weight"])
+                )
     logger.debug("配置已与默认值合并")
     return merged
 

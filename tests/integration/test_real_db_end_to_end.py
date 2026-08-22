@@ -53,6 +53,33 @@ class _DeterministicEmbeddingProvider(EmbeddingProvider):
         return self._dim
 
 
+async def _add_explicit_fact(
+    engine: MemoryEngine,
+    *,
+    fact: str,
+    session_id: str,
+    persona_id: str,
+    importance: float,
+    topics: list[str] | None = None,
+    participants: list[str] | None = None,
+) -> int:
+    """Seed the same v3 fact contract used by production writes."""
+    record = MemoryProcessor(llm_provider=object()).build_explicit_memory_record(
+        memory=fact,
+        source_scope=session_id,
+        topics=topics,
+        participants=participants,
+        importance=importance,
+        origin="test_fixture",
+    )
+    return await engine.add_canonical_memory(
+        metadata=record.metadata,
+        session_id=session_id,
+        persona_id=persona_id,
+        importance=record.importance,
+    )
+
+
 class _DeterministicLLMProvider:
     async def text_chat(
         self,
@@ -344,9 +371,16 @@ async def test_memory_archive_retains_document_and_restore_rebuilds_real_indexes
         embedding_provider=_DeterministicEmbeddingProvider(dim=24),
     )
     await vector_db.initialize()
+    fact_vector_db = FaissVecDB(
+        doc_store_path=str(tmp_path / "archive_facts.db"),
+        index_store_path=str(tmp_path / "archive_facts.index"),
+        embedding_provider=_DeterministicEmbeddingProvider(dim=24),
+    )
+    await fact_vector_db.initialize()
     engine = MemoryEngine(
         db_path=str(db_path),
         faiss_db=vector_db,
+        fact_vector_db=fact_vector_db,
         config={
             "graph_memory_enabled": False,
             "recent_memory_count": 0,
@@ -360,12 +394,12 @@ async def test_memory_archive_retains_document_and_restore_rebuilds_real_indexes
     assert engine.atom_store is None
     assert engine.atom_retriever is None
     assert engine.atom_lifecycle_manager is None
-    memory_id = await engine.add_memory(
-        "release archive verification",
-        "test:private:archive",
-        "persona-archive",
-        0.2,
-        {"key_facts": ["release archive verification"]},
+    memory_id = await _add_explicit_fact(
+        engine,
+        fact="release archive verification",
+        session_id="test:private:archive",
+        persona_id="persona-archive",
+        importance=0.2,
     )
     await engine.update_memory(
         memory_id,
@@ -387,6 +421,7 @@ async def test_memory_archive_retains_document_and_restore_rebuilds_real_indexes
             archived_metadata = json.loads(archived_metadata)
         assert archived_metadata["status"] == "archived"
         assert vector_db.embedding_storage.index.ntotal == 0
+        assert fact_vector_db.embedding_storage.index.ntotal == 0
         assert await engine.search_memories("release", k=5) == []
 
         assert await engine.restore_memory(memory_id) is True
@@ -397,6 +432,7 @@ async def test_memory_archive_retains_document_and_restore_rebuilds_real_indexes
             restored_metadata = json.loads(restored_metadata)
         assert restored_metadata["status"] == "active"
         assert vector_db.embedding_storage.index.ntotal == 1
+        assert fact_vector_db.embedding_storage.index.ntotal == 1
         results = await engine.search_memories("release", k=5)
         assert [result.doc_id for result in results] == [memory_id]
 
@@ -409,6 +445,7 @@ async def test_memory_archive_retains_document_and_restore_rebuilds_real_indexes
             assert await cursor.fetchone() is None
     finally:
         await engine.close()
+        await fact_vector_db.close()
         await vector_db.close()
 
 
@@ -559,12 +596,13 @@ async def test_command_handlers_with_real_database(real_db_stack):
     session_id = "test:private:cmd-session"
     event = _TestEvent(session_id, "search me")
 
-    memory_id = await memory_engine.add_memory(
-        content="I prefer coffee in the morning.",
+    memory_id = await _add_explicit_fact(
+        memory_engine,
+        fact="I prefer coffee in the morning.",
         session_id=session_id,
         persona_id="persona-real",
         importance=0.9,
-        metadata={"memory_type": "PREFERENCE"},
+        topics=["coffee"],
     )
 
     search_output = [
@@ -666,7 +704,17 @@ async def test_normal_message_pipeline_with_real_database(real_db_stack):
     assert "persona_reaction" not in fact_rows[0][1]
     hydrated = await real_db_stack["memory_engine"].get_memory(int(rows[0][0]))
     assert hydrated is not None
-    assert hydrated["metadata"]["key_facts"] == [canonical_fact]
+    hydrated_fact = hydrated["metadata"]["key_facts"][0]
+    for key, value in canonical_fact.items():
+        assert hydrated_fact[key] == value
+    assert hydrated_fact["lifecycle"] == {
+        "status": "active",
+        "importance": canonical_fact["importance"],
+        "last_retrieved_at": None,
+        "retrieval_count": 0,
+        "last_injected_at": None,
+        "injection_count": 0,
+    }
     status = await real_db_stack["memory_engine"].get_canonical_index_status()
     assert status == {"consistent": True, "facts": 1, "fts": 1, "vectors": 1}
     candidates = await real_db_stack[
@@ -734,12 +782,13 @@ async def test_recall_injection_with_real_database(real_db_stack):
     event_handler = real_db_stack["event_handler"]
 
     session_id = "test:private:recall-session"
-    await memory_engine.add_memory(
-        content="User is considering buying noise-cancelling headphones.",
+    await _add_explicit_fact(
+        memory_engine,
+        fact="User is considering buying noise-cancelling headphones.",
         session_id=session_id,
         persona_id="persona-real",
         importance=0.95,
-        metadata={"memory_type": "PREFERENCE"},
+        topics=["headphones"],
     )
 
     event = _TestEvent(session_id, "What headphones should I buy?")

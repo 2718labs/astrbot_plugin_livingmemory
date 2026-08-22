@@ -321,7 +321,7 @@ async def test_hybrid_retriever_fallback_when_one_channel_fails():
 
 
 @pytest.mark.asyncio
-async def test_dual_route_retriever_dynamic_weighting_promotes_relationship_query():
+async def test_dual_route_retriever_dynamic_weighting_never_overrides_stronger_signal():
     class _DocRoute:
         async def search(self, query, k, session_id=None, persona_id=None):
             return [
@@ -375,9 +375,11 @@ async def test_dual_route_retriever_dynamic_weighting_promotes_relationship_quer
     )
 
     results = await retriever.search("我和张三是什么关系", k=2)
-    assert results[0].doc_id == 2
-    assert (results[0].score_breakdown or {})["query_intent"] == "relationship"
-    assert (results[0].score_breakdown or {})["graph_route_weight"] > 0.35
+    assert results[0].doc_id == 1
+    graph_hit = next(item for item in results if item.doc_id == 2)
+    assert (graph_hit.score_breakdown or {})["query_intent"] == "relationship"
+    assert (graph_hit.score_breakdown or {})["graph_route_weight"] > 0.35
+    assert graph_hit.final_score < results[0].final_score
 
 
 # ── New tests for weighted-sum scoring, last_access_time decay, MMR ──────────

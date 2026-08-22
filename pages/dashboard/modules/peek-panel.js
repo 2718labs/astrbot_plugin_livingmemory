@@ -211,7 +211,25 @@ export class PeekPanel {
     // 关键事实
     if (keyFacts.length) {
       html += '<div class="peek-section"><div class="peek-section-title">' + window.t("detail.keyFacts") + '</div><div class="peek-fact-list">';
-      keyFacts.forEach(f => { html += '<div class="peek-fact-item">' + esc(factText(f)) + '</div>'; });
+      keyFacts.forEach(f => {
+        html += '<div class="peek-fact-item"><div>' + esc(factText(f)) + '</div>';
+        if (f && typeof f === "object") {
+          const lifecycle = f.lifecycle || {};
+          const reaction = f.persona_reaction || {};
+          const reactionText = [reaction.emotion, reaction.thought].filter(Boolean).join("；");
+          html += '<div class="text-secondary" style="font-size:11px;margin-top:4px">' + esc(window.t(
+            "detail.factLifecycle",
+            String(f.fact_id || "--"),
+            String(lifecycle.status || "active"),
+            Number(lifecycle.retrieval_count || 0),
+            Number(lifecycle.injection_count || 0)
+          )) + '</div>';
+          if (reactionText) {
+            html += '<div class="text-secondary" style="font-size:11px;margin-top:3px">' + esc(window.t("detail.personaReaction", reactionText)) + '</div>';
+          }
+        }
+        html += '</div>';
+      });
       html += '</div></div>';
     }
 

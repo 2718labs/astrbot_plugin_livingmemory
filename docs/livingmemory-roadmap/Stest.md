@@ -1,9 +1,9 @@
 ---
 stage: Stest
-status: Planned
+status: Ready
 depends_on: [S5]
 run_after: S0-S5 complete and all approved S6 items complete
-updated: 2026-08-20
+updated: 2026-08-22
 document_role: final-acceptance
 ---
 
@@ -14,6 +14,8 @@ document_role: final-acceptance
 Stest 是最后一个验收节点，但验收不是到这里才开始。S0 先保存改造前生产基线；S1-S6 每阶段在实现前固定失败样本、完成后通过本阶段门槛；Stest 只冻结版本、汇总证据、跑完整链路和真实体验盲测。若失败，退回拥有该契约的阶段修复，不在 Stest 临时加过滤器或提示词补丁。
 
 历史尺度来自旧调查文档 `memory-system-analysis.md` 第 8b 节对长期正确、自然使用、可审计和可纠错的定义。本阶段只验收 S0-S6 已获准范围；跨记忆聚合和自动矛盾消解仍属 `Sfuture`，因此即使 Stest 通过，也不宣称已经完成自动自我纠错。
+
+截至 2026-08-22，S0-S6 的获准实现范围已完成，本节点已具备开跑条件；其任务状态仍为 `Planned`，只有实际冻结候选版本并完成整套 A/B 后才改为 Done。
 
 ## 验收结构
 

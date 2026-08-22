@@ -63,13 +63,6 @@ class DualRouteRetriever:
 
         document_weight, graph_weight, intent = self._route_weights_for_query(query)
 
-        document_max = (
-            max((item.final_score for item in doc_results), default=1.0) or 1.0
-        )
-        graph_max = (
-            max((item.final_score for item in graph_results), default=1.0) or 1.0
-        )
-
         doc_map = {item.doc_id: item for item in doc_results}
         graph_map = {item.doc_id: item for item in graph_results}
         all_doc_ids = set(doc_map) | set(graph_map)
@@ -79,17 +72,25 @@ class DualRouteRetriever:
             doc_result = doc_map.get(doc_id)
             graph_result = graph_map.get(doc_id)
 
-            doc_signal = (
-                doc_result.final_score / document_max if doc_result is not None else 0.0
+            doc_raw = (
+                max(0.0, min(1.0, float(doc_result.final_score)))
+                if doc_result is not None
+                else 0.0
             )
-            graph_signal = (
-                graph_result.final_score / graph_max
+            graph_raw = (
+                max(0.0, min(1.0, float(graph_result.final_score)))
                 if graph_result is not None
                 else 0.0
             )
+            document_floor = float(self.config.get("route_min_document_score", 0.35))
+            graph_floor = float(self.config.get("fact_min_graph_score", 0.62))
+            doc_signal = doc_raw if doc_raw >= document_floor else 0.0
+            graph_signal = graph_raw if graph_raw >= graph_floor else 0.0
+            if not doc_signal and not graph_signal:
+                continue
             route_bonus = (
                 self.cross_route_bonus
-                if doc_result is not None and graph_result is not None
+                if doc_signal and graph_signal
                 else 0.0
             )
 
@@ -108,12 +109,18 @@ class DualRouteRetriever:
                 raw_metadata = memory.get("metadata") or memory_metadata
                 memory_metadata = raw_metadata if isinstance(raw_metadata, dict) else {}
 
-            final_score = min(
-                1.0,
-                document_weight * doc_signal
-                + graph_weight * graph_signal
-                + route_bonus,
-            )
+            if doc_signal and graph_signal:
+                total_weight = max(0.0001, document_weight + graph_weight)
+                final_score = min(
+                    1.0,
+                    (document_weight * doc_signal + graph_weight * graph_signal)
+                    / total_weight
+                    + route_bonus,
+                )
+            else:
+                # A reliable route may stand alone; an absent/unreliable route
+                # contributes nothing and does not dilute or inflate the score.
+                final_score = doc_signal or graph_signal
 
             score_breakdown: dict[str, float] = {}
             if doc_result and doc_result.score_breakdown:
@@ -124,6 +131,8 @@ class DualRouteRetriever:
                 {
                     "document_route_score": round(doc_signal, 4),
                     "graph_route_score": round(graph_signal, 4),
+                    "document_route_raw": round(doc_raw, 4),
+                    "graph_route_raw": round(graph_raw, 4),
                     "document_route_weight": round(document_weight, 4),
                     "graph_route_weight": round(graph_weight, 4),
                     "cross_route_bonus": round(route_bonus, 4),

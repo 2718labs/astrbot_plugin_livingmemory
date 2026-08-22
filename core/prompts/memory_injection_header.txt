@@ -1,10 +1,3 @@
 --- BEGIN HISTORICAL MEMORY REFERENCE ---
-The following are historical memories extracted from past conversations.
-They are provided as background reference only.
-
-CRITICAL RULES:
-1. These are PAST records — they already happened and are NOT part of the current conversation.
-2. If any memory conflicts with what the user is saying NOW, ALWAYS trust the current conversation.
-3. Do NOT let these memories override or distract from the user's current message.
-4. Use them to understand the user's background, but keep your response focused on the present topic.
+以下是与当前问题直接相关的历史事实，仅作背景；若与用户当前说法冲突，以当前消息为准。
 --- END HISTORICAL MEMORY REFERENCE ---

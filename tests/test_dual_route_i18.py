@@ -1,10 +1,4 @@
-"""S3-06: I18 regression sample for dual-route signal normalization.
-
-Reproduces the "each route divides by its own maximum" defect: a weak graph
-candidate is normalized to a full signal just because it ranks first inside
-its own (weak) route. S3 only locks the failing sample and the correct
-behaviour (zero-weight bypass, S3-05); the fusion formula fix itself is S5.
-"""
+"""S5-04: fixed I18 regressions for dual-route signal calibration."""
 
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -51,18 +45,8 @@ async def _memory_loader(doc_id: int) -> dict:
 
 
 @pytest.mark.asyncio
-async def test_i18_weak_graph_first_candidate_gets_full_signal():
-    """Regression sample: weak graph route winner is normalized to 1.0.
-
-    Document route has one strong correct candidate (0.9); graph route has
-    one weak/irrelevant candidate (0.05). Because each route divides by its
-    own maximum, the weak graph candidate still receives graph_signal = 1.0
-    and can compete with the strong document candidate.
-
-    This reproduces I18. The expected fix (S5): a route without reliable
-    candidates must be allowed to contribute nothing. This test locks the
-    current behaviour so the sample cannot silently drift.
-    """
+async def test_i18_weak_graph_first_candidate_contributes_nothing():
+    """A weak graph winner cannot displace the strong document candidate."""
     document_retriever = AsyncMock()
     document_retriever.search = AsyncMock(
         return_value=[_hybrid_result(doc_id=101, final_score=0.9)]
@@ -86,17 +70,11 @@ async def test_i18_weak_graph_first_candidate_gets_full_signal():
 
     results = await retriever.search("驾考在哪报名", k=4)
 
-    graph_entry = next(item for item in results if item.doc_id == 202)
-    breakdown = graph_entry.score_breakdown or {}
-
-    # I18 reproduced: the weak graph candidate is normalized to a full signal
-    # just because it ranks first inside its own weak route.
-    assert breakdown["graph_route_score"] == 1.0
-    assert breakdown["document_route_score"] == 0.0
-    # Because the weak graph candidate is not excluded, it appears in results
-    # with the same normalized signal as the strong document candidate.
-    assert 202 in {item.doc_id for item in results}
-    assert breakdown["dual_route_final_score"] >= 0.35
+    assert [item.doc_id for item in results] == [101]
+    breakdown = results[0].score_breakdown or {}
+    assert breakdown["document_route_raw"] == 0.9
+    assert breakdown["document_route_score"] == 0.9
+    assert breakdown["graph_route_score"] == 0.0
 
 
 @pytest.mark.asyncio

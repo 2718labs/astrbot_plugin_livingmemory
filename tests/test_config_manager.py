@@ -18,11 +18,14 @@ def test_config_manager_loads_defaults() -> None:
     assert manager.get("recall_engine.top_k") == 5
     assert manager.get("recall_engine.min_importance_for_retrieval") == 0.0
     assert manager.get("recall_engine.min_similarity_for_retrieval") == 0.0
-    assert manager.get("recall_engine.recent_memory_count") == 2
+    assert manager.get("recall_engine.recent_memory_count") == 0
+    assert manager.get("recall_engine.fact_candidate_k") == 20
+    assert manager.get("recall_engine.injection_token_budget") == 1200
     assert manager.get("recall_engine.memory_type_filter") == "all"
     assert manager.get("recall_engine.recent_context_max_age_seconds") == 7200
     assert manager.get("fusion_strategy.rrf_k") == 60
     assert manager.get("graph_memory.dynamic_route_weighting") is False
+    assert manager.get("graph_memory.graph_route_weight") == 0.0
     assert manager.get("session_manager.max_sessions") == 100
     assert manager.get("session_manager.max_messages_per_session") == 1000
     assert manager.get("session_manager.cleanup_batch_size") == 50
@@ -124,3 +127,12 @@ def test_config_manager_graph_memory_property() -> None:
     assert manager.graph_memory["enabled"] is False
     assert manager.get("graph_memory.graph_route_weight") == 0.35
     assert manager.get("graph_memory.document_route_weight") == 0.65
+
+
+def test_document_weight_alone_does_not_implicitly_enable_graph_route() -> None:
+    manager = ConfigManager(
+        {"graph_memory": {"document_route_weight": 0.7}}
+    )
+
+    assert manager.get("graph_memory.document_route_weight") == 0.7
+    assert manager.get("graph_memory.graph_route_weight") == 0.0
