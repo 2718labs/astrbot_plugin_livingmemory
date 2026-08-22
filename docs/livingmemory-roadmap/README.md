@@ -16,6 +16,8 @@ excel_role: snapshot-only
 - `Stest.md` 维护最终系统验收；它汇总各阶段已经固定的证据，不负责临时追加实现。
 - `Sfuture.md` 只记录尚未立项的远期愿景，不属于当前执行依赖链。
 - 完整代码调查见 [T0-audit.md](T0-audit.md)。
+- 原版实际落库、搜索返回和最终注入格式见 [original-lm-storage-recall-format.md](original-lm-storage-recall-format.md)。
+- Enhancement fork 的对应格式见 [enhancement-storage-recall-format.md](enhancement-storage-recall-format.md)。
 - Excel 只作为 2026-08-20 的旧校对快照，不再同步。
 
 ## 已确认的主问题
@@ -24,7 +26,7 @@ excel_role: snapshot-only
 
 ```text
 聊天窗口
-  → 把“达到总结轮数”误当成“必须写一条长期记忆”
+  → 把“达到总结轮数”误当成“必须写一条记忆”
   → 没有先收束最终状态和本窗口新证据；被纠正的中间说法、Bot 自己复述的旧事也可能再次成为候选
   → 低重要度只影响后续衰减，低质量或兜底结果仍可先进入 active
   → 生成混合的第一人称日记；一条记录容纳多件事
@@ -59,30 +61,32 @@ excel_role: snapshot-only
 
 ## 已确定的目标形态
 
-十轮滑窗只是事实的来源边界，不再是召回和注入的最小单位。窗口先经过“最终状态 → 新证据 → 长期价值”三层判断，再形成事实对象：
+十轮滑窗只是事实的来源边界，不再是召回和注入的最小单位。窗口先经过“最终状态 → 新证据 → 后续是否需要记住或接续”三层判断，再形成事实对象：
 
 ```text
 来源窗口
   → 合并同一事件的前后说法，以最后的明确纠正或约定为准
   → 只保留本窗口中新确认的内容，阻止 Bot 复述旧记忆后自我复制
-  → 每条候选独立判断 store / skip
-  → 只有 store facts 进入 parent memory
+  → 每条候选独立判断，只输出值得保存的 facts
+  → 程序从 facts 派生 parent memory
 
 parent memory
-  ├─ fact A（自身 topic、participant、time、importance、source）
-  ├─ fact B（自身 topic、participant、time、importance、source）
-  └─ fact C（自身 topic、participant、time、importance、source）
+  ├─ fact A（自身 topic、participant、importance）
+  ├─ fact B（自身 topic、participant、importance）
+  └─ fact C（自身 topic、participant、importance）
 
 查询 → fact 候选 → 相关性拒绝与去重 → token 预算装配 → 最小事实注入
 ```
 
 - 保留 LM 风格的 `summary / topics / key_facts / sentiment / importance` 外壳，但 `key_facts` 升级为对象列表并标记新 schema 版本。
-- “真实发生过”不等于值得长期保存；单次称呼、动作、斗嘴和窗口内重复的同一玩笑默认跳过，稳定偏好、关系边界、已接受约定和未完成事项才是长期候选。
+- “真实发生过”不等于值得保存；稳定偏好、关系边界、重要事件和已接受的长期约定都可以作为普通事实保存，事实文本必须写准谁提出、谁接受和必要时间。
+- 承诺和约定不新增专用类别、状态、召回路线或衰减规则。短期任务若需定时触发，由 Bot/框架已有的主动唤醒任务负责，本 fork 不代为实现。
 - Bot 的人格设定和自己复述的旧记忆只是当前处理上下文；没有用户在本窗口的直接确认或补充，不得作为新事实再次写入。
 - `summary` 不再是长篇第一人称真源；它只是一句中性、可由 facts 派生的概览。
 - 每条 fact 可选保存当前人格对该事实的简短 `persona_reaction`（情绪/想法）；它不参与事实搜索、建图、重要度或矛盾判断。
+- 时间沿用原版简单方案：相对时间直接改写为 fact 正文中的具体日期；消息发送时间只作为来源元数据保存。独立时间对象和按时间检索移入 `Sfuture`。
 - parent memory 负责来源窗口和必要背景；生产搜索返回 fact，不能因命中一条 fact 就恢复整篇父总结。
-- `top_k` 只限制候选数量，不能限制可变长度文本；最终注入必须另有整轮 token 硬预算。
+- `top_k` 是最终注入的条目上限，不能同时充当可变长度文本的预算；候选池可更大，但最终结果仍须先按 `top_k` 收口，再受整轮 token 硬预算约束。
 
 ## 主线
 
@@ -108,23 +112,24 @@ S6 主线稳定后再校准生命周期信号和必要体验
 Stest 汇总阶段证据，跑完整链路、时间压缩与盲测体验，给出是否通过结论
 
 Sfuture（独立愿景，不进入当前执行链）
-  ├─ 非破坏性聚合
-  └─ 矛盾检测与消解
+  ├─ 非破坏性聚合 / 矛盾检测与消解
+  ├─ 可选 rerank / 动态路线选择
+  └─ 结构化时间与时间检索
 ```
 
 ## 阶段总表
 
 | 阶段 | 目标 | 主要问题 | 核心模块 | 前置 | 状态 | 文档 |
 |---|---|---|---|---|---|---|
-| S0 | 先收束最终状态并隔离非新增内容，再逐 fact 判断长期价值和检查输出格式；由程序推导窗口的 `store / skip / invalid`，并建立真实链路基线 | I05、I15、I16 | reflection、processor、prompts、parser、eval fixtures | T0A/T0B | Done | [S0](S0.md) |
-| S1 | 将 S0 的获准 fact 从临时文本投影升级为 LM 风格的唯一对象契约，并移除长篇第一人称总结真源 | I03、I04、I05、I09、I15、I17、F03 | summary schema、fact model、processor、source window | S0 | Done | [S1](S1.md) |
+| S0 | 先收束最终状态并隔离非新增内容，再逐 fact 判断以后是否需要理解或接续，并检查输出格式；由程序推导窗口的 `store / skip / invalid`，并建立真实链路基线 | I05、I15、I16 | reflection、processor、prompts、parser、eval fixtures | T0A/T0B | In Progress：待实例复验 | [S0](S0.md) |
+| S1 | 将 S0 的获准 fact 从临时文本投影升级为 LM 风格的唯一对象契约，并移除长篇第一人称总结真源 | I03、I04、I05、I09、I15、I17、I21、F03 | summary schema、fact model、processor、source window | S0 | Done | [S1](S1.md) |
 | S2 | 让所有新写入入口生成同一 parent/fact 结构和事实级索引 | I03、I04、I06、I17 | build pipeline、fact storage/index、rebuild | S1 | Done | [S2](S2.md) |
 | S3 | 消除全组合噪声，只保存有来源证据的图关系，修复图谱查看入口，并固定双路满信号 bug 的回归样本 | I01、I02、I06、I09、I18、I19、F03 | graph extractor/store/manager、resolver、rebuild、dual-route eval、WebUI/Page API | S2 | Done | [S3](S3.md) |
 | S4 | 在 canonical fact 与 Atom 之间选定唯一生产事实层 | I08、I12、I17、F02 | fact/Atom model、store、retriever、lifecycle、memory engine | S2、S3 | Done | [S4](S4.md) |
-| S5 | 让无关消息不注入，相关消息按 fact 命中并在硬预算内装配 | I10、I11、I13、I14、I16、I17、I18、U02 | fact search、route fusion/calibration、recent、filter、budget packer、formatting、memory recall | S3、S4 | Done | [S5](S5.md) |
-| S6 | 仅在主线稳定后校准生命周期信号和必要观察体验 | I08、I13、U01、U02 | lifecycle、event tracking、WebUI | S5 | Done | [S6](S6.md) |
-| Stest | 对完成范围做完整链路、长周期和盲测体验验收，判定改造净收益 | I20 | eval harness、time-controlled replay、paired blind review | S5；以及所有获准实施的 S6 项 | Ready | [Stest](Stest.md) |
-| Sfuture | 记录非破坏性聚合、矛盾消解、可选 rerank 和动态路线选择四个独立愿景；立项前不进入任务计划 | I07、F01、F04、F05、F06 | 未定，须独立调查 | 不属于当前依赖链 | Vision | [Sfuture](Sfuture.md) |
+| S5 | 让无关消息不注入，相关消息按 fact 命中并在硬预算内装配 | I10、I11、I13、I14、I16、I17、I18、I22、U02 | fact search、route fusion/calibration、filter、budget packer、formatting | S3、S4 | Done | [S5](S5.md) |
+| S6 | 校准生命周期信号并补充必要观察体验 | I08、I13、U01、U02 | lifecycle、event tracking、WebUI | S5 | Done | [S6](S6.md) |
+| Stest | 对完成范围做完整链路、长周期和盲测体验验收，判定改造净收益 | I20 | eval harness、time-controlled replay、paired blind review | S5；以及所有获准实施的 S6 项 | In Progress：按现行契约复跑 | [Stest](Stest.md) |
+| Sfuture | 记录非破坏性聚合、矛盾消解、可选 rerank、动态路线选择及结构化时间/时间检索五个独立愿景；立项前不进入任务计划 | I07、F01、F04、F05、F06 | 未定，须独立调查 | 不属于当前依赖链 | Vision | [Sfuture](Sfuture.md) |
 
 ## 问题总表
 
@@ -146,12 +151,14 @@ Sfuture（独立愿景，不进入当前执行链）
 | I12 | FIX / P1 | Atom 约 39% 为 unknown，且存在明显错分类与 `event_only` 漏口 | 分类不能支撑召回或生命周期 | S4 | S4 采用方案 B（停用 Atom），不再需要第二套类型 |
 | I13 | OPT-S / P1 | 路线分数难校准，访问统计的意义依赖召回是否准确 | 难以解释排序；但召回正确后现有衰减可以继续工作 | S5、S6 | 已保留路线绝对信号，并拆分 `retrieved` / `injected`；只有实际注入影响衰减，`adopted` 因无可靠信号不伪造 |
 | I14 | FIX / P0 | 注入没有总预算，并重复正文、标签、全部事实和人格总结 | 文档长度不受 `top_k` 控制；四条文档可轻易占用数千 token | S5 | 已分离候选池与最终载荷；自动/Agent 路径共用完整 fact 硬预算，放不下即停止且不截断 |
-| I15 | FIX / P0 | 没有先确定最终状态和本窗口新证据，也没有逐 fact 的“是否值得长期保存”结果；低重要度只是落库后的衰减信号 | 被纠正的说法、Bot 复述的旧事和一次性玩笑可能与真正偏好一起写入；窗口级决定又会把有用与无用内容捆在一起 | S0、S1 | S0 依次执行最终状态收束、新证据边界和逐 fact `store / skip`，由程序推导窗口结果；importance 只作信号；S1 将获准 fact 升级为唯一持久对象 |
+| I15 | FIX / P0 | 没有先确定最终状态和本窗口新证据，也没有逐 fact 的“以后是否仍有助于理解”结果；Bot 单方面声称的旧约定还可能被误写成双方事实 | 被纠正的说法、Bot 复述的旧事和玩笑可能与真正记忆捆在一起；来源不准又会把从未成立的约定写进长期记忆 | S0、S1 | S0 逐 fact 准入并要求约定写准提出者和接受证据；S1 仍按普通 fact 持久化，不新增任务状态；短期定时执行属于框架主动唤醒能力 |
 | I16 | TEST / P0 | 旧评测以 `k=8` 结果推导 `hit@4`，没有复现生产 `top_k=4 + recent=2 + injection` | 会把候选池成绩误当真实用户效果 | S0、S5 | 已分别记录候选 fact 与最终预算载荷，并用真实数据库/事件注入回归覆盖生产路径；总体 A/B 在 Stest 运行 |
 | I17 | FIX / P0 | 生产召回单位仍是十轮总结文档；命中其中一点就整块注入 summary、全部 facts 和元数据 | 相关信息被长篇无关内容淹没，无法精确截断，也直接造成预算爆炸 | S1、S2、S4、S5 | 已切换为 canonical fact 生产召回；parent 只回链来源，默认载荷不展开 summary 或 sibling facts |
 | I18 | FIX / P1 | document 与 graph 路线各自除以本路线最高分，导致每条路线的第一名无论多弱都得到满信号 | 抹掉路线的绝对可信度；弱图结果只因“本路线排第一”就可能拿满图权重，挤掉更可靠的 fact/document 候选 | S3、S5 | 已改为绝对信号门槛；弱路线可零贡献，固定回归保证弱图不挤掉强事实；图默认权重仍为 0 |
 | I19 | FIX / P2 | 图谱页首次进入就自动请求 `full_graph=true`；“全量图谱”按钮再次调用同一函数，未筛选时只会重复同一请求 | 默认全量加载绕过受限概览，数据多时形成毛团和无界开销；按钮也没有清楚的状态转换 | S3 | 首次进入加载受限概览；只有显式点击按钮才加载全量图，并分别建立前端与 Page API 回归 |
 | I20 | TEST / P0 | 各阶段虽有局部完成条件，但缺少一个冻结口径、汇总证据并判断整体净收益的最终节点 | 如果全部改完才凭实际感觉回看，容易临时改判卷标准，也无法定位退化来自哪一阶段 | Stest | 每阶段先固定样本并验收；Stest 最后跑完整链路、时间压缩回放和成对盲测，失败退回责任阶段 |
+| I21 | FIX / P0 | 多中心外壳曾让一个十轮窗口最多产出 5 个 memory、每个又最多 5 个 facts，实际容量从原版 5 条被放大到 25 条 | 模型会顺着容量把同一事件的逐句过程都存下来；fact 数量增加却没有增加记忆价值 | S1 | 保留原版“单条 memory 最多 5 个 facts”，并让整个来源窗口合计仍最多 5 个；同一事件的原因、发展和结果合并表达，超量只允许一次不补造信息的压缩修复 |
+| I22 | FIX / P0 | fact 装配器曾额外限制“同一 parent 最多注入一条”，使配置的 `top_k` 失去最终条目上限的含义 | 一个来源窗口中的多条独立相关事实即使分别命中，也会被隐藏限流丢掉；实际注入条数可能无故少于设置值 | S5 | 撤销 parent 级限流；去重后先由 `top_k` 收口条目数，再由 token 预算收口总长度，同 parent 的独立相关 facts 可以共同进入 |
 | F01 | FEAT / 远期大版本候选 | 矛盾检测与 `SUPERSEDED` 没有生产闭环 | 矛盾消解会改变系统认定的事实和生产召回，误判代价高 | Sfuture | 作为独立 Feature Request 调查；不进入 S0-S6 |
 | F02 | DECISION / P1 | Atom Retriever 存在但不在生产召回链 | 当前是死机制，不应继续默认维护 | S4 | S4 对照实验无净收益，已停用独立 Atom（方案 B） |
 | F03 | OPT-S / P1 | 缺少可复用 topic 身份和确定性节点复用 | 309 个不同 topic 中 297 个只出现一次 | S1、S3 | 规范名称、scope 和稳定 ID；仅在能确认是同一概念时复用节点 |
@@ -180,9 +187,10 @@ Sfuture（独立愿景，不进入当前执行链）
 15. 图路线必须允许在证据不足时不贡献分数；不得再用“各自除以本路线最高分”把弱路线第一名包装成满信号。
 16. 不等全部改完才开始验收：每阶段在实现前固定失败样本、实现后通过局部门槛；Stest 只做跨阶段总验和体验盲测，不在看到结果后临时改标准。
 17. `dynamic_route_weighting` 默认关闭；显式配置仍可开启。其未来资格由 `Sfuture` 重新立项，不作为 S3/S5 必须完成的优化。
-18. `store / skip` 是逐 fact 的生成期决定；窗口结果必须由程序推导。`skip` fact 和 `action` 都不得持久化，格式错误才进入窗口级 `invalid`。
-19. 写入准入固定按“同一事件最终状态 → 本窗口新证据 → 跨对话复用价值”执行；Bot 复述旧记忆不得形成自我强化写入回路。
+18. `store / skip` 是逐 fact 的内部判断；模型只输出获准 facts，不枚举 skip 项。窗口结果由程序推导，格式错误才进入窗口级 `invalid`。
+19. 写入准入固定按“同一事件最终状态 → 本窗口新证据 → 后续是否需要理解或接续”执行；有效期短不能单独成为跳过理由，Bot 复述旧记忆也不得形成自我强化写入回路。
 20. S0–S2 是写入侧；S3–S4 是附属结构；S5 是读取侧；S6 是稳定收尾。
+21. 时间复用原版处理：相对时间改写为 fact 正文中的具体日期，消息发送时间另存为来源元数据；当前不建立独立时间字段或按时间检索。LivingMemory 不实现后台提醒或主动唤醒任务，也不为约定建立自动任务状态机。
 
 ## 状态词
 
