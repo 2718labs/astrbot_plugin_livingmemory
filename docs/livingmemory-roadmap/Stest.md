@@ -36,8 +36,8 @@ Stest：同一原始消息完整重放 → 最终注入 → 成对回复
 | ID | 类型 | 问题 | 任务 | 主要模块 | 状态 |
 |---|---|---|---|---|---|
 | Stest-01 | TEST / P0 | I20 | 冻结基线、数据版本、判分规则和改造版本 | eval manifest、fixtures、config snapshot | In Progress |
-| Stest-02 | TEST / P0 | I05、I06、I15、I17 | 从原始消息完整重放到 canonical facts 与下游对象 | reflection、pipeline、storage、rebuild | In Progress：针对性复跑通过，待全样本重复稳定性评测 |
-| Stest-03 | TEST / P0 | I10、I11、I14、I16、I17、I18 | 比较改造前后最终召回与注入 | retrieval、recent、packer、injection | In Progress：确定性回归已修，待冻结复验 |
+| Stest-02 | TEST / P0 | I05、I06、I15、I17 | 从原始消息完整重放到 canonical facts 与下游对象 | reflection、pipeline、storage、rebuild | 证据已录：冻结版两轮全样本重放按分布口径达标（见下节） |
+| Stest-03 | TEST / P0 | I10、I11、I14、I16、I17、I18 | 比较改造前后最终召回与注入 | retrieval、recent、packer、injection | 通过：自然问法 26/26 注入、负例 0、预算内 |
 | Stest-04 | TEST / P1 | I08、I20 | 做时间压缩和规模收敛回放 | controlled clock、lifecycle、rebuild | Planned |
 | Stest-05 | TEST / P0 | U02、I20 | 做随机顺序的成对回复盲测 | conversation replay、review sheet | Planned |
 | Stest-06 | DECISION | I20 | 汇总证据并给出通过、退回或保持可选路线关闭的结论 | final report | Planned |
@@ -69,7 +69,7 @@ Stest：同一原始消息完整重放 → 最终注入 → 成对回复
 
 本轮增加两个可重放工具：`scripts/stest_instance_replay.py` 负责只读抽取、隔离重建和精确/负向注入检查；`scripts/stest_candidate_probe.py` 在既有候选上生成或复用自然问法，检查最终装配而非只看候选池。原始对话和私有载荷不提交进仓库。
 
-当前判定：`Stest-03` 暴露的确定性装配/中文检索问题已在工作树修复，并通过全套回归；`Stest-02` 的目标错误已通过四窗口针对性复跑，但写入取舍和跨次稳定性仍等待全样本重复评测。`Stest-04/05/06` 暂不冒充完成。
+当前判定：`Stest-03` 暴露的确定性装配/中文检索问题已在工作树修复，并通过全套回归；`Stest-02` 的目标错误已通过四窗口针对性复跑，写入取舍与跨次稳定性已由冻结版两轮全样本重放按分布口径评测达标（见下节）。`Stest-04/05/06` 暂不冒充完成。
 
 ### 2026-08-22 两窗口实战补测
 
@@ -80,6 +80,24 @@ Stest：同一原始消息完整重放 → 最终注入 → 成对回复
 按现行契约复跑结果：第一段 77 条原始消息经分段合并为 46 条、取最后 20 条后，模型一次输出 4 个 parent / 4 个 facts；第二段 62 条原始消息合并为 23 条、取最后 20 条后，一次输出 1 个 parent / 1 个 fact。两段都没有触发压缩修复，说明本次模型已自行落在原版 5 条上限内；超量压缩及修复后仍超量拒写另由固定回归覆盖。
 
 隔离存储的 facts / FTS / vectors 为 5 / 5 / 5 且一致。实际 WebUI 的记忆管理页显示 5 条记录，每条详情均能展示独立 fact、fact ID、状态、reaction、topic、participant 和 20 条来源消息。两条真实追问分别有 3 条和 1 条 facts 通过相关性门槛并全部进入最终注入，载荷分别约 370 和 133 tokens，均无预算丢弃；`top_k=4` 在这里是上限而非凑数目标。同 parent 多条独立 facts 可注入且最终不超过 `top_k` 的确定性行为由自动注入回归单独固定。
+
+### 2026-08-22 冻结版全样本两轮重放（587b3a1）
+
+冻结版本为 `587b3a1`（含收尾的契约简化与 `top_k` 修正）。同一只读快照、16 窗口 324 条消息完整跑两轮，另加一轮自然问法 probe：
+
+| 项目 | 轮 1 | 轮 2 |
+|---|---|---|
+| store / skip / invalid | 16 / 0 / 0 | 15 / 0 / 1 |
+| 写入 facts | 26 | 30 |
+| 精确查询命中并注入 | 26/26 | 30/30 |
+| 负例注入 | 0/4 | 0/4 |
+| 索引 facts / FTS / vectors | 26/26/26 | 30/30/30 |
+
+- 窗口级判定跨轮 15/16 一致；窗口 73 在轮 2 因模型输出未过内容准入门被整窗拒写。这是"拒写"而非"写坏"，属安全方向波动。
+- 每窗 fact 条数跨轮在 1~3 条之间波动，未触 5 条上限，未触发超量压缩修复。
+- 稳定性按分布口径判定：LLM 是概率模型，不要求逐次相同输出，只约束坏结果概率。两轮证据：错误事实入库 0、负例注入 0、窗口级拒写率 1/32 且全部为安全方向。
+- 自然问法 probe（26 问）：Hit@1 24/26、Hit@k 26/26、目标进入最终注入 26/26、parent 摘要泄漏 0、负例注入 0、最大注入约 357 token（预算 1200 内）。
+- 结论：`Stest-02` / `Stest-03` 按现行口径达标；`Stest-04`（时间压缩）、`Stest-05`（成对盲测）、`Stest-06`（总判定）仍未执行，节点保持 In Progress。
 
 ## Stest-01：先冻结判卷方式
 
