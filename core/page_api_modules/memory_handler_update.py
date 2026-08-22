@@ -57,6 +57,11 @@ class MemoryHandlerUpdateMixin:
 
         # 内容、主题和关键事实共同决定向量、原子与图数据，必须一次重建。
         if field in {"content", "topics", "key_facts", "structured"}:
+            if current_metadata.get("memory_schema_version") == "v3":
+                return self.utils.error(
+                    "canonical fact 的正文、主题和来源不能在父记忆页面直接改写；"
+                    "这里只允许调整状态、类型和重要度"
+                )
             if field == "structured":
                 if not isinstance(value, dict):
                     return self.utils.error("structured value 必须是对象")
@@ -215,6 +220,8 @@ class MemoryHandlerUpdateMixin:
                         "field": field,
                     }
                 )
+            if current_status == "deleted":
+                return self.utils.error("已删除记忆不能直接恢复或归档")
             if status_value == "archived":
                 archived = await memory_engine.archive_memories([memory_id])
                 if archived != 1:
@@ -222,6 +229,17 @@ class MemoryHandlerUpdateMixin:
                 return self.utils.ok(
                     {
                         "message": "记忆已归档并移出检索索引",
+                        "memory_id": memory_id,
+                        "field": field,
+                    }
+                )
+            if status_value == "deleted":
+                deleted = await memory_engine.soft_delete_memories([memory_id])
+                if deleted != 1:
+                    return self.utils.error("删除失败")
+                return self.utils.ok(
+                    {
+                        "message": "记忆已标记删除并移出检索索引",
                         "memory_id": memory_id,
                         "field": field,
                     }
@@ -368,7 +386,38 @@ class MemoryHandlerUpdateMixin:
                     if status_value not in {"active", "archived", "deleted"}:
                         failed_ids.append(raw_id)
                         continue
-                    updates["metadata"] = {"status": status_value}
+                    memory = await self._get_memory_record(memory_id, memory_engine)
+                    if not memory:
+                        failed_ids.append(raw_id)
+                        continue
+                    metadata = self.utils.normalize_metadata(memory.get("metadata"))
+                    current_status = str(metadata.get("status") or "active")
+                    if status_value == current_status:
+                        updated_count += 1
+                        continue
+                    if current_status == "deleted":
+                        failed_ids.append(raw_id)
+                        continue
+                    if status_value == "archived":
+                        if await memory_engine.archive_memories([memory_id]) == 1:
+                            updated_count += 1
+                        else:
+                            failed_ids.append(raw_id)
+                        continue
+                    if status_value == "deleted":
+                        if await memory_engine.soft_delete_memories([memory_id]) == 1:
+                            updated_count += 1
+                        else:
+                            failed_ids.append(raw_id)
+                        continue
+                    if current_status != "archived":
+                        failed_ids.append(raw_id)
+                        continue
+                    if await memory_engine.restore_memory(memory_id):
+                        updated_count += 1
+                    else:
+                        failed_ids.append(raw_id)
+                    continue
                 elif field == "importance":
                     try:
                         updates["importance"] = self._normalize_importance_update(

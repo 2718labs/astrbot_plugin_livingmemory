@@ -430,6 +430,40 @@ async def test_memory_archive_retains_document_and_restore_rebuilds_real_indexes
         results = await engine.search_memories("release", k=5)
         assert [result.doc_id for result in results] == [memory_id]
 
+        assert await engine.soft_delete_memories([memory_id]) == 1
+        deleted = await engine.get_memory(memory_id)
+        assert deleted is not None
+        deleted_metadata = deleted["metadata"]
+        if isinstance(deleted_metadata, str):
+            deleted_metadata = json.loads(deleted_metadata)
+        assert deleted_metadata["status"] == "deleted"
+        assert vector_db.embedding_storage.index.ntotal == 0
+        assert fact_vector_db.embedding_storage.index.ntotal == 0
+        assert await engine.search_memories("release", k=5) == []
+        index_status = await engine.get_canonical_index_status()
+        assert index_status == {
+            "consistent": True,
+            "facts": 0,
+            "fts": 0,
+            "vectors": 0,
+        }
+        async with aiosqlite.connect(str(db_path)) as conn:
+            parent_status = await (
+                await conn.execute(
+                    "SELECT status FROM memory_parents WHERE document_id = ?",
+                    (memory_id,),
+                )
+            ).fetchone()
+            fact_status = await (
+                await conn.execute(
+                    "SELECT status FROM memory_facts WHERE parent_id = "
+                    "(SELECT parent_id FROM memory_parents WHERE document_id = ?)",
+                    (memory_id,),
+                )
+            ).fetchone()
+        assert parent_status[0] == "deleted"
+        assert fact_status[0] == "deleted"
+
         # S4: add/archive/restore must never create or write the retired
         # memory_atoms table.
         async with aiosqlite.connect(str(db_path)) as conn:

@@ -64,6 +64,7 @@
     "stats.sessions":     { zh: "活跃会话", en: "Active Sessions", ru: "Активных сессий" },
     "stats.graphNodes":   { zh: "图谱节点", en: "Graph Nodes", ru: "Узлы графа" },
     "stats.atoms":        { zh: "原子记忆", en: "Atoms", ru: "Атомы" },
+    "stats.canonicalFacts":{ zh: "有效事实", en: "Canonical Facts", ru: "Канонические факты" },
 
     /* ---- Filter ---- */
     "filter.keyword":     { zh: "关键字（支持 memory_id / 内容搜索）", en: "Keyword (memory_id / content)", ru: "Ключевое слово (memory_id / контент)" },
@@ -100,6 +101,8 @@
     "table.updated":      { zh: "更新于 {0}", en: "Updated {0}", ru: "Обновлено {0}" },
     "table.consolidated": { zh: "整合 {0}", en: "Merged {0}", ru: "Объединено {0}" },
     "table.consolidatedTitle":{ zh: "由记忆整合合并产生", en: "Produced by memory consolidation", ru: "Создано консолидацией памяти" },
+    "table.factCount":    { zh: "{0} 条事实", en: "{0} facts", ru: "Фактов: {0}" },
+    "table.canonicalFactTitle":{ zh: "当前生产召回按这些独立事实工作", en: "Production recall works on these independent facts", ru: "Рабочий поиск использует эти отдельные факты" },
 
     /* ---- Pagination ---- */
     "pagination.prev":    { zh: "上一页", en: "Previous", ru: "Пред." },
@@ -422,6 +425,10 @@
     "system.noSessions":  { zh: "暂无会话", en: "No sessions", ru: "Нет сессий" },
     "system.noBackups":   { zh: "暂无备份", en: "No backups", ru: "Нет резервных копий" },
     "system.noAtoms":     { zh: "暂无原子数据", en: "No atom data", ru: "Нет данных атомов" },
+    "system.canonicalFacts":{ zh: "事实生命周期与索引", en: "Fact Lifecycle & Indexes", ru: "Жизненный цикл фактов и индексы" },
+    "system.noCanonicalFacts":{ zh: "暂无 canonical fact", en: "No canonical facts", ru: "Нет канонических фактов" },
+    "system.factIndexConsistent":{ zh: "索引一致：事实 {0} / 全文 {1} / 向量 {2}", en: "Indexes consistent: facts {0} / FTS {1} / vectors {2}", ru: "Индексы согласованы: факты {0} / FTS {1} / векторы {2}" },
+    "system.factIndexMismatch":{ zh: "索引不一致：事实 {0} / 全文 {1} / 向量 {2}", en: "Index mismatch: facts {0} / FTS {1} / vectors {2}", ru: "Несоответствие индексов: факты {0} / FTS {1} / векторы {2}" },
     "system.files":       { zh: "个文件", en: "files", ru: "файлов" },
     "system.messages":    { zh: "条消息", en: "messages", ru: "сообщений" },
     "system.lastActive":  { zh: "最后活跃", en: "Last active", ru: "Посл. активность" },
@@ -480,6 +487,9 @@
     "detail.updateReason":{ zh: "更新原因（可选）", en: "Update Reason (optional)", ru: "Причина обновления (опц.)" },
     "detail.reasonPh":    { zh: "说明本次更新的原因", en: "Why this update?", ru: "Причина обновления" },
     "detail.contentHint": { zh: "编辑内容、主题或关键事实将创建新记忆（ID会变更）", en: "Editing content, topics, or key facts creates a new memory (ID will change).", ru: "Изменение содержимого, тем или ключевых фактов создаст новую память (ID изменится)." },
+    "detail.canonicalEditHint":{ zh: "事实正文和主题由 canonical fact 契约管理；此处只调整状态、类型和重要度。", en: "Fact text and topics are governed by the canonical fact contract; only status, type, and importance are editable here.", ru: "Текст и темы управляются контрактом canonical fact; здесь меняются только статус, тип и важность." },
+    "detail.factTopics":  { zh: "主题 {0}", en: "Topics {0}", ru: "Темы {0}" },
+    "detail.factParticipants":{ zh: "人物 {0}", en: "Participants {0}", ru: "Участники {0}" },
     "detail.noGraphData": { zh: "暂无图谱数据", en: "No graph data", ru: "Нет данных графа" },
     "detail.noChanges":   { zh: "没有检测到修改", en: "No changes", ru: "Нет изменений" },
     "detail.contentRequired":{ zh: "记忆内容不能为空", en: "Memory content cannot be empty", ru: "Содержимое памяти не может быть пустым" },

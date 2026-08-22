@@ -472,6 +472,45 @@ class TestGetStats:
         assert result["status"] == "error"
         assert "尚未就绪" in result["message"]
 
+    @pytest.mark.asyncio
+    async def test_reports_canonical_fact_counts_and_index_status(self, api, tmp_path):
+        db_path = tmp_path / "canonical-stats.db"
+        db = await aiosqlite.connect(db_path)
+        db.row_factory = aiosqlite.Row
+        await db.executescript(
+            """
+            CREATE TABLE memory_parents (parent_id TEXT PRIMARY KEY);
+            CREATE TABLE memory_facts (
+                id INTEGER PRIMARY KEY, status TEXT NOT NULL
+            );
+            INSERT INTO memory_parents VALUES ('p1');
+            INSERT INTO memory_facts VALUES (1, 'active');
+            INSERT INTO memory_facts VALUES (2, 'archived');
+            """
+        )
+        await db.commit()
+        index_status = SimpleNamespace(
+            is_consistent=True, fact_count=1, fts_count=1, vector_count=1
+        )
+        engine = api.plugin.initializer.memory_engine
+        engine.canonical_store = SimpleNamespace(
+            db=db, index_status=AsyncMock(return_value=index_status)
+        )
+        try:
+            result = await api.get_stats()
+        finally:
+            await db.close()
+
+        assert result["status"] == "ok"
+        assert result["data"]["canonical_parent_count"] == 1
+        assert result["data"]["canonical_fact_count"] == 2
+        assert result["data"]["canonical_fact_breakdown"] == {
+            "active": 1,
+            "archived": 1,
+        }
+        assert result["data"]["canonical_index_status"]["consistent"] is True
+        assert result["data"]["atom_retired"] is True
+
 
 class TestListMemories:
     @pytest.mark.asyncio
@@ -609,6 +648,55 @@ class TestListMemories:
         assert result["data"]["filters"]["type"] == "PREFERENCE"
         assert result["data"]["sort"] == "importance_desc"
         assert [item["id"] for item in result["data"]["items"]] == [2, 1]
+
+    @pytest.mark.asyncio
+    async def test_canonical_fact_text_is_searchable_and_returned(self, api, tmp_path):
+        db_path = tmp_path / "canonical-list.db"
+        async with aiosqlite.connect(db_path) as db:
+            await db.executescript(
+                """
+                CREATE TABLE documents (
+                    id INTEGER PRIMARY KEY, doc_id TEXT, text TEXT,
+                    metadata TEXT, created_at TEXT, updated_at TEXT
+                );
+                CREATE TABLE memory_parents (
+                    parent_id TEXT PRIMARY KEY, document_id INTEGER
+                );
+                CREATE TABLE memory_facts (
+                    id INTEGER PRIMARY KEY, fact_id TEXT, parent_id TEXT,
+                    fact_json TEXT, search_text TEXT, status TEXT
+                );
+                """
+            )
+            metadata = {
+                "memory_schema_version": "v3",
+                "canonical_summary": "驾考安排",
+                "status": "active",
+            }
+            fact = {"fact_id": "fact-1", "fact": "张三周三参加科目二考试"}
+            await db.execute(
+                "INSERT INTO documents VALUES (1, 'doc-1', 'parent projection', ?, 'c', 'u')",
+                (json.dumps(metadata, ensure_ascii=False),),
+            )
+            await db.execute("INSERT INTO memory_parents VALUES ('parent-1', 1)")
+            await db.execute(
+                "INSERT INTO memory_facts VALUES (1, 'fact-1', 'parent-1', ?, ?, 'active')",
+                (json.dumps(fact, ensure_ascii=False), "张三 科目二 驾考"),
+            )
+            await db.commit()
+
+        api.plugin.initializer.memory_engine.db_path = str(db_path)
+        req = _mock_page_request(
+            args={"page": "1", "page_size": "20", "keyword": "科目二", "status": "all"}
+        )
+        with _patch_page_request(req):
+            result = await api.list_memories()
+
+        assert result["status"] == "ok"
+        item = result["data"]["items"][0]
+        assert item["architecture"] == "canonical_fact"
+        assert item["fact_count"] == 1
+        assert item["canonical_facts"][0]["fact_id"] == "fact-1"
 
     @pytest.mark.asyncio
     async def test_plugin_not_ready(self, api_not_ready):
@@ -914,6 +1002,54 @@ class TestUpdateMemory:
         assert result["status"] == "error"
         assert "最多允许 5 项" in result["message"]
         engine.replace_memory.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_canonical_fact_content_cannot_be_flattened_by_parent_editor(self, api):
+        engine = api.plugin.initializer.memory_engine
+        engine.replace_memory = AsyncMock(return_value=42)
+        req = _mock_page_request(
+            get_json={
+                "memory_id": 1,
+                "field": "structured",
+                "value": {"content": "flattened", "key_facts": ["lost evidence"]},
+            }
+        )
+        memory = {
+            "id": 1,
+            "text": "canonical projection",
+            "metadata": {"memory_schema_version": "v3"},
+        }
+        with _patch_page_request(req):
+            with patch(
+                "astrbot_plugin_livingmemory.core.page_api_modules.memory_handler.MemoryHandler._get_memory_record",
+                return_value=memory,
+            ):
+                result = await api.update_memory()
+
+        assert result["status"] == "error"
+        assert "canonical fact" in result["message"]
+        engine.replace_memory.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_batch_archive_uses_canonical_lifecycle_path(api):
+    engine = api.plugin.initializer.memory_engine
+    engine.archive_memories = AsyncMock(return_value=1)
+    engine.update_memory = AsyncMock(return_value=True)
+    api.memory_handler._get_memory_record = AsyncMock(
+        return_value={"id": 7, "metadata": {"status": "active"}}
+    )
+    req = _mock_page_request(
+        get_json={"memory_ids": [7], "field": "status", "value": "archived"}
+    )
+
+    with _patch_page_request(req):
+        result = await api.batch_update_memories()
+
+    assert result["status"] == "ok"
+    assert result["data"]["updated_count"] == 1
+    engine.archive_memories.assert_awaited_once_with([7])
+    engine.update_memory.assert_not_awaited()
 
 
 class TestBatchDeleteMemories:
@@ -1356,6 +1492,45 @@ async def test_memory_detail_includes_retained_source():
         {"role": "user", "content": "exact detail"}
     ]
     engine.get_memory_source.assert_awaited_once_with(7)
+
+
+@pytest.mark.asyncio
+async def test_memory_detail_prefers_authoritative_canonical_facts():
+    lifecycle_fact = {
+        "fact_id": "fact-7",
+        "fact": "张三周三参加科目二考试",
+        "lifecycle": {"status": "active", "retrieval_count": 2, "injection_count": 1},
+    }
+    engine = FakeMemoryEngine()
+    engine.canonical_store = SimpleNamespace(
+        get_facts_by_document=AsyncMock(return_value=[lifecycle_fact])
+    )
+    api = PluginPageApi(FakePlugin(memory_engine=engine))
+    api.memory_handler._get_memory_record = AsyncMock(
+        return_value={
+            "id": 7,
+            "doc_id": "memory-7",
+            "text": "parent projection",
+            "metadata": {
+                "memory_schema_version": "v3",
+                "canonical_summary": "驾考安排",
+                "persona_summary": "legacy diary",
+                "key_facts": [{"fact_id": "stale", "fact": "stale"}],
+            },
+            "created_at": "2026-01-01",
+            "updated_at": "2026-01-01",
+        }
+    )
+    req = _mock_page_request(args={"memory_id": "7"})
+
+    with _patch_page_request(req):
+        result = await api.get_memory_detail()
+
+    assert result["status"] == "ok"
+    assert result["data"]["summary"] == "驾考安排"
+    assert result["data"]["architecture"] == "canonical_fact"
+    assert result["data"]["key_facts"] == [lifecycle_fact]
+    assert result["data"]["fact_count"] == 1
 
 
 @pytest.mark.asyncio

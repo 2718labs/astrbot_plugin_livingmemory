@@ -73,6 +73,40 @@ test("the latest memory fetch wins when responses arrive out of order", async ()
   assert.equal(state.memory.items[0].summary, "FAST RESULT");
 });
 
+test("canonical memory rows use neutral summaries and expose fact counts", async () => {
+  const state = createState();
+  const api = {
+    async get() {
+      return {
+        total: 1,
+        has_more: false,
+        items: [{
+          id: 7,
+          text: "parent projection",
+          architecture: "canonical_fact",
+          fact_count: 2,
+          canonical_facts: [{ fact_id: "f1", fact: "one" }],
+          metadata: {
+            canonical_summary: "neutral overview",
+            persona_summary: "legacy diary",
+            memory_schema_version: "v3",
+            status: "active",
+          },
+        }],
+      };
+    },
+  };
+  const page = new MemoryPage(state, api, {});
+  page.renderVirtual = () => {};
+  page.updatePagination = () => {};
+
+  await page.fetch();
+
+  assert.equal(state.memory.items[0].summary, "neutral overview");
+  assert.equal(state.memory.items[0].architecture, "canonical_fact");
+  assert.equal(state.memory.items[0].fact_count, 2);
+});
+
 test("the bound scroll listener uses the current item count", () => {
   const state = createState();
   const tbody = { innerHTML: "", style: {} };

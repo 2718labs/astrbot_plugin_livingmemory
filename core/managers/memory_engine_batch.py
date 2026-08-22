@@ -289,6 +289,52 @@ class MemoryEngineBatchMixin:
         logger.info(f"[归档] 已归档 {len(archived_ids)} 条记忆")
         return len(archived_ids)
 
+    async def soft_delete_memories(self, memory_ids: list[int]) -> int:
+        """De-index memories and retain their canonical rows as deleted."""
+        if not memory_ids or self.db_connection is None:
+            return 0
+        unique_ids = list(dict.fromkeys(int(memory_id) for memory_id in memory_ids))
+        documents = await self.faiss_db.document_storage.get_documents(
+            metadata_filters={}, ids=unique_ids, offset=0, limit=len(unique_ids)
+        )
+        targets: list[dict[str, Any]] = []
+        archive_ids: list[int] = []
+        for document in documents:
+            metadata = self._safe_json_dict(document.get("metadata"))
+            status = str(metadata.get("status") or "active")
+            if status == "deleted":
+                continue
+            targets.append(document)
+            if status != "archived":
+                archive_ids.append(int(document["id"]))
+        if archive_ids:
+            archived = await self.archive_memories(archive_ids)
+            if archived != len(archive_ids):
+                raise RuntimeError("部分记忆无法在删除前退出检索索引")
+        if not targets:
+            return 0
+
+        deleted_at = time.time()
+        metadata_updates: list[tuple[str, int]] = []
+        target_ids: list[int] = []
+        for document in targets:
+            memory_id = int(document["id"])
+            metadata = self._safe_json_dict(document.get("metadata"))
+            metadata["status"] = "deleted"
+            metadata["deleted_at"] = deleted_at
+            target_ids.append(memory_id)
+            metadata_updates.append(
+                (json.dumps(metadata, ensure_ascii=False), memory_id)
+            )
+        await self.db_connection.executemany(
+            "UPDATE documents SET metadata = ? WHERE id = ?", metadata_updates
+        )
+        await self.db_connection.commit()
+        if self.canonical_store is not None:
+            await self.canonical_store.mark_documents_deleted(target_ids)
+        self._invalidate_search_cache()
+        return len(target_ids)
+
     async def restore_memory(self, memory_id: int) -> bool:
         """Restore one archived document and rebuild every retrieval index."""
         if self.db_connection is None:

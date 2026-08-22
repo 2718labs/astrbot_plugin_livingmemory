@@ -3,7 +3,7 @@
  * 负责展示系统概览和统计信息
  */
 
-import { esc, atomLabel } from "./utils.js";
+import { esc, statusLabel } from "./utils.js";
 
 export class SystemPage {
   constructor(state, apiClient) {
@@ -41,8 +41,11 @@ export class SystemPage {
     // 更新重要性分布图表
     this.renderImportanceChart(data.importance_distribution || {});
 
-    // 更新 Atom 类型图表 - 后端返回 atom_breakdown
-    this.renderAtomChart(data.atom_breakdown || {});
+    // canonical fact 是唯一生产事实层；同时展示可重建索引是否一致。
+    this.renderCanonicalFactChart(
+      data.canonical_fact_breakdown || {},
+      data.canonical_index_status || {}
+    );
 
     // 更新活跃会话列表 - 后端返回 recent_sessions
     this.renderSessionList(data.recent_sessions || []);
@@ -59,7 +62,7 @@ export class SystemPage {
    * @param {Object} data - 统计数据
    */
   renderStatCards(data) {
-    // 后端返回字段：total_memories, status_breakdown, graph_nodes, atom_count
+    // 文档是来源父级，canonical facts 才是生产检索单元。
     const statusBreakdown = data.status_breakdown || {};
 
     document.getElementById("ss-total").textContent = data.total_memories || 0;
@@ -67,7 +70,7 @@ export class SystemPage {
     document.getElementById("ss-archived").textContent = statusBreakdown.archived || 0;
     document.getElementById("ss-deleted").textContent = statusBreakdown.deleted || 0;
     document.getElementById("ss-nodes").textContent = data.graph_nodes || 0;
-    document.getElementById("ss-atoms").textContent = data.atom_count || 0;
+    document.getElementById("ss-facts").textContent = data.canonical_fact_count || 0;
   }
 
   /**
@@ -100,19 +103,18 @@ export class SystemPage {
   }
 
   /**
-   * 渲染 Atom 类型图表
-   * @param {Object} types - 类型数据 {episodic: N, factual: N, ...}
+   * 渲染 canonical fact 生命周期与索引一致性
+   * @param {Object} breakdown - 状态分布
+   * @param {Object} indexStatus - facts/fts/vectors 一致性
    */
-  renderAtomChart(types) {
-    const chartEl = document.getElementById("atom-chart");
+  renderCanonicalFactChart(breakdown, indexStatus) {
+    const chartEl = document.getElementById("canonical-fact-chart");
     if (!chartEl) return;
 
-    // 后端返回 atom_breakdown
-    const atomBreakdown = types || {};
-    const entries = Object.entries(atomBreakdown);
+    const entries = Object.entries(breakdown || {});
 
     if (entries.length === 0) {
-      chartEl.innerHTML = '<div class="bar-chart-empty">' + window.t("system.noAtoms") + '</div>';
+      chartEl.innerHTML = '<div class="bar-chart-empty">' + window.t("system.noCanonicalFacts") + '</div>';
       return;
     }
 
@@ -122,13 +124,21 @@ export class SystemPage {
     entries.forEach(([type, count]) => {
       const percentage = ((count / maxValue) * 100).toFixed(0);
       html += '<div class="bar-row">';
-      html += '<span class="bar-row-label" style="width:80px">' + atomLabel(type) + '</span>';
+      html += '<span class="bar-row-label" style="width:80px">' + esc(statusLabel(type)) + '</span>';
       html += '<div class="bar-row-track">';
       html += '<div class="bar-row-fill" style="width:' + percentage + '%"></div>';
       html += '</div>';
       html += '<span class="bar-row-value">' + count + '</span>';
       html += '</div>';
     });
+
+    const consistent = indexStatus && indexStatus.consistent === true;
+    html += '<div class="form-hint" style="margin-top:10px">' + esc(window.t(
+      consistent ? "system.factIndexConsistent" : "system.factIndexMismatch",
+      Number(indexStatus.facts || 0),
+      Number(indexStatus.fts || 0),
+      Number(indexStatus.vectors || 0)
+    )) + '</div>';
 
     chartEl.innerHTML = html;
   }

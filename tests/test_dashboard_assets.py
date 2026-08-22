@@ -55,6 +55,25 @@ def test_dynamic_dashboard_panels_rehydrate_lucide_icons() -> None:
     assert "lmHydrateIcons" in peek_panel
 
 
+def test_dashboard_reports_canonical_facts_instead_of_retired_atoms() -> None:
+    index = (DASHBOARD / "index.html").read_text(encoding="utf-8")
+    system_page = (DASHBOARD / "modules" / "system-page.js").read_text(
+        encoding="utf-8"
+    )
+    peek_panel = (DASHBOARD / "modules" / "peek-panel.js").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'id="ss-facts"' in index
+    assert 'id="canonical-fact-chart"' in index
+    assert 'id="ss-atoms"' not in index
+    assert "canonical_fact_breakdown" in system_page
+    assert "canonical_index_status" in system_page
+    assert 'window.t("detail.canonicalEditHint")' not in peek_panel
+    assert '"detail.canonicalEditHint"' in peek_panel
+    assert 'f.time.raw || f.time.normalized' not in peek_panel
+
+
 def test_memory_transfer_controls_use_lucide_and_preview_before_import() -> None:
     index = (DASHBOARD / "index.html").read_text(encoding="utf-8")
     memory_page = (DASHBOARD / "modules" / "memory-page.js").read_text(

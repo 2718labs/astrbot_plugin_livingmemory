@@ -3,6 +3,7 @@
 """
 
 import inspect
+import json
 from typing import TYPE_CHECKING, Any
 
 import aiosqlite
@@ -114,6 +115,16 @@ class MemoryHandler(MemoryHandlerUpdateMixin, MemoryHandlerIoMixin):
         offset = (page - 1) * page_size
         where_clauses: list[str] = []
         params: list[Any] = []
+        canonical_available = False
+        try:
+            async with aiosqlite.connect(db_path) as schema_db:
+                schema_cursor = await schema_db.execute(
+                    "SELECT 1 FROM sqlite_master "
+                    "WHERE type = 'table' AND name = 'memory_facts' LIMIT 1"
+                )
+                canonical_available = await schema_cursor.fetchone() is not None
+        except Exception:
+            canonical_available = False
         type_expr = (
             "UPPER(COALESCE("
             "CASE WHEN json_valid(metadata) "
@@ -151,17 +162,26 @@ class MemoryHandler(MemoryHandlerUpdateMixin, MemoryHandlerIoMixin):
                 )
                 params.extend([keyword, keyword_like])
             else:
-                where_clauses.append(
-                    "("
-                    "text LIKE ? COLLATE NOCASE "
-                    "OR COALESCE("
+                keyword_parts = [
+                    "text LIKE ? COLLATE NOCASE",
+                    "COALESCE("
                     "CASE WHEN json_valid(metadata) "
                     "THEN json_extract(metadata, '$.memory_type') END,"
                     "''"
-                    ") LIKE ? COLLATE NOCASE"
-                    ")"
-                )
+                    ") LIKE ? COLLATE NOCASE",
+                ]
                 params.extend([keyword_like, keyword_like])
+                if canonical_available:
+                    keyword_parts.append(
+                        "EXISTS ("
+                        "SELECT 1 FROM memory_parents mp "
+                        "JOIN memory_facts mf ON mf.parent_id = mp.parent_id "
+                        "WHERE mp.document_id = documents.id "
+                        "AND mf.search_text LIKE ? COLLATE NOCASE"
+                        ")"
+                    )
+                    params.append(keyword_like)
+                where_clauses.append("(" + " OR ".join(keyword_parts) + ")")
 
         where_clause = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
         created_expr = (
@@ -205,6 +225,29 @@ class MemoryHandler(MemoryHandlerUpdateMixin, MemoryHandlerIoMixin):
             sort_key = "created_desc"
             sort_expr = sort_options[sort_key]
 
+        if canonical_available:
+            canonical_select = """
+                    , COALESCE((
+                        SELECT COUNT(*)
+                        FROM memory_parents mp
+                        JOIN memory_facts mf ON mf.parent_id = mp.parent_id
+                        WHERE mp.document_id = documents.id
+                    ), 0) AS fact_count
+                    , COALESCE((
+                        SELECT json_group_array(json(fact_json))
+                        FROM (
+                            SELECT mf.fact_json AS fact_json
+                            FROM memory_parents mp
+                            JOIN memory_facts mf ON mf.parent_id = mp.parent_id
+                            WHERE mp.document_id = documents.id
+                              AND mf.status = 'active'
+                            ORDER BY mf.id
+                        )
+                    ), '[]') AS canonical_facts
+            """
+        else:
+            canonical_select = ", 0 AS fact_count, '[]' AS canonical_facts"
+
         try:
             async with aiosqlite.connect(db_path) as db:
                 db.row_factory = aiosqlite.Row
@@ -219,6 +262,7 @@ class MemoryHandler(MemoryHandlerUpdateMixin, MemoryHandlerIoMixin):
                 cursor = await db.execute(
                     f"""
                     SELECT id, doc_id, text, metadata, created_at, updated_at
+                           {canonical_select}
                     FROM documents
                     {where_clause}
                     ORDER BY {sort_expr}
@@ -233,14 +277,28 @@ class MemoryHandler(MemoryHandlerUpdateMixin, MemoryHandlerIoMixin):
 
         items: list[dict[str, Any]] = []
         for row in rows:
+            metadata = self.utils.normalize_metadata(row["metadata"])
+            try:
+                canonical_facts = json.loads(row["canonical_facts"] or "[]")
+            except (json.JSONDecodeError, TypeError):
+                canonical_facts = []
             items.append(
                 {
                     "id": row["id"],
                     "doc_id": row["doc_id"],
                     "text": row["text"],
-                    "metadata": self.utils.normalize_metadata(row["metadata"]),
+                    "metadata": metadata,
                     "created_at": row["created_at"],
                     "updated_at": row["updated_at"],
+                    "architecture": (
+                        "canonical_fact"
+                        if metadata.get("memory_schema_version") == "v3"
+                        else "legacy_document"
+                    ),
+                    "fact_count": int(row["fact_count"] or 0),
+                    "canonical_facts": (
+                        canonical_facts if isinstance(canonical_facts, list) else []
+                    ),
                 }
             )
 
@@ -284,6 +342,24 @@ class MemoryHandler(MemoryHandlerUpdateMixin, MemoryHandlerIoMixin):
             return self.utils.error("记忆不存在")
 
         metadata = self.utils.normalize_metadata(memory.get("metadata"))
+        canonical_facts: list[dict[str, Any]] = []
+        canonical_store = getattr(memory_engine, "canonical_store", None)
+        get_canonical_facts = getattr(canonical_store, "get_facts_by_document", None)
+        if callable(get_canonical_facts):
+            try:
+                fact_result = get_canonical_facts(memory_id)
+                resolved_facts = (
+                    await fact_result if inspect.isawaitable(fact_result) else fact_result
+                )
+                if isinstance(resolved_facts, list):
+                    canonical_facts = [
+                        item for item in resolved_facts if isinstance(item, dict)
+                    ]
+            except Exception:
+                logger.warning(
+                    f"[PageAPI] 读取 canonical facts 失败: memory_id={memory_id}",
+                    exc_info=True,
+                )
 
         # 构建完整的详情数据
         get_source = getattr(memory_engine, "get_memory_source", None)
@@ -296,8 +372,9 @@ class MemoryHandler(MemoryHandlerUpdateMixin, MemoryHandlerIoMixin):
             "doc_id": memory.get("doc_id"),
             "text": memory.get("text"),
             "summary": (
-                metadata.get("persona_summary")
-                or metadata.get("canonical_summary")
+                metadata.get("canonical_summary")
+                or metadata.get("summary")
+                or metadata.get("persona_summary")
                 or memory.get("text", "")
             ),
             "created_at": memory.get("created_at"),
@@ -308,7 +385,13 @@ class MemoryHandler(MemoryHandlerUpdateMixin, MemoryHandlerIoMixin):
             "status": metadata.get("status", "active"),
             "session_id": metadata.get("session_id"),
             "persona_id": metadata.get("persona_id"),
-            "key_facts": metadata.get("key_facts", []),
+            "key_facts": canonical_facts or metadata.get("key_facts", []),
+            "fact_count": len(canonical_facts or metadata.get("key_facts", [])),
+            "architecture": (
+                "canonical_fact"
+                if metadata.get("memory_schema_version") == "v3"
+                else "legacy_document"
+            ),
             "topics": metadata.get("topics", []),
             "create_time": metadata.get("create_time"),
             "last_access_time": metadata.get("last_access_time"),

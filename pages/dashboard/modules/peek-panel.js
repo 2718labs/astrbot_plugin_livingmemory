@@ -158,9 +158,7 @@ export class PeekPanel {
 
     // 操作按钮
     html += '<div class="memory-detail-actions">';
-    if (!isV3) {
-      html += '<button class="btn btn-sm btn-secondary" id="peek-edit-btn"><i data-lucide="square-pen" aria-hidden="true"></i><span>' + window.t("detail.editBtn") + '</span></button>';
-    }
+    html += '<button class="btn btn-sm btn-secondary" id="peek-edit-btn"><i data-lucide="square-pen" aria-hidden="true"></i><span>' + window.t("detail.editBtn") + '</span></button>';
     if (!isV3 && sourceMessages.length >= 2) {
       html += '<button class="btn btn-sm btn-secondary" id="peek-resummarize-btn"><i data-lucide="refresh-cw" aria-hidden="true"></i><span>' + window.t("detail.resummarizeBtn") + '</span></button>';
     }
@@ -226,6 +224,15 @@ export class PeekPanel {
           )) + '</div>';
           if (reactionText) {
             html += '<div class="text-secondary" style="font-size:11px;margin-top:3px">' + esc(window.t("detail.personaReaction", reactionText)) + '</div>';
+          }
+          const factTopics = Array.isArray(f.topics) ? f.topics.join("、") : "";
+          const participants = Array.isArray(f.participants) ? f.participants.join("、") : "";
+          const evidence = [
+            factTopics ? window.t("detail.factTopics", factTopics) : "",
+            participants ? window.t("detail.factParticipants", participants) : ""
+          ].filter(Boolean).join(" · ");
+          if (evidence) {
+            html += '<div class="text-secondary" style="font-size:11px;margin-top:3px">' + esc(evidence) + '</div>';
           }
         }
         html += '</div>';
@@ -303,6 +310,8 @@ export class PeekPanel {
     const keyFacts = Array.isArray(detail.key_facts)
       ? detail.key_facts.map(factText)
       : [];
+    const isV3 = detail.architecture === "canonical_fact"
+      || (detail.metadata && detail.metadata.memory_schema_version === "v3");
 
     let html = "";
 
@@ -317,16 +326,16 @@ export class PeekPanel {
 
     // 可编辑内容
     html += '<div class="peek-section"><div class="peek-section-title">' + window.t("detail.content") + '</div>';
-    html += '<textarea id="edit-content-area" class="memory-detail-edit-area" rows="6">' + esc(content) + '</textarea>';
-    html += '<p class="form-hint" style="margin-top:4px">' + window.t("detail.contentHint") + '</p>';
+    html += '<textarea id="edit-content-area" class="memory-detail-edit-area" rows="6"' + (isV3 ? ' disabled' : '') + '>' + esc(content) + '</textarea>';
+    html += '<p class="form-hint" style="margin-top:4px">' + window.t(isV3 ? "detail.canonicalEditHint" : "detail.contentHint") + '</p>';
     html += '</div>';
 
     html += '<div class="peek-section"><div class="peek-section-title">' + window.t("detail.topics") + '</div>';
-    html += '<textarea id="edit-topics-area" class="memory-detail-edit-area compact" rows="3">' + esc(topics.join("\n")) + '</textarea>';
+    html += '<textarea id="edit-topics-area" class="memory-detail-edit-area compact" rows="3"' + (isV3 ? ' disabled' : '') + '>' + esc(topics.join("\n")) + '</textarea>';
     html += '</div>';
 
     html += '<div class="peek-section"><div class="peek-section-title">' + window.t("detail.keyFacts") + '</div>';
-    html += '<textarea id="edit-key-facts-area" class="memory-detail-edit-area compact" rows="5">' + esc(keyFacts.join("\n")) + '</textarea>';
+    html += '<textarea id="edit-key-facts-area" class="memory-detail-edit-area compact" rows="5"' + (isV3 ? ' disabled' : '') + '>' + esc(keyFacts.join("\n")) + '</textarea>';
     html += '</div>';
 
     // 可编辑元数据
@@ -395,6 +404,8 @@ export class PeekPanel {
     const newType = document.getElementById("edit-type").value.trim();
     const newImportance = parseFloat(document.getElementById("edit-importance").value);
     const reason = document.getElementById("peek-edit-reason").value.trim();
+    const isV3 = detail.architecture === "canonical_fact"
+      || (detail.metadata && detail.metadata.memory_schema_version === "v3");
 
     const saveBtn = document.getElementById("peek-save-btn");
     if (saveBtn) saveBtn.disabled = true;
@@ -407,10 +418,12 @@ export class PeekPanel {
       }
 
       const oldTopics = Array.isArray(detail.topics) ? detail.topics : [];
-      const oldKeyFacts = Array.isArray(detail.key_facts) ? detail.key_facts : [];
-      const rebuildRequired = newContent !== getDetailText(detail)
+      const oldKeyFacts = Array.isArray(detail.key_facts)
+        ? detail.key_facts.map(factText)
+        : [];
+      const rebuildRequired = !isV3 && (newContent !== getDetailText(detail)
         || !sameList(newTopics, oldTopics)
-        || !sameList(newKeyFacts, oldKeyFacts);
+        || !sameList(newKeyFacts, oldKeyFacts));
 
       // 内容、主题和关键事实在一次物理替换中更新，避免派生索引错位。
       if (rebuildRequired) {

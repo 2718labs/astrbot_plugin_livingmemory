@@ -448,6 +448,38 @@ class CanonicalMemoryStore:
             await self.db.commit()
             return len(parent_ids)
 
+    async def mark_documents_deleted(self, document_ids: list[int]) -> int:
+        """Mark already de-indexed canonical parents/facts as soft deleted."""
+        if self.db is None:
+            return 0
+        unique_ids = list(dict.fromkeys(int(item) for item in document_ids))
+        if not unique_ids:
+            return 0
+        placeholders = ",".join("?" * len(unique_ids))
+        async with self._write_lock:
+            cursor = await self.db.execute(
+                f"SELECT parent_id FROM memory_parents "
+                f"WHERE document_id IN ({placeholders})",
+                unique_ids,
+            )
+            parent_ids = [str(row["parent_id"]) for row in await cursor.fetchall()]
+            if not parent_ids:
+                return 0
+            parent_placeholders = ",".join("?" * len(parent_ids))
+            now = time.time()
+            await self.db.execute(
+                f"UPDATE memory_facts SET status = 'deleted', updated_at = ? "
+                f"WHERE parent_id IN ({parent_placeholders})",
+                (now, *parent_ids),
+            )
+            await self.db.execute(
+                f"UPDATE memory_parents SET status = 'deleted', updated_at = ? "
+                f"WHERE parent_id IN ({parent_placeholders})",
+                (now, *parent_ids),
+            )
+            await self.db.commit()
+            return len(parent_ids)
+
     async def restore_document(self, document_id: int) -> bool:
         """Restore archived canonical facts and rebuild their projections."""
         if self.db is None or self.fact_vector_db is None:
@@ -748,12 +780,12 @@ class CanonicalMemoryStore:
         async with self._write_lock:
             cursor = await self.db.execute(
                 """
-                SELECT id, fact_json, importance, last_injected_at, injection_count
+                SELECT id, importance, last_injected_at, injection_count
                 FROM memory_facts
                 WHERE status = 'active'
                 """
             )
-            updates: list[tuple[float, str, int, float, int]] = []
+            updates: list[tuple[float, int, float, int]] = []
             for row in await cursor.fetchall():
                 importance = max(0.0, min(1.0, float(row["importance"])))
                 if importance >= protected_threshold:
@@ -768,16 +800,9 @@ class CanonicalMemoryStore:
                 decayed = max(
                     0.01, round(importance * ((1 - effective_rate) ** days), 4)
                 )
-                try:
-                    fact = json.loads(row["fact_json"])
-                except (json.JSONDecodeError, TypeError):
-                    fact = {}
-                if isinstance(fact, dict):
-                    fact["importance"] = decayed
                 updates.append(
                     (
                         decayed,
-                        json.dumps(fact, ensure_ascii=False, sort_keys=True),
                         int(injection_count * count_multiplier),
                         now,
                         int(row["id"]),
@@ -788,7 +813,7 @@ class CanonicalMemoryStore:
             await self.db.executemany(
                 """
                 UPDATE memory_facts
-                SET importance = ?, fact_json = ?, injection_count = ?, updated_at = ?
+                SET importance = ?, injection_count = ?, updated_at = ?
                 WHERE id = ?
                 """,
                 updates,

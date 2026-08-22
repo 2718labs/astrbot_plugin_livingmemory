@@ -53,6 +53,7 @@ export class MemoryPage {
         memory_id: item.id,
         doc_id: item.doc_id,
         summary:
+          (item.metadata && (item.metadata.canonical_summary || item.metadata.summary)) ||
           (item.metadata && item.metadata.persona_summary) ||
           item.summary ||
           item.text ||
@@ -76,6 +77,9 @@ export class MemoryPage {
         consolidated_count: (item.metadata && Array.isArray(item.metadata.consolidated_from))
           ? item.metadata.consolidated_from.length
           : 0,
+        architecture: item.architecture || "legacy_document",
+        fact_count: Number(item.fact_count || 0),
+        canonical_facts: Array.isArray(item.canonical_facts) ? item.canonical_facts : [],
         raw: item,
       }));
       this.state.memory.selectedIds.clear();
@@ -151,7 +155,10 @@ export class MemoryPage {
       const consBadge = item.consolidated_count > 0
         ? '<span class="type-tag cons-badge" title="' + esc(window.t("table.consolidatedTitle")) + '">' + window.t("table.consolidated", item.consolidated_count) + '</span> '
         : "";
-      html += '<td class="cell-summary">' + consBadge + '<div class="memory-summary-text">' + esc(item.summary || "") + '</div><div class="memory-summary-meta">' + esc(window.t("table.updated", item.updated_at || "--")) + '</div></td>';
+      const factBadge = item.architecture === "canonical_fact"
+        ? '<span class="type-tag" title="' + esc(window.t("table.canonicalFactTitle")) + '">' + esc(window.t("table.factCount", item.fact_count)) + '</span> '
+        : "";
+      html += '<td class="cell-summary">' + factBadge + consBadge + '<div class="memory-summary-text">' + esc(item.summary || "") + '</div><div class="memory-summary-meta">' + esc(window.t("table.updated", item.updated_at || "--")) + '</div></td>';
       html += '<td class="cell-type"><span class="type-tag">' + esc(typeLabel(item.memory_type)) + '</span></td>';
       html += '<td class="cell-importance"><div class="importance-bar"><div class="importance-bar-track">';
       html += '<div class="importance-bar-fill ' + impCls + '" style="width:' + (impNum * 10) + '%"></div></div>';

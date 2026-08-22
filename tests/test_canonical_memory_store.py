@@ -1,5 +1,8 @@
 """Focused S2 contract and fact-projection tests."""
 
+import json
+import pytest
+
 from astrbot_plugin_livingmemory.core.processors.memory_processor import MemoryProcessor
 from astrbot_plugin_livingmemory.storage.canonical_memory_store import (
     CanonicalMemoryStore,
@@ -55,3 +58,51 @@ def test_fact_search_projection_excludes_persona_reaction():
     assert "驾考" in search_text
     assert "担心" not in search_text
     assert "希望她不要紧张" not in search_text
+
+
+@pytest.mark.asyncio
+async def test_mark_documents_deleted_updates_parent_and_fact_lifecycle(tmp_path):
+    store = CanonicalMemoryStore(str(tmp_path / "canonical.db"), None, object())
+    await store.initialize()
+    try:
+        now = 1.0
+        await store.db.execute(
+            """
+            INSERT INTO memory_parents(
+                parent_id, document_id, idempotency_key, scope, persona_id,
+                source_json, overview, generation_version, fact_ids_json,
+                status, created_at, updated_at
+            ) VALUES ('p1', 7, 'i1', 's1', 'persona', ?, 'overview', 'v1', ?,
+                      'archived', ?, ?)
+            """,
+            (json.dumps({"fingerprint": "src"}), json.dumps(["f1"]), now, now),
+        )
+        await store.db.execute(
+            """
+            INSERT INTO memory_facts(
+                fact_id, parent_id, fact_json, search_text, scope, persona_id,
+                importance, status, created_at, updated_at
+            ) VALUES ('f1', 'p1', ?, 'fact', 's1', 'persona', 0.8,
+                      'archived', ?, ?)
+            """,
+            (json.dumps({"fact_id": "f1", "fact": "fact"}), now, now),
+        )
+        await store.db.commit()
+
+        changed = await store.mark_documents_deleted([7])
+        parent = await (
+            await store.db.execute(
+                "SELECT status FROM memory_parents WHERE document_id = 7"
+            )
+        ).fetchone()
+        fact = await (
+            await store.db.execute(
+                "SELECT status FROM memory_facts WHERE fact_id = 'f1'"
+            )
+        ).fetchone()
+
+        assert changed == 1
+        assert parent["status"] == "deleted"
+        assert fact["status"] == "deleted"
+    finally:
+        await store.close()

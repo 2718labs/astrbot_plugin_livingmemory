@@ -59,10 +59,54 @@ class StatsHandler:
                 stats["graph_edges"] = 0
                 stats["graph_entries"] = 0
 
+            # S2/S4: canonical facts are the production memory unit.  Keep
+            # document totals for parent-level management, but expose the
+            # authoritative fact population and its searchable projections.
+            stats["canonical_parent_count"] = 0
+            stats["canonical_fact_count"] = 0
+            stats["canonical_fact_breakdown"] = {}
+            stats["canonical_index_status"] = {
+                "consistent": True,
+                "facts": 0,
+                "fts": 0,
+                "vectors": 0,
+            }
+            canonical_store = getattr(memory_engine, "canonical_store", None)
+            canonical_db = getattr(canonical_store, "db", None)
+            if canonical_db is not None:
+                try:
+                    cursor = await canonical_db.execute(
+                        "SELECT COUNT(*) AS count FROM memory_parents"
+                    )
+                    row = await cursor.fetchone()
+                    stats["canonical_parent_count"] = int(row["count"] if row else 0)
+                    cursor = await canonical_db.execute(
+                        "SELECT status, COUNT(*) AS count "
+                        "FROM memory_facts GROUP BY status"
+                    )
+                    breakdown = {
+                        str(row["status"]): int(row["count"])
+                        for row in await cursor.fetchall()
+                    }
+                    stats["canonical_fact_breakdown"] = breakdown
+                    stats["canonical_fact_count"] = sum(breakdown.values())
+                    index_status = await canonical_store.index_status()
+                    stats["canonical_index_status"] = {
+                        "consistent": index_status.is_consistent,
+                        "facts": index_status.fact_count,
+                        "fts": index_status.fts_count,
+                        "vectors": index_status.vector_count,
+                    }
+                except Exception:
+                    logger.warning(
+                        "[PageAPI] 获取 canonical fact 统计失败", exc_info=True
+                    )
+
             # 原子统计 (if available)
             atom_store = getattr(memory_engine, "atom_store", None)
             stats["atom_count"] = 0
             stats["atom_breakdown"] = {}
+            stats["atom_retired"] = True
             if atom_store is not None:
                 try:
                     stats["atom_count"] = await atom_store.count_atoms() or 0
