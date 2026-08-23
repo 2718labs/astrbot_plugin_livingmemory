@@ -1,7 +1,10 @@
 """Build current storage records from admitted memory data."""
 
 import json
+import re
 from typing import Any
+
+from astrbot.api import logger
 
 from ..models.conversation_models import Message
 from ..models.memory_atom import MemoryAtom
@@ -130,6 +133,31 @@ class MemoryProcessorBuildMixin:
 
         def _resolve_topic(raw_name: str) -> dict[str, str]:
             raw = normalize_concept_name(raw_name)
+            # 防御：LLM 偶尔把机器 ID（topic_<hex>）当成名字输出。
+            # 此时优先从候选池按 ID 找回人话名字；找不到就丢弃该主题，
+            # 绝不把机器 ID 本身当作主题名入库。
+            if re.fullmatch(r"topic_[0-9a-f]{16,}", raw, flags=re.IGNORECASE):
+                for candidate in topic_candidates or []:
+                    candidate_id = str(
+                        candidate.get("topic_id") if isinstance(candidate, dict) else ""
+                    ).strip()
+                    if candidate_id.casefold() == raw.casefold():
+                        human_name = str(
+                            candidate.get("name") or candidate.get("final_name") or ""
+                        ).strip()
+                        if human_name:
+                            raw = normalize_concept_name(human_name)
+                            break
+                else:
+                    logger.warning(
+                        f"[MemoryProcessor] 丢弃机器 ID 主题名（无候选可回退）: {raw}"
+                    )
+                    return {
+                        "topic_id": "",
+                        "raw_name": raw,
+                        "name": "",
+                        "decision": "dropped_machine_id",
+                    }
             key = concept_key(raw)
             existing = catalog.get(key)
             if existing:
@@ -192,7 +220,12 @@ class MemoryProcessorBuildMixin:
         for original_unit_index, unit in admitted_units:
             prepared_facts: list[dict[str, Any]] = []
             for candidate in unit["key_facts"]:
-                topic_refs = [_resolve_topic(name) for name in candidate["topics"]]
+                topic_refs = [
+                    ref
+                    for name in candidate["topics"]
+                    for ref in [_resolve_topic(name)]
+                    if ref["name"]
+                ]
                 participant_refs = _participant_refs_for_fact(candidate["fact"])
                 prepared_facts.append(
                     {
@@ -319,6 +352,29 @@ class MemoryProcessorBuildMixin:
         topic_names = unique_strings(
             normalize_concept_name(item) for item in (topics or []) if item
         )[:5]
+        # 防御：机器 ID（topic_<hex>）不是可读主题名；能从候选池按 ID
+        # 找回人话名字则回退，否则丢弃（与自动总结路径一致）。
+        sanitized_topic_names: list[str] = []
+        for name in topic_names:
+            if re.fullmatch(r"topic_[0-9a-f]{16,}", name, flags=re.IGNORECASE):
+                human_name = ""
+                for candidate in topic_candidates or []:
+                    if not isinstance(candidate, dict):
+                        continue
+                    if str(candidate.get("topic_id") or "").casefold() == name.casefold():
+                        human_name = str(
+                            candidate.get("name") or candidate.get("final_name") or ""
+                        ).strip()
+                        break
+                if human_name:
+                    sanitized_topic_names.append(normalize_concept_name(human_name))
+                else:
+                    logger.warning(
+                        f"[MemoryProcessor] 丢弃机器 ID 主题名（无候选可回退）: {name}"
+                    )
+            else:
+                sanitized_topic_names.append(name)
+        topic_names = unique_strings(sanitized_topic_names)[:5]
         participant_names = unique_strings(
             normalize_concept_name(item) for item in (participants or []) if item
         )[:8]

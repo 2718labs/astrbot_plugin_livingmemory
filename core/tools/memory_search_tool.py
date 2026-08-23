@@ -167,6 +167,9 @@ class MemorySearchTool(FunctionTool[AstrAgentContext]):
             for memory in memories:
                 metadata = memory.metadata if isinstance(memory.metadata, dict) else {}
                 fact_id = metadata.get("fact_id")
+                # 只给 LLM 可消费的信息：内容、相关性、重要性与归属。
+                # 机器标识（fact_id/parent_id）与预算细节是内部调试信息，
+                # 不进入工具返回（Dashboard 召回页走 page_api 单独提供）。
                 item = {
                     "id": fact_id or memory.doc_id,
                     "content": memory.content,
@@ -175,11 +178,7 @@ class MemorySearchTool(FunctionTool[AstrAgentContext]):
                     "session_id": metadata.get("session_id"),
                     "persona_id": metadata.get("persona_id"),
                     "create_time": metadata.get("create_time"),
-                    "last_access_time": metadata.get("last_access_time"),
                 }
-                if fact_id:
-                    item["parent_memory_id"] = memory.doc_id
-                    item["parent_id"] = metadata.get("parent_id")
                 if include_source and metadata.get("has_source"):
                     get_source = getattr(
                         self.memory_engine, "get_memory_source", None
@@ -203,9 +202,6 @@ class MemorySearchTool(FunctionTool[AstrAgentContext]):
                         "persona_filtered": use_persona_filtering,
                     },
                     "count": len(serialized_results),
-                    "candidate_count": len(memories) + len(packed.dropped),
-                    "injection_token_upper_bound": packed.token_count,
-                    "injection_token_budget": packed.token_budget,
                     "results": serialized_results,
                 }
             )

@@ -443,8 +443,21 @@ class MemoryProcessor(MemoryProcessorParseMixin, MemoryProcessorBuildMixin):
         prompt = self._get_chat_prompt(is_group_chat).replace(
             "{conversation}", conversation_text
         ).replace("{current_date}", current_date)
+        # 只把候选名字给 LLM：topic_id 是系统内部稳定标识，
+        # 暴露给模型只会诱导它抄错字段（历史上出现过把 topic_id
+        # 当名字输出的脏数据）。名字 -> topic_id 的映射由系统内部完成。
+        visible_names: list[str] = []
+        for candidate in topic_candidates or []:
+            if isinstance(candidate, dict):
+                name = str(
+                    candidate.get("name") or candidate.get("final_name") or ""
+                ).strip()
+            else:
+                name = str(candidate).strip()
+            if name:
+                visible_names.append(name)
         candidates_payload = json.dumps(
-            topic_candidates or [], ensure_ascii=False, separators=(",", ":")
+            visible_names, ensure_ascii=False, separators=(",", ":")
         )
         prompt += (
             "\n\n## 当前 scope 可复用的 topic 候选\n"

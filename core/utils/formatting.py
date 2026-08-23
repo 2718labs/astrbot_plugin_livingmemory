@@ -249,6 +249,8 @@ def format_memories_for_fake_tool_call(
 
         display_content = _memory_injection_content(content, metadata)
         fact_id = metadata.get("fact_id") if isinstance(metadata, dict) else None
+        # 与 MemorySearchTool.call() 的真实返回保持一致：
+        # 只含 LLM 可消费字段，机器标识与内部元数据不进 JSON。
         serialized_results.append(
             {
                 "id": fact_id or memory_id,
@@ -258,15 +260,6 @@ def format_memories_for_fake_tool_call(
                 "session_id": metadata.get("session_id"),
                 "persona_id": metadata.get("persona_id"),
                 "create_time": metadata.get("create_time"),
-                "last_access_time": metadata.get("last_access_time"),
-                **(
-                    {
-                        "parent_memory_id": memory_id,
-                        "parent_id": metadata.get("parent_id"),
-                    }
-                    if fact_id
-                    else {}
-                ),
             }
         )
 

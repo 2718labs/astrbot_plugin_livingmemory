@@ -197,7 +197,6 @@ async def test_memory_search_tool_serializes_results(memory_engine, astr_context
         "session_id": "test:private:session-1",
         "persona_id": "persona_a",
         "create_time": 100.0,
-        "last_access_time": 200.0,
     }
     memory_engine.get_memory_source.assert_not_awaited()
 
@@ -275,7 +274,6 @@ async def test_memory_search_tool_serializes_non_dict_metadata(
         "session_id": None,
         "persona_id": None,
         "create_time": None,
-        "last_access_time": None,
     }
 
 

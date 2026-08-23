@@ -1266,3 +1266,96 @@ def test_s1_atom_projection_uses_each_fact_own_entities():
     assert atoms[1].entities == ["音乐偏好", "李四"]
     assert atoms[0].metadata["fact_id"] == "fact_1"
     assert atoms[1].metadata["fact_id"] == "fact_2"
+
+
+@pytest.mark.asyncio
+async def test_machine_id_topic_name_falls_back_to_candidate_human_name():
+    """LLM 把 topic_id 当名字输出时，应回退到候选池里对应的人话名字。"""
+    unit = _unit_from_json(
+        _memory_json(
+            "张三正在开发记忆插件",
+            topics=["topic_15be93ff9c30f0e9b16c659e"],
+        )
+    )
+    processor = MemoryProcessor(
+        llm_provider=_DummyLLMProvider(
+            json.dumps({"memories": [unit]}, ensure_ascii=False)
+        ),
+        context=None,
+    )
+
+    result = await processor.process_conversation_result(
+        _make_messages(),
+        topic_candidates=[
+            {
+                "topic_id": "topic_15be93ff9c30f0e9b16c659e",
+                "name": "记忆恢复",
+            }
+        ],
+    )
+
+    assert result.status == "store"
+    topic_ref = result.metadata["key_facts"][0]["topic_refs"][0]
+    assert topic_ref["name"] == "记忆恢复"
+    assert topic_ref["topic_id"] == "topic_15be93ff9c30f0e9b16c659e"
+    assert topic_ref["decision"] == "reused"
+    # topics 数组不应再含机器 ID
+    assert result.metadata["key_facts"][0]["topics"] == ["记忆恢复"]
+
+
+@pytest.mark.asyncio
+async def test_machine_id_topic_name_dropped_when_no_candidate():
+    """机器 ID 主题名且候选池无对应项时，该主题被丢弃而非入库。"""
+    unit = _unit_from_json(
+        _memory_json(
+            "张三正在开发记忆插件",
+            topics=["topic_15be93ff9c30f0e9b16c659e"],
+        )
+    )
+    processor = MemoryProcessor(
+        llm_provider=_DummyLLMProvider(
+            json.dumps({"memories": [unit]}, ensure_ascii=False)
+        ),
+        context=None,
+    )
+
+    result = await processor.process_conversation_result(
+        _make_messages(),
+        topic_candidates=[
+            {"topic_id": "topic_other", "name": "插件开发"},
+        ],
+    )
+
+    assert result.status == "store"
+    key_fact = result.metadata["key_facts"][0]
+    assert key_fact["topic_refs"] == []
+    assert key_fact["topics"] == []
+
+
+@pytest.mark.asyncio
+async def test_topic_candidates_prompt_hides_machine_ids():
+    """prompt 中的 topic 候选只含名字，不暴露 topic_id。"""
+    captured: dict[str, str] = {}
+
+    class _CapturingProvider(_DummyLLMProvider):
+        async def _chat(self, prompt: str, system_prompt: str):
+            captured["prompt"] = prompt
+            return await super()._chat(prompt, system_prompt)
+
+    unit = _unit_from_json(_memory_json("张三正在开发记忆插件", topics=["插件开发"]))
+    processor = MemoryProcessor(
+        llm_provider=_CapturingProvider(
+            json.dumps({"memories": [unit]}, ensure_ascii=False)
+        ),
+        context=None,
+    )
+
+    await processor.process_conversation_result(
+        _make_messages(),
+        topic_candidates=[
+            {"topic_id": "topic_secret_id", "name": "插件开发"},
+        ],
+    )
+
+    assert "topic_secret_id" not in captured["prompt"]
+    assert '"插件开发"' in captured["prompt"]
