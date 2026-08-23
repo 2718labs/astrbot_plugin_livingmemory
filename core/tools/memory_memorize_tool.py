@@ -43,13 +43,9 @@ class MemoryMemorizeTool(FunctionTool[AstrAgentContext]):
 
     name: str = "memorize_long_term_memory"
     description: str = (
-        "Save durable long-term memory when the user explicitly asks to remember something, "
+        "Memorize durable long-term memory when the user explicitly asks to remember something, "
         "or when stable preferences, identity details, agreements, or project context appear. "
-        "Write concise factual statements in memory, not the full conversation; "
-        "break complex content into key_facts (up to 5) and optionally add topic tags, "
-        "participants, sentiment, and an importance score (0-1; use higher values "
-        "for durable preferences, commitments, and identity facts). "
-        "The saved memory becomes available for later recall automatically."
+        "Write concise factual memory, not the full conversation."
     )
     parameters: dict[str, Any] = field(
         default_factory=lambda: {
