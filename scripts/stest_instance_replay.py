@@ -238,7 +238,7 @@ def _safe_engine_config(plugin_config: dict[str, Any]) -> dict[str, Any]:
         "atom_enabled": False,
         "injection_token_budget": int(recall.get("injection_token_budget", 1600)),
         "single_fact_token_budget": int(
-            recall.get("single_fact_token_budget", 320)
+            recall.get("single_fact_token_budget", 260)
         ),
         "include_persona_reaction": bool(
             recall.get("include_persona_reaction", True)

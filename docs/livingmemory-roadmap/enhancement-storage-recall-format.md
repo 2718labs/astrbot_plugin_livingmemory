@@ -134,7 +134,7 @@ HybridResult(
 </RAG-Faiss-Memory>
 ```
 
-最终注入不包含 parent summary、topics、participants、fact ID、分数或同组其他 facts。默认总预算 1600 token、单条 fact 预算 320 token；放不下就整条不注入。
+最终注入不包含 parent summary、topics、participants、fact ID、分数或同组其他 facts。默认总预算 1600 token、单条 fact 预算 260 token；放不下就整条不注入。
 
 相对时间在总结阶段直接改写进 fact 正文；消息发送时间保留在来源记录中。当前没有独立事件时间字段，也不按时间过滤或排序记忆。
 

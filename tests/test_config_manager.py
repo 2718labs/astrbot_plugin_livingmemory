@@ -21,7 +21,7 @@ def test_config_manager_loads_defaults() -> None:
     assert manager.get("recall_engine.recent_memory_count") == 0
     assert manager.get("recall_engine.fact_candidate_k") == 20
     assert manager.get("recall_engine.injection_token_budget") == 1600
-    assert manager.get("recall_engine.single_fact_token_budget") == 320
+    assert manager.get("recall_engine.single_fact_token_budget") == 260
     assert manager.get("recall_engine.memory_type_filter") == "all"
     assert manager.get("recall_engine.recent_context_max_age_seconds") == 7200
     assert manager.get("fusion_strategy.rrf_k") == 60
