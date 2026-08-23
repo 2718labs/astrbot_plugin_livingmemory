@@ -134,6 +134,22 @@ class RecallEngineConfig(BaseModel):
     include_persona_reaction: bool = Field(
         default=True, description="预算允许时随命中事实附带简短人格反应"
     )
+    recent_block_enabled: bool = Field(
+        default=True,
+        description="启用最近记忆块（最近父记忆摘要 + 至多 N 条沾边事实，模拟短期记忆窗口）",
+    )
+    recent_block_window_hours: int = Field(
+        default=48,
+        ge=1,
+        le=8760,
+        description="最近记忆块的时间窗口（小时）：只取窗口内最新一条父记忆",
+    )
+    recent_block_max_facts: int = Field(
+        default=2,
+        ge=0,
+        le=5,
+        description="最近记忆块最多附带的事实条数（0 表示只带摘要）",
+    )
 
 
 class FusionStrategyConfig(BaseModel):

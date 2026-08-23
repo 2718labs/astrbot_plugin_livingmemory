@@ -43,7 +43,10 @@ def fact_entry_text(hit: Any, *, include_reaction: bool = True) -> str:
     """Render one complete fact without parent summary or sibling metadata."""
     content = str(getattr(hit, "content", "") or "").strip()
     metadata = getattr(hit, "metadata", {}) or {}
-    lines = [f"- {content}"]
+    if metadata.get("recent_summary"):
+        lines = [f"- 最近对话摘要：{content}"]
+    else:
+        lines = [f"- {content}"]
     if include_reaction:
         reaction = _reaction_text(metadata.get("persona_reaction"))
         if reaction:

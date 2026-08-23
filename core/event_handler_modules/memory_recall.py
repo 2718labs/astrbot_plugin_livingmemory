@@ -17,6 +17,7 @@ from astrbot.api.provider import ProviderRequest
 from astrbot.core.agent.message import TextPart
 
 from ..memory_scope import is_event_memory_allowed, resolve_memory_scope
+from ..retrieval.hybrid_retriever import HybridResult
 from ..utils import (
     OperationContext,
     format_memories_for_fake_tool_call,
@@ -262,6 +263,18 @@ class MemoryRecall:
                 # 重复项与 token 预算，不再按 parent 二次减少独立事实。
                 recalled_memories = list(recalled_memories or [])[:top_k]
 
+                # recent 块：最近父记忆摘要 + 至多 2 条沾边事实。
+                # 它是短期连续性窗口，不是相关性结果：不占 top_k 名额，
+                # 与主召回共用同一 token 预算装配。
+                recent_entries = await self._build_recent_block(
+                    query_for_search,
+                    recalled_memories,
+                    recall_session_id or session_id,
+                    recall_persona_id,
+                )
+                if recent_entries:
+                    recalled_memories = recent_entries + list(recalled_memories)
+
                 if recalled_memories:
                     packer = getattr(self.memory_engine, "pack_memory_hits", None)
                     packed = packer(recalled_memories) if callable(packer) else None
@@ -426,6 +439,169 @@ class MemoryRecall:
             raise
         except Exception as e:
             logger.error(f"处理 on_llm_request 钩子时发生错误: {e}", exc_info=True)
+
+    async def _build_recent_block(
+        self,
+        query: str,
+        recalled_memories: list[HybridResult],
+        session_id: str,
+        persona_id: str | None,
+    ) -> list[HybridResult]:
+        """Build the recent-memory block: newest parent summary + 1-2 facts.
+
+        The recent block is a short-term continuity window (default 48h),
+        independent of the top_k relevance slots:
+        - the newest active parent's overview (summary) is always included;
+        - up to ``recent_block_max_facts`` of its facts are appended when
+          they are lexically close to the current topic (relaxed threshold);
+        - facts already selected by the main recall are not duplicated.
+
+        Entries are plain HybridResult objects so the shared fact packer
+        applies the same token budget and exact-text dedup afterwards.
+        """
+        try:
+            if not self.config_manager.get(
+                "recall_engine.recent_block_enabled", True
+            ):
+                return []
+            window_hours = float(
+                self.config_manager.get(
+                    "recall_engine.recent_block_window_hours", 48
+                )
+            )
+            max_facts = int(
+                self.config_manager.get(
+                    "recall_engine.recent_block_max_facts", 2
+                )
+            )
+            if window_hours <= 0 or max_facts <= 0:
+                return []
+
+            canonical_store = getattr(self.memory_engine, "canonical_store", None)
+            get_recent_parent = getattr(
+                canonical_store, "get_recent_parent", None
+            )
+            if not callable(get_recent_parent):
+                return []
+
+            parent = await get_recent_parent(
+                scope=session_id,
+                persona_id=persona_id,
+                window_hours=window_hours,
+            )
+            if not parent:
+                return []
+            overview = str(parent.get("overview") or "").strip()
+            parent_id = str(parent.get("parent_id") or "")
+            document_id = int(parent.get("document_id") or 0)
+            if not overview or not parent_id:
+                return []
+
+            entries: list[HybridResult] = [
+                HybridResult(
+                    doc_id=document_id,
+                    final_score=1.0,
+                    rrf_score=0.0,
+                    bm25_score=None,
+                    vector_score=None,
+                    content=overview,
+                    metadata={
+                        "memory_schema_version": "v3",
+                        "fact_id": "",
+                        "parent_id": parent_id,
+                        "session_id": session_id,
+                        "persona_id": persona_id,
+                        "importance": 1.0,
+                        "status": "active",
+                        "recent_summary": True,
+                        "selection_reason": "recent_block_summary",
+                    },
+                    score_breakdown=None,
+                )
+            ]
+
+            get_facts_by_parent = getattr(
+                canonical_store, "get_facts_by_parent", None
+            )
+            retriever = getattr(self.memory_engine, "fact_retriever", None)
+            score_facts = getattr(retriever, "score_facts_lexically", None)
+            if not callable(get_facts_by_parent) or not callable(score_facts):
+                return entries
+
+            facts = await get_facts_by_parent(parent_id)
+            if not facts:
+                return entries
+
+            # 已在主召回中的 fact 不再重复入选（fact_id 精确去重，可靠）
+            recalled_ids = {
+                str(mem.metadata.get("fact_id") or "")
+                for mem in recalled_memories
+                if isinstance(getattr(mem, "metadata", None), dict)
+                and mem.metadata.get("fact_id")
+            }
+            candidates = [
+                fact
+                for fact in facts
+                if str(fact.get("fact_id") or "") not in recalled_ids
+            ]
+            if not candidates:
+                return entries
+
+            texts = [str(fact.get("fact") or "").strip() for fact in candidates]
+            scores = await score_facts(query, texts)
+
+            # 放宽一档的词面门槛（默认 0.34 → 0.204）：连续性优先，
+            # 但完全无关的 fact 仍不入选。
+            relaxed_lexical = float(
+                self.config_manager.get(
+                    "recall_engine.fact_min_lexical_score", 0.34
+                )
+            ) * 0.6
+            ranked = sorted(
+                zip(candidates, scores), key=lambda item: item[1], reverse=True
+            )
+            picked = 0
+            for fact, lexical in ranked:
+                if picked >= max_facts:
+                    break
+                if lexical < relaxed_lexical:
+                    break
+                text = str(fact.get("fact") or "").strip()
+                if not text:
+                    continue
+                entries.append(
+                    HybridResult(
+                        doc_id=document_id,
+                        final_score=0.5 + 0.5 * lexical,
+                        rrf_score=0.0,
+                        bm25_score=None,
+                        vector_score=None,
+                        content=text,
+                        metadata={
+                            "memory_schema_version": "v3",
+                            "fact_id": str(fact.get("fact_id") or ""),
+                            "parent_id": parent_id,
+                            "session_id": session_id,
+                            "persona_id": persona_id,
+                            "importance": float(fact.get("importance") or 0.5),
+                            "status": "active",
+                            "selection_reason": "recent_block_fact",
+                        },
+                        score_breakdown=None,
+                    )
+                )
+                picked += 1
+
+            logger.info(
+                f"[{session_id}] recent 块: 父记忆={parent_id[:12]}..., "
+                f"摘要+{picked} 条沾边事实"
+            )
+            return entries
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.debug(f"[{session_id}] recent 块构建失败（不影响主召回）: {e}")
+            return []
 
     def _remove_injected_memories_from_context(
         self, req: ProviderRequest, session_id: str

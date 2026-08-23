@@ -131,6 +131,29 @@ class CanonicalFactRetriever:
         jaccard = overlap / len(query_set | fact_set)
         return min(1.0, 0.75 * coverage + 0.25 * jaccard)
 
+    async def score_facts_lexically(
+        self, query: str, fact_texts: list[str]
+    ) -> list[float]:
+        """Lexical-only relevance scores for a small closed fact set.
+
+        Used by the recent-memory block to pick the 1-2 facts of the newest
+        parent that are closest to the current topic.  No embedding call: the
+        same tokenizer and overlap scoring as the production route.
+        """
+        cleaned = str(query or "").strip()
+        if not cleaned or not fact_texts:
+            return [0.0] * len(fact_texts)
+        query_tokens = await self.text_processor.tokenize_async(
+            cleaned, remove_stopwords=False
+        )
+        scores: list[float] = []
+        for text in fact_texts:
+            fact_tokens = await self.text_processor.tokenize_async(
+                str(text or ""), remove_stopwords=False
+            )
+            scores.append(self._lexical_score(query_tokens, fact_tokens))
+        return scores
+
     async def search(
         self,
         query: str,

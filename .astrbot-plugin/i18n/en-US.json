@@ -130,6 +130,18 @@
         "description": "Include Persona Reaction",
         "hint": "Attach a brief stored persona reaction only when its fact is selected and both fit within the same budget."
       },
+      "recent_block_enabled": {
+        "description": "Enable Recent Memory Block",
+        "hint": "Automatic injection additionally carries the newest parent summary (short-term continuity window). It does not consume recall slots and shares the same token budget."
+      },
+      "recent_block_window_hours": {
+        "description": "Recent Block Window (hours)",
+        "hint": "Only the newest parent written inside this window qualifies as the short-term memory. Outside the window, injection falls back to pure relevance recall."
+      },
+      "recent_block_max_facts": {
+        "description": "Recent Block Facts",
+        "hint": "How many topic-close facts of that parent are appended beyond the summary (relaxed lexical threshold). Set to 0 to carry only the summary."
+      },
       "recent_memory_count": {
         "description": "Reserved Recent Memories (deprecated)",
         "hint": "Deprecated and ignored by fact retrieval. Recent memories no longer bypass relevance ranking or reserve injection slots."

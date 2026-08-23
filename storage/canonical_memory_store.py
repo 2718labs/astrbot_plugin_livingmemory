@@ -562,6 +562,72 @@ class CanonicalMemoryStore:
         )
         await self.db.commit()
 
+    async def get_recent_parent(
+        self,
+        *,
+        scope: str,
+        persona_id: str | None = None,
+        window_hours: float = 48.0,
+    ) -> dict[str, Any] | None:
+        """Return the most recently written active parent inside the time window.
+
+        Used by the recent-memory block (short-term continuity): the newest
+        parent within ``window_hours`` is the "what we just talked about"
+        candidate.  None when nothing qualifies.
+        """
+        if self.db is None or not scope:
+            return None
+        cutoff = time.time() - max(0.0, float(window_hours)) * 3600.0
+        parameters: list[Any] = [scope]
+        persona_sql = ""
+        if persona_id is not None:
+            persona_sql = "AND persona_id = ?"
+            parameters.append(persona_id)
+        parameters.append(cutoff)
+        cursor = await self.db.execute(
+            f"""
+            SELECT parent_id, document_id, scope, persona_id, overview,
+                   status, created_at, updated_at
+            FROM memory_parents
+            WHERE scope = ? AND status = 'active' {persona_sql}
+              AND created_at >= ?
+            ORDER BY created_at DESC
+            LIMIT 1
+            """,
+            parameters,
+        )
+        row = await cursor.fetchone()
+        if row is None:
+            return None
+        return dict(row)
+
+    async def get_facts_by_parent(self, parent_id: str) -> list[dict[str, Any]]:
+        """Return the active canonical facts of one parent memory."""
+        if self.db is None or not parent_id:
+            return []
+        cursor = await self.db.execute(
+            """
+            SELECT fact_id, parent_id, fact_json, importance, status,
+                   created_at, updated_at
+            FROM memory_facts
+            WHERE parent_id = ? AND status = 'active'
+            ORDER BY id ASC
+            """,
+            (str(parent_id),),
+        )
+        facts: list[dict[str, Any]] = []
+        for row in await cursor.fetchall():
+            try:
+                value = json.loads(row["fact_json"])
+            except (json.JSONDecodeError, TypeError):
+                continue
+            if not isinstance(value, dict):
+                continue
+            value["fact_id"] = str(row["fact_id"])
+            value["importance"] = float(row["importance"] or 0.0)
+            facts.append(value)
+        return facts
+
     async def get_facts_by_document(self, document_id: int) -> list[dict[str, Any]]:
         if self.db is None:
             return []

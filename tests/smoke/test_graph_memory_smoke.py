@@ -210,7 +210,11 @@ async def test_smoke_event_recall_injects_memory_into_prompt(tmp_path: Path):
         assert len(req.extra_user_content_parts) == 1
         assert "<RAG-Faiss-Memory>" in req.extra_user_content_parts[0].text
         assert MEMORY_FACT in req.extra_user_content_parts[0].text
-        assert MEMORY_CONTENT not in req.extra_user_content_parts[0].text
+        # 刚写入的父记忆在 recent 窗口内，overview 只允许以"最近对话摘要"
+        # 形式出现（recent 块），不允许作为普通事实行泄漏。
+        text = req.extra_user_content_parts[0].text
+        assert "最近对话摘要：project sync record" in text
+        assert "\n- project sync record" not in text
         conversation_manager.add_message_from_event.assert_awaited_once()
     finally:
         await _settle_background_tasks()

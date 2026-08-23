@@ -238,6 +238,24 @@
                 "type": "bool",
                 "default": true
             },
+            "recent_block_enabled": {
+                "description": "启用最近记忆块",
+                "hint": "自动注入时额外带一条最近父记忆摘要（短期连续性窗口），不占召回条数名额，与召回共用同一 token 预算。",
+                "type": "bool",
+                "default": true
+            },
+            "recent_block_window_hours": {
+                "description": "最近记忆块时间窗口（小时）",
+                "hint": "只取该时间窗口内最新写入的一条父记忆。超出窗口后不再作为短期记忆注入，退回纯相关性召回。",
+                "type": "int",
+                "default": 48
+            },
+            "recent_block_max_facts": {
+                "description": "最近记忆块附带事实数",
+                "hint": "最近摘要之外，最多附带该父记忆的几条沾边事实（放宽门槛，与当前话题词面接近才入选）。设为 0 只带摘要。",
+                "type": "int",
+                "default": 2
+            },
             "search_cache_enabled": {
                 "description": "启用短期检索缓存",
                 "hint": "短时间内相同会话和相同查询会复用检索结果，降低连续追问时的 SQLite/FAISS 开销。",
