@@ -35,14 +35,13 @@ class MemorySearchTool(FunctionTool[AstrAgentContext]):
 
     name: str = "recall_long_term_memory"
     description: str = (
-        "Recall long-term memory when the current context is insufficient. "
-        "Note: the most recent conversation summary and its topic-close facts "
-        "are already injected automatically before each reply (recent memory block), "
-        "so do not call this tool just to recall what was said recently. "
-        "Use concise, focused recall keywords instead of copying the full user message. "
-        "Call this when the user asks you to recall prior facts, preferences, agreements, or older context, "
-        "or when resolving ambiguous references requires checking memory. "
-        "Prefer short topic phrases, named entities, preferences, commitments, or past events as recall keywords. "
+        "Recall long-term memory when the current context is insufficient: "
+        "prior facts, preferences, agreements, older events, or ambiguous references. "
+        "The most recent conversation is already provided automatically, "
+        "so use this tool to recall older or more specific memories. "
+        "Pass concise topic keywords (entities, topics, preferences, commitments, "
+        "past events) as query rather than copying the full user message. "
+        "Keep k small (default 5); raise it only when more evidence is needed. "
         "If the first recall is not enough, refine the keywords and recall again."
     )
     parameters: dict[str, Any] = field(
