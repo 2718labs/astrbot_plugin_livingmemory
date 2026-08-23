@@ -129,7 +129,7 @@ class RecallEngineConfig(BaseModel):
         default=1600, ge=128, le=16000, description="单轮长期事实注入硬预算"
     )
     single_fact_token_budget: int = Field(
-        default=150, ge=32, le=8000, description="单条完整事实注入上限"
+        default=320, ge=32, le=8000, description="单条完整事实注入上限"
     )
     include_persona_reaction: bool = Field(
         default=True, description="预算允许时随命中事实附带简短人格反应"
