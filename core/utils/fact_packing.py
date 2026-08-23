@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any, Callable
 
 
@@ -54,6 +55,53 @@ def fact_entry_text(hit: Any, *, include_reaction: bool = True) -> str:
     return "\n".join(lines)
 
 
+def _format_timestamp(value: Any) -> str:
+    """Render a unix/ISO timestamp as 'YYYY-MM-DD HH:MM', or empty string."""
+    if isinstance(value, (int, float)):
+        timestamp = float(value)
+    elif isinstance(value, str):
+        stripped = value.strip()
+        if not stripped:
+            return ""
+        try:
+            timestamp = float(stripped)
+        except ValueError:
+            try:
+                return datetime.fromisoformat(
+                    stripped.replace("Z", "+00:00")
+                ).strftime("%Y-%m-%d %H:%M")
+            except ValueError:
+                return ""
+    else:
+        return ""
+    if timestamp > 100_000_000_000:
+        timestamp /= 1000.0
+    if timestamp <= 0:
+        return ""
+    try:
+        return datetime.fromtimestamp(timestamp).strftime("%Y-%m-%d %H:%M")
+    except (OverflowError, OSError, ValueError):
+        return ""
+
+
+def fact_header_text(hit: Any, index: int) -> str:
+    """Render the per-entry prefix: 记忆 #N (重要性: X, 写入时间: ...)."""
+    metadata = getattr(hit, "metadata", {}) or {}
+    if metadata.get("recent_summary"):
+        return f"最近对话 #{index}"
+    parts = [f"记忆 #{index}"]
+    meta_parts: list[str] = []
+    importance = metadata.get("importance")
+    if isinstance(importance, (int, float)):
+        meta_parts.append(f"重要性: {importance:.2f}")
+    time_text = _format_timestamp(metadata.get("create_time"))
+    if time_text:
+        meta_parts.append(f"写入时间: {time_text}")
+    if meta_parts:
+        parts.append("(" + ", ".join(meta_parts) + ")")
+    return " ".join(parts)
+
+
 def format_fact_hits_for_injection(
     hits: list[Any], *, include_reaction: bool = True
 ) -> str:
@@ -78,9 +126,11 @@ def format_fact_hits_for_injection(
     if not footer_body:
         footer_body = "自然使用相关事实，不要主动宣布或逐条复述记忆。"
 
-    body = "\n".join(
-        fact_entry_text(hit, include_reaction=include_reaction) for hit in hits
-    )
+    body_lines: list[str] = []
+    for index, hit in enumerate(hits, start=1):
+        body_lines.append(fact_header_text(hit, index))
+        body_lines.append(fact_entry_text(hit, include_reaction=include_reaction))
+    body = "\n".join(body_lines)
     return (
         f"{MEMORY_INJECTION_HEADER}\n{header_body}\n\n"
         f"{body}\n\n{footer_body}\n{MEMORY_INJECTION_FOOTER}"
