@@ -1,7 +1,7 @@
 ---
 project: LivingMemory enhancement
 baseline: c2e733049392d1cfc27843fc083096a9103f27d1
-updated: 2026-08-22
+updated: 2026-08-23
 document_role: execution-index
 investigation_state: T0A-T0B-complete
 excel_role: snapshot-only
@@ -109,7 +109,7 @@ S5 切换到 fact 级召回，重做门槛、recent、预算和最小注入
   ↓
 S6 主线稳定后再校准生命周期信号和必要体验
   ↓
-Stest 汇总阶段证据，跑完整链路、时间压缩与盲测体验，给出是否通过结论
+Stest 汇总阶段证据，跑完整链路、时间压缩与盲测体验，给出是否通过结论（完成：核心通过，可选路线保持关闭）
 
 Sfuture（独立愿景，不进入当前执行链）
   ├─ 非破坏性聚合 / 矛盾检测与消解
@@ -128,7 +128,7 @@ Sfuture（独立愿景，不进入当前执行链）
 | S4 | 在 canonical fact 与 Atom 之间选定唯一生产事实层 | I08、I12、I17、F02 | fact/Atom model、store、retriever、lifecycle、memory engine | S2、S3 | Done | [S4](S4.md) |
 | S5 | 让无关消息不注入，相关消息按 fact 命中并在硬预算内装配 | I10、I11、I13、I14、I16、I17、I18、I22、U02 | fact search、route fusion/calibration、filter、budget packer、formatting | S3、S4 | Done | [S5](S5.md) |
 | S6 | 校准生命周期信号并补充必要观察体验 | I08、I13、U01、U02 | lifecycle、event tracking、WebUI | S5 | Done | [S6](S6.md) |
-| Stest | 对完成范围做完整链路、长周期和盲测体验验收，判定改造净收益 | I20 | eval harness、time-controlled replay、paired blind review | S5；以及所有获准实施的 S6 项 | In Progress：按现行契约复跑 | [Stest](Stest.md) |
+| Stest | 对完成范围做完整链路、长周期和盲测体验验收，判定改造净收益 | I20 | eval harness、time-controlled replay、paired blind review | S5；以及所有获准实施的 S6 项 | Done：核心通过，可选路线保持关闭 | [Stest](Stest.md) |
 | Sfuture | 记录非破坏性聚合、矛盾消解、可选 rerank、动态路线选择及结构化时间/时间检索五个独立愿景；立项前不进入任务计划 | I07、F01、F04、F05、F06 | 未定，须独立调查 | 不属于当前依赖链 | Vision | [Sfuture](Sfuture.md) |
 
 ## 问题总表

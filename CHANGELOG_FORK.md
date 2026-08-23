@@ -2,9 +2,18 @@
 
 本文件只记录 [2718labs fork](https://github.com/2718labs/astrbot_plugin_livingmemory) 相对[原版 LivingMemory](https://github.com/lxfight-s-Astrbot-Plugins/astrbot_plugin_livingmemory)产生的变更。原项目自身的版本历史见 [CHANGELOG.md](CHANGELOG.md)。
 
-## [Unreleased]
+## [2.6.0-a2] - 2026-08-23
 
-### Stest：只读实例重放与架构校对（进行中）
+### 2026-08-23 收尾波次：recent 短期连续性、预算默认值与泄漏修复
+
+- 新增最近记忆块（S-recent）：48 小时窗口内的最新 parent 摘要无条件注入，并带最多 2 条词面相近 facts（宽松阈值 = `fact_min_lexical_score × 0.6`）；recent 条目不占 `top_k` 名额，与主召回共用同一 token 预算。窗口、条数与开关均可配置（`recent_block_enabled` 默认开、`recent_block_window_hours` 默认 48、`recent_block_max_facts` 默认 2）。
+- 注入预算默认值调整并定稿：总预算 `injection_token_budget` 1200→1600（校验 128–16000），单条 fact `single_fact_token_budget` 经 320→150→320 修正后定稿 260（校验 32–8000）；配置页 schema 与 i18n 同步。
+- Agent 工具描述改为用法优先：`memory_search` 描述重写（recent 对话已自动提供、查关键词、k 默认 5），`memory_memorize` 描述压缩回原版长度；工具 JSON 与 fake_tool_call 输出精简对齐上游结构（去掉 fact_id/parent_id/last_access_time/预算字段）。
+- 泄漏修复：总结 prompt 只给 topic 可见名、不再暴露 topic_id；`_resolve_topic` 拒绝 `topic_<hex>` 机器名（回退候选池人话名或丢弃），防止 LLM 把内部 ID 当名字写入图谱。
+- 注入前缀恢复：每条 fact 注入带「记忆 #N (重要性: X.XX, 写入时间: YYYY-MM-DD HH:MM)」前缀，recent 条目渲染「最近对话 #N」；重要性读取 `memory_facts.importance` 当前衰减值。
+- 测试：新增真实落库 memorize 端到端测试（`test_memorize_tool_real_db.py`）、recent block 6 用例、机器 ID topic 写入回归；Python 816 / 前端 16 全绿。
+
+### Stest：只读实例重放与架构校对（完成）
 
 - 精简自动总结契约：LLM 只输出获准 facts 的正文、topics、importance 及可选 reaction；summary、participants、文档 topics/importance、ID 和窗口来源均由程序生成。删除 fact 级 `source_indexes/source_message_ids` 及其伪语义校验，内置提示词不再重复完整规则。
 - 新增只读实例重放与自然问法探针：从保留原始消息的旧窗口重跑 v3 写入链，只在隔离目录生成候选数据库、FTS/FAISS 索引和私有报告，不迁移或替换运行实例。
@@ -20,7 +29,7 @@
 - 第一人称沿用原版提示约束，不再因模型使用 Bot 名称而由代码判废整批记忆；用户与 Bot 身份仍以消息角色、发送者身份和 persona_id 隔离。
 - 对窗口 30、63、80、100 做针对性复跑：4 个窗口均形成有效结果，共写入 10 条 canonical facts，精确查询 10/10 进入最终注入，四条负例仍为零注入。窗口 30 不再把 Bot 单方面声称的“九点查岗”写成双方约定，窗口 63 的明确亲昵表达也没有再被整窗跳过；窗口 100 仍保留两条偏玩笑的“价目表/催睡”互动，说明写入取舍和跨次稳定性仍需后续重复评测。
 - WebUI 改为以 canonical fact 为准：列表/详情显示权威 fact 数量和证据字段；v3 结构正文只读，避免旧表单把对象事实压成字符串；归档、恢复、软删除走真实 fact 生命周期；系统统计以 fact 状态和 FTS/向量一致性替代 Atom。
-- 当前工作树通过 798 项 Python 测试和 16 项前端测试；长周期回放与成对体验盲测仍未开始。
+- 当前工作树通过 816 项 Python 测试和 16 项前端测试；Stest 时间压缩回放（25/25）与成对体验盲测（10 场景 7/2/1 偏好候选）均已通过，总判定为核心通过、可选路线保持关闭，详见 [Stest.md](docs/livingmemory-roadmap/Stest.md)。
 
 ### S0：逐事实准入
 
