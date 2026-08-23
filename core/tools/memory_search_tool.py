@@ -36,6 +36,9 @@ class MemorySearchTool(FunctionTool[AstrAgentContext]):
     name: str = "recall_long_term_memory"
     description: str = (
         "Recall long-term memory when the current context is insufficient. "
+        "Note: the most recent conversation summary and its topic-close facts "
+        "are already injected automatically before each reply (recent memory block), "
+        "so do not call this tool just to recall what was said recently. "
         "Use concise, focused recall keywords instead of copying the full user message. "
         "Call this when the user asks you to recall prior facts, preferences, agreements, or older context, "
         "or when resolving ambiguous references requires checking memory. "
@@ -147,12 +150,12 @@ class MemorySearchTool(FunctionTool[AstrAgentContext]):
                     memories,
                     token_budget=int(
                         self.config_manager.get(
-                            "recall_engine.injection_token_budget", 1200
+                            "recall_engine.injection_token_budget", 1600
                         )
                     ),
                     single_fact_budget=int(
                         self.config_manager.get(
-                            "recall_engine.single_fact_token_budget", 320
+                            "recall_engine.single_fact_token_budget", 150
                         )
                     ),
                     include_reaction=self.config_manager.get(

@@ -151,10 +151,10 @@ class InitializerFinalizeMixin:
                     "recall_engine.fact_min_final_score", 0.42
                 ),
                 "injection_token_budget": self.config_manager.get(
-                    "recall_engine.injection_token_budget", 1200
+                    "recall_engine.injection_token_budget", 1600
                 ),
                 "single_fact_token_budget": self.config_manager.get(
-                    "recall_engine.single_fact_token_budget", 320
+                    "recall_engine.single_fact_token_budget", 150
                 ),
                 "include_persona_reaction": self.config_manager.get(
                     "recall_engine.include_persona_reaction", True

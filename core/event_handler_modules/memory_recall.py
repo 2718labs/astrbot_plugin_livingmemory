@@ -285,12 +285,12 @@ class MemoryRecall:
                             recalled_memories,
                             token_budget=int(
                                 self.config_manager.get(
-                                    "recall_engine.injection_token_budget", 1200
+                                    "recall_engine.injection_token_budget", 1600
                                 )
                             ),
                             single_fact_budget=int(
                                 self.config_manager.get(
-                                    "recall_engine.single_fact_token_budget", 320
+                                    "recall_engine.single_fact_token_budget", 150
                                 )
                             ),
                             include_reaction=self.config_manager.get(
@@ -378,7 +378,7 @@ class MemoryRecall:
                         fake_messages = []
                         budget = int(
                             self.config_manager.get(
-                                "recall_engine.injection_token_budget", 1200
+                                "recall_engine.injection_token_budget", 1600
                             )
                         )
                         while recalled_memories:

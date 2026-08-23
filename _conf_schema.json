@@ -224,13 +224,13 @@
                 "description": "单轮事实注入硬预算",
                 "hint": "预算覆盖注入说明、完整事实、必要时间和可选人格反应；放不下下一条时停止，不截断事实。",
                 "type": "int",
-                "default": 1200
+                "default": 1600
             },
             "single_fact_token_budget": {
                 "description": "单条事实注入上限",
                 "hint": "超过上限的异常长事实不会被截成残句，而是跳过并留待校对。",
                 "type": "int",
-                "default": 320
+                "default": 150
             },
             "include_persona_reaction": {
                 "description": "附带当时反应",

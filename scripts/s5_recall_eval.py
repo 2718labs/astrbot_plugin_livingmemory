@@ -159,8 +159,8 @@ async def main() -> None:
         "fact_min_final_score": 0.42,
         "document_route_weight": 1.0,
         "graph_route_weight": 0.0,
-        "injection_token_budget": 1200,
-        "single_fact_token_budget": 320,
+        "injection_token_budget": 1600,
+        "single_fact_token_budget": 150,
     }
     retriever = CanonicalFactRetriever(
         _Store(route_cases, records), _TextProcessor(), config=config

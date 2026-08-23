@@ -45,7 +45,9 @@ class MemoryMemorizeTool(FunctionTool[AstrAgentContext]):
     description: str = (
         "Memorize durable long-term memory when the user explicitly asks to remember something, "
         "or when stable preferences, identity details, agreements, or project context appear. "
-        "Write concise factual memory, not the full conversation."
+        "Write concise factual memory, not the full conversation. "
+        "Note: newly written memories enter the recent memory block automatically "
+        "(48h window), so there is no need to repeat or re-assert them in the same conversation."
     )
     parameters: dict[str, Any] = field(
         default_factory=lambda: {

@@ -813,8 +813,8 @@ class MemoryEngineCrudMixin:
 
         return pack_fact_hits(
             results,
-            token_budget=int(self.config.get("injection_token_budget", 1200)),
-            single_fact_budget=int(self.config.get("single_fact_token_budget", 320)),
+            token_budget=int(self.config.get("injection_token_budget", 1600)),
+            single_fact_budget=int(self.config.get("single_fact_token_budget", 150)),
             include_reaction=bool(self.config.get("include_persona_reaction", True)),
         )
 
