@@ -154,7 +154,7 @@ class MemorySearchTool(FunctionTool[AstrAgentContext]):
                     ),
                     single_fact_budget=int(
                         self.config_manager.get(
-                            "recall_engine.single_fact_token_budget", 260
+                            "recall_engine.single_fact_token_budget", 300
                         )
                     ),
                     include_reaction=self.config_manager.get(

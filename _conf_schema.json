@@ -211,7 +211,7 @@
                 "description": "单条事实注入上限",
                 "hint": "超过上限的异常长事实不会被截成残句，而是跳过并留待校对。",
                 "type": "int",
-                "default": 260
+                "default": 300
             },
             "include_persona_reaction": {
                 "description": "附带当时反应",
