@@ -16,6 +16,50 @@ export function normalizeImportance(value) {
 }
 
 /**
+ * 统一显示时间：兼容秒/毫秒时间戳、ISO 字符串和旧 SQLite 微秒字符串。
+ * @param {number|string|Date|null|undefined} value - 时间值
+ * @param {string} fallback - 空值回退文本
+ * @returns {string} 本地 YYYY-MM-DD HH:mm:ss
+ */
+export function formatTimestamp(value, fallback = "--") {
+  if (value == null || value === "") return fallback;
+
+  const text = String(value).trim();
+  const dateOnly = text.match(/^(\d{4}-\d{2}-\d{2})$/);
+  if (dateOnly) return dateOnly[1];
+
+  // SQLite/Python 的无时区 datetime 存量值按本地墙钟时间展示，
+  // 只去掉微秒，不让浏览器把它误判成 UTC。
+  const naive = text.match(
+    /^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}:\d{2})(?:\.\d+)?$/
+  );
+  if (naive) return naive[1] + " " + naive[2];
+
+  let date;
+  if (value instanceof Date) {
+    date = value;
+  } else if (/^-?\d+(?:\.\d+)?$/.test(text)) {
+    const numeric = Number(text);
+    const milliseconds = Math.abs(numeric) < 1e12 ? numeric * 1000 : numeric;
+    date = new Date(milliseconds);
+  } else {
+    date = new Date(text);
+  }
+  if (Number.isNaN(date.getTime())) return text || fallback;
+
+  const pad = number => String(number).padStart(2, "0");
+  return [
+    date.getFullYear(),
+    pad(date.getMonth() + 1),
+    pad(date.getDate())
+  ].join("-") + " " + [
+    pad(date.getHours()),
+    pad(date.getMinutes()),
+    pad(date.getSeconds())
+  ].join(":");
+}
+
+/**
  * 从记忆详情对象中提取文本内容
  * @param {Object} detail - 记忆详情对象
  * @returns {string} 文本内容

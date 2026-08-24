@@ -5,6 +5,7 @@
 
 import {
   normalizeImportance,
+  formatTimestamp,
   getDetailText,
   esc,
   statusPill,
@@ -128,8 +129,8 @@ export class PeekPanel {
     const status = detail.status || "active";
     const importance = normalizeImportance(detail.importance).toFixed(1);
     const content = getDetailText(detail);
-    const created = detail.created_at || "--";
-    const updated = detail.updated_at || "--";
+    const created = formatTimestamp(detail.create_time, formatTimestamp(detail.created_at));
+    const updated = formatTimestamp(detail.updated_at, created);
     const sessionId = detail.session_id || "--";
     const personaId = detail.persona_id || "--";
     const keyFacts = detail.key_facts || [];

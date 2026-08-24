@@ -3,7 +3,14 @@
  * 负责记忆列表展示、虚拟滚动、筛选和排序
  */
 
-import { normalizeImportance, esc, statusPill, typeLabel, debounce } from "./utils.js";
+import {
+  normalizeImportance,
+  formatTimestamp,
+  esc,
+  statusPill,
+  typeLabel,
+  debounce
+} from "./utils.js";
 
 export class MemoryPage {
   constructor(state, apiClient, peekPanel) {
@@ -63,17 +70,18 @@ export class MemoryPage {
         memory_type: (item.metadata && item.metadata.memory_type) || "GENERAL",
         importance: normalizeImportance(item.metadata && item.metadata.importance),
         status: (item.metadata && item.metadata.status) || "active",
-        created_at: (item.metadata && item.metadata.create_time)
-          ? new Date(item.metadata.create_time * 1000).toLocaleString()
-          : item.created_at || "--",
-        updated_at: (item.metadata && item.metadata.updated_at)
-          ? new Date(item.metadata.updated_at * 1000).toLocaleString()
-          : (item.metadata && item.metadata.create_time)
-            ? new Date(item.metadata.create_time * 1000).toLocaleString()
-            : item.updated_at || "--",
-        last_access: (item.metadata && item.metadata.last_access_time)
-          ? new Date(item.metadata.last_access_time * 1000).toLocaleString()
-          : "--",
+        created_at: formatTimestamp(
+          item.metadata && item.metadata.create_time,
+          formatTimestamp(item.created_at)
+        ),
+        updated_at: formatTimestamp(
+          item.metadata && item.metadata.updated_at,
+          formatTimestamp(
+            item.metadata && item.metadata.create_time,
+            formatTimestamp(item.updated_at)
+          )
+        ),
+        last_access: formatTimestamp(item.metadata && item.metadata.last_access_time),
         consolidated_count: (item.metadata && Array.isArray(item.metadata.consolidated_from))
           ? item.metadata.consolidated_from.length
           : 0,

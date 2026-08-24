@@ -3,7 +3,7 @@
  * 负责测试记忆召回功能
  */
 
-import { esc, statusPill, normalizeImportance } from "./utils.js";
+import { esc, statusPill, normalizeImportance, formatTimestamp } from "./utils.js";
 
 export class RecallPage {
   constructor(state, apiClient, peekPanel) {
@@ -178,9 +178,7 @@ export class RecallPage {
             memory_type: memory.metadata?.memory_type,
             importance: memory.metadata?.importance,
             status: memory.metadata?.status,
-            created_at: memory.metadata?.create_time
-              ? new Date(memory.metadata.create_time * 1000).toLocaleString()
-              : "--",
+            created_at: formatTimestamp(memory.metadata?.create_time),
             raw: memory
           });
         }
