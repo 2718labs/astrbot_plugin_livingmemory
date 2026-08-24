@@ -1022,38 +1022,21 @@ class CanonicalMemoryStore:
                 for row in await cursor.fetchall()
             ]
 
-        active_filters = [
-            "f.status = 'active'",
-            "p.status = 'active'",
-            "COALESCE(json_extract(d.metadata, '$.status'), 'active') = 'active'",
-        ]
-        active_parameters: list[Any] = []
+        vector_metadata_filters: dict[str, Any] = {"status": "active"}
         if scope is not None:
-            active_filters.append("f.scope = ?")
-            active_parameters.append(scope)
+            vector_metadata_filters["session_id"] = scope
         if persona_id is not None:
-            active_filters.append("f.persona_id = ?")
-            active_parameters.append(persona_id)
-        cursor = await self.db.execute(
-            f"""
-            SELECT f.fact_id
-            FROM memory_facts f
-            JOIN memory_parents p ON p.parent_id = f.parent_id
-            JOIN documents d ON d.id = p.document_id
-            WHERE {' AND '.join(active_filters)}
-            """,
-            active_parameters,
-        )
-        active_fact_ids = {str(row["fact_id"]) for row in await cursor.fetchall()}
+            vector_metadata_filters["persona_id"] = persona_id
 
+        vector_fetch_limit = max(10, int(limit) * 5)
         vector_results = await self.fact_vector_db.retrieve(
             query=query,
-            k=max(10, int(limit) * 5),
-            fetch_k=max(10, int(limit) * 5),
+            k=vector_fetch_limit,
+            fetch_k=vector_fetch_limit,
             rerank=False,
-            metadata_filters=None,
+            metadata_filters=vector_metadata_filters,
         )
-        vector: list[dict[str, Any]] = []
+        vector_candidates: list[dict[str, Any]] = []
         for result in vector_results:
             data = getattr(result, "data", {}) or {}
             metadata = data.get("metadata") or {}
@@ -1072,18 +1055,42 @@ class CanonicalMemoryStore:
                 continue
             fact_id = str(metadata.get("fact_id") or "")
             parent_id = str(metadata.get("parent_id") or "")
-            if fact_id not in active_fact_ids:
-                continue
             if fact_id and parent_id:
-                vector.append(
+                vector_candidates.append(
                     {
                         "fact_id": fact_id,
                         "parent_id": parent_id,
                         "score": float(getattr(result, "similarity", 0.0)),
                     }
                 )
-            if len(vector) >= max(1, int(limit)):
-                break
+        active_fact_ids: set[str] = set()
+        candidate_ids = list(
+            dict.fromkeys(item["fact_id"] for item in vector_candidates)
+        )
+        if candidate_ids:
+            placeholders = ",".join("?" * len(candidate_ids))
+            cursor = await self.db.execute(
+                f"""
+                SELECT f.fact_id
+                FROM memory_facts f
+                JOIN memory_parents p ON p.parent_id = f.parent_id
+                JOIN documents d ON d.id = p.document_id
+                WHERE f.fact_id IN ({placeholders})
+                  AND f.status = 'active'
+                  AND p.status = 'active'
+                  AND COALESCE(json_extract(d.metadata, '$.status'), 'active') = 'active'
+                """,
+                candidate_ids,
+            )
+            active_fact_ids = {
+                str(row["fact_id"]) for row in await cursor.fetchall()
+            }
+
+        vector = [
+            item
+            for item in vector_candidates
+            if item["fact_id"] in active_fact_ids
+        ][: max(1, int(limit))]
         return {"bm25": bm25, "vector": vector}
 
     async def rebuild_indexes(self) -> dict[str, int | bool]:

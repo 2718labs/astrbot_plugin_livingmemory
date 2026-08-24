@@ -412,10 +412,12 @@ async def test_search_topic_candidates_uses_related_fact_routes(tmp_path: Path):
 
 @pytest.mark.asyncio
 async def test_search_topic_candidates_reads_real_fact_indexes(tmp_path: Path):
+    fact_faiss = _FakeFaissDB()
+    fact_faiss.retrieve = AsyncMock(wraps=fact_faiss.retrieve)
     engine = MemoryEngine(
         db_path=str(tmp_path / "topic_candidate_indexes.db"),
         faiss_db=_FakeFaissDB(),
-        fact_vector_db=_FakeFaissDB(),
+        fact_vector_db=fact_faiss,
         config={"fallback_enabled": True},
     )
     await engine.initialize()
@@ -434,6 +436,11 @@ async def test_search_topic_candidates_reads_real_fact_indexes(tmp_path: Path):
     )
 
     assert candidates == [{"topic_id": "topic_game", "name": "游戏开发"}]
+    assert fact_faiss.retrieve.await_args.kwargs["metadata_filters"] == {
+        "status": "active",
+        "session_id": "test:private:s1",
+        "persona_id": "persona_1",
+    }
     await engine.close()
 
 
