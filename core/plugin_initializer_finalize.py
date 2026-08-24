@@ -114,15 +114,6 @@ class InitializerFinalizeMixin:
                 "min_similarity_for_retrieval": self.config_manager.get(
                     "recall_engine.min_similarity_for_retrieval", 0.0
                 ),
-                "recent_memory_count": self.config_manager.get(
-                    "recall_engine.recent_memory_count", 0
-                ),
-                "recent_memory_max_age_hours": self.config_manager.get(
-                    "recall_engine.recent_memory_max_age_hours", 72
-                ),
-                "memory_type_filter": self.config_manager.get(
-                    "recall_engine.memory_type_filter", "all"
-                ),
                 "search_cache_enabled": self.config_manager.get(
                     "recall_engine.search_cache_enabled", True
                 ),

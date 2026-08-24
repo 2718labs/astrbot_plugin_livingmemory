@@ -26,10 +26,6 @@ EXPECTED_OPTION_LABELS = {
             "fake_tool_call_deepseek_v4": "Fake Tool Call (DeepSeek V4, deprecated)",
             "system_prompt": "System Prompt (deprecated)",
         },
-        "recall_engine.memory_type_filter": {
-            "all": "All Memories",
-            "event_only": "Events and Facts",
-        },
         "filtering_settings.memory_scope_mode": {
             "legacy": "Legacy",
             "session": "Per Session",
@@ -64,10 +60,6 @@ EXPECTED_OPTION_LABELS = {
                 "Фейковый вызов инструмента (DeepSeek V4, устарело)"
             ),
             "system_prompt": "Системная инструкция (устарело)",
-        },
-        "recall_engine.memory_type_filter": {
-            "all": "Все воспоминания",
-            "event_only": "События и факты",
         },
         "filtering_settings.memory_scope_mode": {
             "legacy": "Legacy",

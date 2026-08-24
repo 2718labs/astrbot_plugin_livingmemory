@@ -42,9 +42,6 @@ LivingMemory 的默认配置已经适合大多数场景。真正需要调整的�
 | `recall_engine.importance_weight` | `1.0` | 重要性在最终排序中的权重 |
 | `recall_engine.min_importance_for_retrieval` | `0.0` | 最低重要性阈值，`0` 表示不过滤 |
 | `recall_engine.min_similarity_for_retrieval` | `0.0` | 最低向量相似度；纯关键词命中不受影响 |
-| `recall_engine.recent_memory_count` | `2` | 每次召回为近期记忆保留的槽位数 |
-| `recall_engine.recent_memory_max_age_hours` | `72` | 近期记忆保底的时间窗口 |
-| `recall_engine.memory_type_filter` | `all` | 设为 `event_only` 可排除明确的纯偏好/关系记忆 |
 | `recall_engine.fallback_to_vector` | `true` | 混合检索失败时降级到向量检索 |
 | `recall_engine.injection_method` | `extra_user_content` | 记忆注入到 LLM 请求的位置或形式 |
 | `recall_engine.inject_with_recent_context` | `false` | 是否拼接最近对话扩展查询 |

@@ -142,22 +142,6 @@
         "description": "Recent Block Facts",
         "hint": "How many topic-close facts of that parent are appended beyond the summary (relaxed lexical threshold). Set to 0 to carry only the summary."
       },
-      "recent_memory_count": {
-        "description": "Reserved Recent Memories (deprecated)",
-        "hint": "Deprecated and ignored by fact retrieval. Recent memories no longer bypass relevance ranking or reserve injection slots."
-      },
-      "recent_memory_max_age_hours": {
-        "description": "Recent Memory Window (hours)",
-        "hint": "Only memories inside this age window qualify for reserved recent slots. Set to 0 for no age limit."
-      },
-      "memory_type_filter": {
-        "description": "Memory Type Filter",
-        "hint": "Recall all memories, or exclude memories known to contain only preferences or relationships. Legacy untyped memories remain eligible.",
-        "labels": [
-          "All Memories",
-          "Events and Facts"
-        ]
-      },
       "fallback_to_vector": {
         "description": "Fallback to Pure Vector Search",
         "hint": "Automatically fall back to pure vector search when hybrid retrieval fails or returns empty results. Recommended to keep enabled."

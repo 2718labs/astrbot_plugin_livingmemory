@@ -747,9 +747,7 @@ class MemoryEngineCrudMixin:
                 raise RuntimeError("canonical fact retriever is not initialized")
             results = await retriever.search(query, k, session_id, persona_id)
             results = self._filter_by_retrieval_policy(results)
-            results = await self._merge_recent_memories(
-                results, k, session_id, persona_id
-            )
+            results = results[:k]
             if results:
                 self._create_tracked_task(
                     self._update_access_times_internal([r.doc_id for r in results])

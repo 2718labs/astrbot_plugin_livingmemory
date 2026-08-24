@@ -377,7 +377,6 @@ async def test_memory_archive_retains_document_and_restore_rebuilds_real_indexes
         fact_vector_db=fact_vector_db,
         config={
             "graph_memory_enabled": False,
-            "recent_memory_count": 0,
             "auto_archived_enabled": True,
             # S4: even an explicit atom_enabled=True must not initialize the
             # retired standalone Atom mechanism (S4-03B).

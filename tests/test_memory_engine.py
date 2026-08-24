@@ -739,7 +739,6 @@ async def test_search_memories_applies_vector_similarity_threshold(tmp_path: Pat
         faiss_db=_FakeFaissDB(),
         config={
             "min_similarity_for_retrieval": 0.7,
-            "recent_memory_count": 0,
             "search_cache_enabled": False,
         },
     )
@@ -772,49 +771,6 @@ async def test_search_memories_applies_vector_similarity_threshold(tmp_path: Pat
 
     assert [result.doc_id for result in results] == [1, 3]
     await asyncio.gather(*engine._pending_tasks)
-
-
-@pytest.mark.asyncio
-async def test_search_memories_event_only_keeps_legacy_and_event_types(tmp_path: Path):
-    engine = MemoryEngine(
-        db_path=str(tmp_path / "memory_types.db"),
-        faiss_db=_FakeFaissDB(),
-        config={
-            "memory_type_filter": "event_only",
-            "recent_memory_count": 0,
-            "search_cache_enabled": False,
-        },
-    )
-    engine.hybrid_retriever = Mock()
-    engine.hybrid_retriever.search = AsyncMock(
-        return_value=[
-            Mock(doc_id=1, metadata={"atom_types": ["episodic"]}),
-            Mock(doc_id=2, metadata={"atom_types": ["preference"]}),
-            Mock(doc_id=3, metadata={}),
-        ]
-    )
-
-    results = await engine.search_memories("query", k=5)
-
-    assert [result.doc_id for result in results] == [1, 3]
-    await asyncio.gather(*engine._pending_tasks)
-
-
-@pytest.mark.asyncio
-async def test_recent_memory_slots_are_reserved_without_duplicates(tmp_path: Path):
-    engine = MemoryEngine(
-        db_path=str(tmp_path / "recent_slots.db"),
-        faiss_db=_FakeFaissDB(),
-        config={"recent_memory_count": 2},
-    )
-    relevant = [Mock(doc_id=value) for value in (1, 2, 3, 4)]
-    engine._get_recent_memory_results = AsyncMock(
-        return_value=[Mock(doc_id=4), Mock(doc_id=5)]
-    )
-
-    merged = await engine._merge_recent_memories(relevant, 4, "session", "persona")
-
-    assert [result.doc_id for result in merged] == [1, 2, 4, 5]
 
 
 @pytest.mark.asyncio

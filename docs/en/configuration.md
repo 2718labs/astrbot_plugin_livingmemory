@@ -42,9 +42,6 @@ For very busy group chats, lower `context_window_size` or disable full group cap
 | `recall_engine.importance_weight` | `1.0` | Importance weight in final ranking |
 | `recall_engine.min_importance_for_retrieval` | `0.0` | Minimum importance; `0` disables the filter |
 | `recall_engine.min_similarity_for_retrieval` | `0.0` | Minimum vector similarity; keyword-only hits remain eligible |
-| `recall_engine.recent_memory_count` | `2` | Recall slots reserved for recent memories |
-| `recall_engine.recent_memory_max_age_hours` | `72` | Time window for recent-memory slots |
-| `recall_engine.memory_type_filter` | `all` | Use `event_only` to exclude known preference-only or relationship-only memories |
 | `recall_engine.fallback_to_vector` | `true` | Falls back to vector search if hybrid retrieval fails |
 | `recall_engine.injection_method` | `extra_user_content` | Where or how recalled memories are injected |
 | `recall_engine.inject_with_recent_context` | `false` | Expands the query with recent conversation |

@@ -165,9 +165,6 @@ class MemoryEngineWriteOpsMixin:
             int(self.config.get("graph_expansion_hops", 1)),
             round(float(self.config.get("min_importance_for_retrieval", 0.0)), 4),
             round(float(self.config.get("min_similarity_for_retrieval", 0.0)), 4),
-            int(self.config.get("recent_memory_count", 2)),
-            int(self.config.get("recent_memory_max_age_hours", 72)),
-            str(self.config.get("memory_type_filter", "all")),
         )
 
     def _filter_by_retrieval_policy(
@@ -179,8 +176,6 @@ class MemoryEngineWriteOpsMixin:
         similarity_threshold = clamp_float(
             self.config.get("min_similarity_for_retrieval"), default=0.0
         )
-        event_only = self.config.get("memory_type_filter", "all") == "event_only"
-        event_atom_types = {"episodic", "planned", "factual"}
         filtered: list[HybridResult] = []
 
         for result in results:
@@ -208,95 +203,8 @@ class MemoryEngineWriteOpsMixin:
             if similarity_threshold > 0 and signals and max(signals) < similarity_threshold:
                 continue
 
-            atom_types = metadata.get("atom_types")
-            if event_only and isinstance(atom_types, list) and atom_types:
-                normalized_types = {str(value).casefold() for value in atom_types}
-                if normalized_types.isdisjoint(event_atom_types):
-                    continue
             filtered.append(result)
         return filtered
-
-    async def _get_recent_memory_results(
-        self,
-        count: int,
-        session_id: str | None,
-        persona_id: str | None,
-    ) -> list[HybridResult]:
-        if count <= 0 or self.db_connection is None:
-            return []
-
-        conditions = [
-            "COALESCE(json_extract(metadata, '$.status'), 'active') = 'active'"
-        ]
-        params: list[Any] = []
-        if session_id is not None:
-            conditions.append("json_extract(metadata, '$.session_id') = ?")
-            params.append(session_id)
-        if persona_id is not None:
-            conditions.append("json_extract(metadata, '$.persona_id') = ?")
-            params.append(persona_id)
-        max_age_hours = max(
-            0, int(self.config.get("recent_memory_max_age_hours", 72))
-        )
-        if max_age_hours > 0:
-            conditions.append(
-                "CAST(json_extract(metadata, '$.create_time') AS REAL) >= ?"
-            )
-            params.append(time.time() - max_age_hours * 3600)
-        params.append(max(count * 3, count))
-
-        cursor = await self.db_connection.execute(
-            "SELECT id, text, metadata FROM documents WHERE "
-            + " AND ".join(conditions)
-            + " ORDER BY CAST(json_extract(metadata, '$.create_time') AS REAL) DESC, id DESC LIMIT ?",
-            params,
-        )
-        rows = await cursor.fetchall()
-        recent = [
-            HybridResult(
-                doc_id=int(row["id"]),
-                final_score=1.0,
-                rrf_score=0.0,
-                bm25_score=None,
-                vector_score=None,
-                content=str(row["text"] or ""),
-                metadata=self._safe_json_dict(row["metadata"]),
-                score_breakdown={"recent_memory": 1.0},
-            )
-            for row in rows
-        ]
-        return self._filter_by_retrieval_policy(recent)[:count]
-
-    async def _merge_recent_memories(
-        self,
-        results: list[HybridResult],
-        k: int,
-        session_id: str | None,
-        persona_id: str | None,
-    ) -> list[HybridResult]:
-        recent_count = min(max(0, int(self.config.get("recent_memory_count", 2))), k)
-        if recent_count <= 0:
-            return results[:k]
-
-        recent = await self._get_recent_memory_results(
-            recent_count, session_id, persona_id
-        )
-        if not recent:
-            return results[:k]
-
-        selected = list(results[: max(0, k - recent_count)])
-        selected_ids = {result.doc_id for result in selected}
-        for result in recent:
-            if result.doc_id not in selected_ids:
-                selected.append(result)
-                selected_ids.add(result.doc_id)
-        for result in results:
-            if len(selected) >= k:
-                break
-            if result.doc_id not in selected_ids:
-                selected.append(result)
-                selected_ids.add(result.doc_id)
-        return selected[:k]
 
     def _get_cached_search_results(
         self,

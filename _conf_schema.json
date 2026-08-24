@@ -133,25 +133,6 @@
                 "type": "float",
                 "default": 0.0
             },
-            "recent_memory_count": {
-                "description": "近期记忆固定槽位（已废弃）",
-                "hint": "S5 起近期程度只作为相关候选的轻量排序信号，不再绕过相关性占用固定槽位。该值保留用于读取旧配置，不再影响生产召回。",
-                "type": "int",
-                "default": 0
-            },
-            "recent_memory_max_age_hours": {
-                "description": "近期记忆时间窗口（小时）",
-                "hint": "只保留该时间窗口内的近期记忆。默认 72 小时，设为 0 表示不限制时间。",
-                "type": "int",
-                "default": 72
-            },
-            "memory_type_filter": {
-                "description": "记忆类型过滤",
-                "hint": "all 召回全部记忆；event_only 排除可明确识别为纯偏好或纯关系的记忆。旧记录没有类型元数据时保持可召回。",
-                "type": "string",
-                "options": ["all", "event_only"],
-                "default": "all"
-            },
             "fallback_to_vector": {
                 "description": "降级到纯向量检索",
                 "hint": "混合检索失败或结果为空时，自动降级为纯向量检索。建议开启。",
