@@ -250,6 +250,68 @@ def test_fact_packer_keeps_complete_facts_and_stops_at_hard_budget():
     assert packed.dropped == [{"fact_id": "f2", "reason": "total_budget"}]
 
 
+def test_fact_packer_records_all_candidates_skipped_after_total_budget():
+    first = _hit("f1", "first complete fact")
+    second = _hit("f2", "second complete fact")
+    third = _hit("f3", "third complete fact")
+    renderer = lambda hits: "|".join(hit.content for hit in hits)
+    budget = token_upper_bound("first complete fact")
+
+    packed = pack_fact_hits(
+        [first, second, third],
+        token_budget=budget,
+        single_fact_budget=100,
+        renderer=renderer,
+    )
+
+    assert [hit.metadata["fact_id"] for hit in packed.hits] == ["f1"]
+    assert packed.dropped == [
+        {"fact_id": "f2", "reason": "total_budget"},
+        {"fact_id": "f3", "reason": "total_budget"},
+    ]
+
+
+def test_canonical_fact_replaces_duplicate_recent_summary_in_earlier_slot():
+    content = "张三正在开发五子棋"
+    recent_summary = HybridResult(
+        doc_id=1,
+        final_score=1.0,
+        rrf_score=0.0,
+        bm25_score=None,
+        vector_score=None,
+        content=content,
+        metadata={
+            "parent_id": "parent-recent",
+            "recent_summary": True,
+        },
+    )
+    canonical = _hit(
+        "f1",
+        content,
+        {"emotion": "期待", "thought": "想看看成品"},
+    )
+    other = _hit("f2", "张三准备先实现双人对局")
+
+    packed = pack_fact_hits(
+        [recent_summary, canonical, other],
+        token_budget=1000,
+        single_fact_budget=500,
+    )
+
+    assert [hit.metadata["fact_id"] for hit in packed.hits] == ["f1", "f2"]
+    assert packed.hits[0] is canonical
+    assert packed.dropped == [
+        {
+            "fact_id": "recent_summary:parent-recent",
+            "reason": "duplicate_recent_summary",
+        }
+    ]
+    payload = format_fact_hits_for_injection(packed.hits)
+    assert payload.count(content) == 1
+    assert "当时反应：期待；想看看成品" in payload
+    assert "最近对话摘要" not in payload
+
+
 def test_fact_packer_keeps_independent_facts_from_one_parent():
     first = _hit("f1", "the directly relevant fact")
     sibling = _hit("f2", "another fact from the same source window")

@@ -145,6 +145,58 @@ class PackedFacts:
     dropped: list[dict[str, str]] = field(default_factory=list)
 
 
+def _hit_label(hit: Any) -> str:
+    metadata = getattr(hit, "metadata", {}) or {}
+    fact_id = str(metadata.get("fact_id") or "").strip()
+    if fact_id:
+        return fact_id
+    parent_id = str(metadata.get("parent_id") or "").strip()
+    if metadata.get("recent_summary") and parent_id:
+        return f"recent_summary:{parent_id}"
+    content = str(getattr(hit, "content", "") or "").strip()
+    return content[:80]
+
+
+def _prefer_canonical_fact_over_recent_summary(
+    hits: list[Any],
+) -> tuple[list[Any], list[dict[str, str]]]:
+    """Keep a canonical fact when its text duplicates the recent summary.
+
+    The recent block is prepended for continuity, so ordinary first-wins
+    deduplication used to keep the metadata-poor summary and discard the
+    canonical fact.  Put the canonical fact in the summary's earlier slot so
+    its fact id, importance and persona reaction survive without losing rank.
+    """
+    canonical_by_content: dict[str, tuple[int, Any]] = {}
+    for index, hit in enumerate(hits):
+        metadata = getattr(hit, "metadata", {}) or {}
+        content = str(getattr(hit, "content", "") or "").strip()
+        fact_id = str(metadata.get("fact_id") or "").strip()
+        if content and fact_id and not metadata.get("recent_summary"):
+            canonical_by_content.setdefault(content, (index, hit))
+
+    normalized: list[Any] = []
+    consumed_indexes: set[int] = set()
+    dropped: list[dict[str, str]] = []
+    for index, hit in enumerate(hits):
+        if index in consumed_indexes:
+            continue
+        metadata = getattr(hit, "metadata", {}) or {}
+        content = str(getattr(hit, "content", "") or "").strip()
+        canonical = canonical_by_content.get(content)
+        if metadata.get("recent_summary") and canonical is not None:
+            canonical_index, canonical_hit = canonical
+            if canonical_index > index and canonical_index not in consumed_indexes:
+                normalized.append(canonical_hit)
+                consumed_indexes.add(canonical_index)
+            dropped.append(
+                {"fact_id": _hit_label(hit), "reason": "duplicate_recent_summary"}
+            )
+            continue
+        normalized.append(hit)
+    return normalized, dropped
+
+
 def pack_fact_hits(
     hits: list[Any],
     *,
@@ -161,16 +213,16 @@ def pack_fact_hits(
             selected, include_reaction=include_reaction
         )
     )
+    normalized_hits, dropped = _prefer_canonical_fact_over_recent_summary(hits)
     selected: list[Any] = []
-    dropped: list[dict[str, str]] = []
     seen_fact_ids: set[str] = set()
     seen_contents: set[str] = set()
 
-    for hit in hits:
+    for index, hit in enumerate(normalized_hits):
         metadata = getattr(hit, "metadata", {}) or {}
         fact_id = str(metadata.get("fact_id") or "").strip()
         content = str(getattr(hit, "content", "") or "").strip()
-        label = fact_id or content[:80]
+        label = _hit_label(hit)
         if not content or (fact_id and fact_id in seen_fact_ids) or content in seen_contents:
             dropped.append({"fact_id": label, "reason": "duplicate_or_empty"})
             continue
@@ -183,7 +235,10 @@ def pack_fact_hits(
         candidate = [*selected, hit]
         payload_tokens = token_upper_bound(render(candidate))
         if payload_tokens > budget:
-            dropped.append({"fact_id": label, "reason": "total_budget"})
+            dropped.extend(
+                {"fact_id": _hit_label(remaining), "reason": "total_budget"}
+                for remaining in normalized_hits[index:]
+            )
             break
         selected = candidate
         if fact_id:

@@ -67,7 +67,7 @@ def _make_req(prompt: str = "今天聊了什么？"):
     return req
 
 
-def _make_recalled(content: str, fact_id: str):
+def _make_recalled(content: str, fact_id: str, reaction=None):
     hit = Mock(content=content, final_score=0.9)
     hit.doc_id = 100
     hit.metadata = {
@@ -75,6 +75,7 @@ def _make_recalled(content: str, fact_id: str):
         "parent_id": "parent-other",
         "importance": 0.8,
         "create_time": time.time(),
+        "persona_reaction": reaction,
     }
     return hit
 
@@ -216,6 +217,41 @@ async def test_recent_block_dedup_facts_already_recalled(conversation_manager):
     # "同一个事实"只出现一次（主召回一份，recent 不重复带）
     assert injected.count("同一个事实") == 1
     assert "考研安排在2026年12月" in injected
+
+
+@pytest.mark.asyncio
+async def test_recent_summary_duplicate_keeps_canonical_fact_metadata(
+    conversation_manager, caplog
+):
+    """摘要与正式 fact 同文时，保留正式 fact 及其人格反应。"""
+    content = "张三正在开发五子棋"
+    engine = _make_engine(
+        recalled=[
+            _make_recalled(
+                content,
+                "fact-1",
+                {"emotion": "期待", "thought": "想看看成品"},
+            )
+        ],
+        parent=_make_parent(overview=content),
+        facts=[],
+    )
+    handler = _make_handler(engine, conversation_manager)
+
+    event = _make_event()
+    req = _make_req()
+    with patch(
+        "astrbot_plugin_livingmemory.core.event_handler_modules.memory_recall.get_persona_id",
+        new=AsyncMock(return_value="persona_1"),
+    ):
+        await handler.handle_memory_recall(event, req)
+
+    injected = req.extra_user_content_parts[0].text
+    assert injected.count(content) == 1
+    assert "最近对话摘要" not in injected
+    assert "当时反应：期待；想看看成品" in injected
+    assert "装配候选=2，最终注入=1，丢弃=1" in caplog.text
+    assert "recent 摘要与正式 fact 重复=1" in caplog.text
 
 
 @pytest.mark.asyncio

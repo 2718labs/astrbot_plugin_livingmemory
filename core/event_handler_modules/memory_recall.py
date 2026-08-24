@@ -7,6 +7,7 @@ import asyncio
 import json
 import inspect
 import time
+from collections import Counter
 from datetime import datetime
 from typing import TYPE_CHECKING
 
@@ -276,6 +277,7 @@ class MemoryRecall:
                     recalled_memories = recent_entries + list(recalled_memories)
 
                 if recalled_memories:
+                    packing_candidate_count = len(recalled_memories)
                     packer = getattr(self.memory_engine, "pack_memory_hits", None)
                     packed = packer(recalled_memories) if callable(packer) else None
                     if packed is None or not isinstance(
@@ -298,16 +300,35 @@ class MemoryRecall:
                             ),
                         )
                     recalled_memories = packed.hits
+                    dropped = list(getattr(packed, "dropped", []) or [])
+                    reason_labels = {
+                        "duplicate_recent_summary": "recent 摘要与正式 fact 重复",
+                        "duplicate_or_empty": "重复或空内容",
+                        "single_fact_budget": "单条超限",
+                        "total_budget": "总预算截断",
+                    }
+                    reason_counts = Counter(
+                        str(item.get("reason") or "unknown") for item in dropped
+                    )
+                    drop_detail = "、".join(
+                        f"{reason_labels.get(reason, reason)}={count}"
+                        for reason, count in reason_counts.items()
+                    )
+                    drop_text = f"丢弃={len(dropped)}"
+                    if drop_detail:
+                        drop_text += f"（{drop_detail}）"
+                    logger.info(
+                        f"[{session_id}] 装配候选={packing_candidate_count}，"
+                        f"最终注入={len(recalled_memories)}，{drop_text}，"
+                        f"预算={packed.token_count}/{packed.token_budget}"
+                    )
+                    if dropped:
+                        logger.debug(f"[{session_id}] 注入丢弃明细: {dropped}")
                     if not recalled_memories:
                         logger.info(
                             f"[{session_id}] 相关候选均未通过注入预算，跳过长期记忆"
                         )
                         return
-                    logger.info(
-                        f"[{session_id}] 相关事实={len(recalled_memories) + len(packed.dropped)}，"
-                        f"最终注入事实={len(recalled_memories)}，"
-                        f"预算={packed.token_count}/{packed.token_budget}"
-                    )
 
                     # 格式化并注入记忆
                     memory_list = [
