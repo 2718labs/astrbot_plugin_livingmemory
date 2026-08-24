@@ -526,10 +526,16 @@ class MemoryRecall:
             retriever = getattr(self.memory_engine, "fact_retriever", None)
             score_facts = getattr(retriever, "score_facts_lexically", None)
             if not callable(get_facts_by_parent) or not callable(score_facts):
+                self._log_recent_block(
+                    session_id, document_id, parent_id, overview, 0, 0, "事实检索器不可用", query
+                )
                 return entries
 
             facts = await get_facts_by_parent(parent_id)
             if not facts:
+                self._log_recent_block(
+                    session_id, document_id, parent_id, overview, 0, 0, "父记忆无事实", query
+                )
                 return entries
 
             # 已在主召回中的 fact 不再重复入选（fact_id 精确去重，可靠）
@@ -545,6 +551,9 @@ class MemoryRecall:
                 if str(fact.get("fact_id") or "") not in recalled_ids
             ]
             if not candidates:
+                self._log_recent_block(
+                    session_id, document_id, parent_id, overview, 0, 0, "事实均已入选主召回", query
+                )
                 return entries
 
             texts = [str(fact.get("fact") or "").strip() for fact in candidates]
@@ -561,10 +570,12 @@ class MemoryRecall:
                 zip(candidates, scores), key=lambda item: item[1], reverse=True
             )
             picked = 0
+            reason = "词面命中"
             for fact, lexical in ranked:
                 if picked >= max_facts:
                     break
                 if lexical < relaxed_lexical:
+                    reason = f"词面不达标 (门槛 {relaxed_lexical:.2f})"
                     break
                 text = str(fact.get("fact") or "").strip()
                 if not text:
@@ -592,9 +603,15 @@ class MemoryRecall:
                 )
                 picked += 1
 
-            logger.info(
-                f"[{session_id}] recent 块: 父记忆={parent_id[:12]}..., "
-                f"摘要+{picked} 条沾边事实"
+            self._log_recent_block(
+                session_id,
+                document_id,
+                parent_id,
+                overview,
+                len(candidates),
+                picked,
+                reason,
+                query,
             )
             return entries
         except asyncio.CancelledError:
@@ -602,6 +619,26 @@ class MemoryRecall:
         except Exception as e:
             logger.debug(f"[{session_id}] recent 块构建失败（不影响主召回）: {e}")
             return []
+
+    @staticmethod
+    def _log_recent_block(
+        session_id: str,
+        document_id: int,
+        parent_id: str,
+        overview: str,
+        candidate_count: int,
+        picked_count: int,
+        reason: str,
+        query: str,
+    ) -> None:
+        """Log the recent block outcome with enough context for troubleshooting."""
+        preview = " ".join(str(query or "").split())[:24]
+        logger.info(
+            f"[{session_id}] recent 块: 父记忆 #{document_id} "
+            f"({parent_id[:12]}..., 摘要 {len(overview)} 字), "
+            f"候选 {candidate_count} 条 → 带 {picked_count} 条 [{reason}], "
+            f'查询="{preview}"'
+        )
 
     def _remove_injected_memories_from_context(
         self, req: ProviderRequest, session_id: str
