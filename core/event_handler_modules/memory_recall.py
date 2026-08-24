@@ -215,15 +215,15 @@ class MemoryRecall:
                             )
                         )
                         if recent_messages and len(recent_messages) > 1:
-                            # recent_messages 按 timestamp DESC 排列（最新在前）
-                            # 跳过索引0（当前消息），取后续消息作为扩展上下文
+                            # ConversationManager 返回时间升序，且当前用户消息已在
+                            # 本方法前半段写入，因此末项才是当前消息。
                             context_parts = []
                             max_age_seconds = self.config_manager.get(
                                 "recall_engine.recent_context_max_age_seconds", 7200
                             )
                             now = time.time()
                             skipped_by_age = 0
-                            for msg in reversed(recent_messages[1:]):
+                            for msg in recent_messages[:-1]:
                                 if max_age_seconds > 0:
                                     timestamp = self._message_timestamp_seconds(
                                         msg.get("timestamp")
@@ -474,7 +474,7 @@ class MemoryRecall:
                     "recall_engine.recent_block_max_facts", 2
                 )
             )
-            if window_hours <= 0 or max_facts <= 0:
+            if window_hours <= 0:
                 return []
 
             canonical_store = getattr(self.memory_engine, "canonical_store", None)
@@ -519,6 +519,19 @@ class MemoryRecall:
                     score_breakdown=None,
                 )
             ]
+
+            if max_facts <= 0:
+                self._log_recent_block(
+                    session_id,
+                    document_id,
+                    parent_id,
+                    overview,
+                    0,
+                    0,
+                    "配置为仅摘要",
+                    query,
+                )
+                return entries
 
             get_facts_by_parent = getattr(
                 canonical_store, "get_facts_by_parent", None

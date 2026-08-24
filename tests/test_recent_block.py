@@ -249,6 +249,36 @@ async def test_recent_block_respects_max_facts(conversation_manager):
 
 
 @pytest.mark.asyncio
+async def test_recent_block_zero_facts_still_injects_summary(conversation_manager):
+    """recent_block_max_facts=0 按配置契约只带摘要。"""
+    engine = _make_engine(
+        recalled=[],
+        parent=_make_parent(),
+        facts=[
+            {"fact_id": "fact-a", "fact": "考研安排在2026年12月", "importance": 0.7}
+        ],
+    )
+    handler = _make_handler(
+        engine, conversation_manager, recent_block_max_facts=0
+    )
+
+    event = _make_event()
+    req = _make_req()
+    with patch(
+        "astrbot_plugin_livingmemory.core.event_handler_modules.memory_recall.get_persona_id",
+        new=AsyncMock(return_value="persona_1"),
+    ):
+        await handler.handle_memory_recall(event, req)
+
+    injected = req.extra_user_content_parts[0].text
+    assert "最近对话摘要" in injected
+    assert "最近聊了考研的事" in injected
+    assert "考研安排在2026年12月" not in injected
+    engine.canonical_store.get_facts_by_parent.assert_not_awaited()
+    engine.fact_retriever.score_facts_lexically.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_recent_block_disabled_by_config(conversation_manager):
     """recent_block_enabled=false 时完全不构建 recent 块。"""
     engine = _make_engine(

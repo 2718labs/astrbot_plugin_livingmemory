@@ -1824,12 +1824,12 @@ async def test_context_expansion_enriches_query(
     cm_mock.get_session_metadata = AsyncMock(return_value=0)
     cm_mock.update_session_metadata = AsyncMock()
     cm_mock.invalidate_cache = AsyncMock()
-    # 模拟返回 3 条消息（最新在前）: [当前消息, bot 回复, 用户上条]
+    # ConversationManager 的真实返回顺序是时间升序，当前消息在末尾。
     cm_mock.get_context = AsyncMock(
         return_value=[
-            {"content": "当前用户消息", "timestamp": time.time()},
-            {"content": "Bot 的上一条回复", "timestamp": time.time() - 10},
             {"content": "用户之前说的事情", "timestamp": time.time() - 20},
+            {"content": "Bot 的上一条回复", "timestamp": time.time() - 10},
+            {"content": "当前用户消息", "timestamp": time.time()},
         ]
     )
 
@@ -1871,6 +1871,7 @@ async def test_context_expansion_enriches_query(
     call_kwargs = memory_engine.search_memories.await_args.kwargs
     assert "用户之前说的事情" in call_kwargs["query"]
     assert "Bot 的上一条回复" in call_kwargs["query"]
+    assert call_kwargs["query"].count("当前用户消息") == 1
     cm_mock.get_context.assert_awaited_once_with(
         event.unified_msg_origin,
         max_messages=5,
@@ -1894,10 +1895,10 @@ async def test_context_expansion_excludes_stale_and_undated_messages(
     cm_mock.invalidate_cache = AsyncMock()
     cm_mock.get_context = AsyncMock(
         return_value=[
-            {"content": "当前消息", "timestamp": now},
-            {"content": "一小时内", "timestamp": now - 1800},
             {"content": "三小时前", "timestamp": now - 10800},
             {"content": "没有时间"},
+            {"content": "一小时内", "timestamp": now - 1800},
+            {"content": "当前消息", "timestamp": now},
         ]
     )
 
@@ -1931,6 +1932,7 @@ async def test_context_expansion_excludes_stale_and_undated_messages(
     assert "一小时内" in query
     assert "三小时前" not in query
     assert "没有时间" not in query
+    assert query.count("当前消息") == 1
 
 
 @pytest.mark.asyncio
