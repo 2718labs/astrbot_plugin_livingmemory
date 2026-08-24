@@ -36,8 +36,8 @@ PROMPT_REGISTRY: dict[str, dict[str, Any]] = {
         "name_en": "Group Chat Memory Prompt",
         "description": "群聊场景下总结对话历史、提取结构化记忆的提示词模板",
         "description_en": "Template for summarizing group chat history and extracting structured memories",
-        "usage_note": "JSON 顶层输出 memories；模型只需生成 fact、topics、importance 及可选人格反应。对话内事实按消息时间在正文写入具体日期和自然时段。",
-        "usage_note_en": "JSON uses top-level memories; the model emits fact, topics, importance, and an optional persona reaction. Conversation facts include the message date and a natural time-of-day description in the fact text.",
+        "usage_note": "JSON 顶层输出 memories；模型生成 fact、topics、importance，并优先为有独立人格价值的事实配套 persona_reaction；纯客观、仅复述或需要勉强揣测时省略。对话内事实按消息时间在正文写入具体日期和自然时段。",
+        "usage_note_en": "JSON uses top-level memories; the model emits fact, topics, importance, and preferably a paired persona_reaction when it adds distinct persona value. It is omitted for purely objective facts, paraphrases, or forced guesses. Conversation facts include the message date and a natural time-of-day description in the fact text.",
         "category": "memory_processing",
         "file": "group_chat_prompt.txt",
         "variables": ["{conversation}", "{current_date}"],
@@ -48,8 +48,8 @@ PROMPT_REGISTRY: dict[str, dict[str, Any]] = {
         "name_en": "Private Chat Memory Prompt",
         "description": "私聊场景下总结对话历史、提取结构化记忆的提示词模板",
         "description_en": "Template for summarizing private chat history and extracting structured memories",
-        "usage_note": "JSON 顶层输出 memories；模型只需生成 fact、topics、importance 及可选人格反应。对话内事实按消息时间在正文写入具体日期和自然时段。",
-        "usage_note_en": "JSON uses top-level memories; the model emits fact, topics, importance, and an optional persona reaction. Conversation facts include the message date and a natural time-of-day description in the fact text.",
+        "usage_note": "JSON 顶层输出 memories；模型生成 fact、topics、importance，并优先为有独立人格价值的事实配套 persona_reaction；纯客观、仅复述或需要勉强揣测时省略。对话内事实按消息时间在正文写入具体日期和自然时段。",
+        "usage_note_en": "JSON uses top-level memories; the model emits fact, topics, importance, and preferably a paired persona_reaction when it adds distinct persona value. It is omitted for purely objective facts, paraphrases, or forced guesses. Conversation facts include the message date and a natural time-of-day description in the fact text.",
         "category": "memory_processing",
         "file": "private_chat_prompt.txt",
         "variables": ["{conversation}", "{current_date}"],
@@ -87,7 +87,8 @@ PROMPT_REGISTRY: dict[str, dict[str, Any]] = {
             "{base_prompt}\n\n"
             "## 当前人格\n"
             "{persona_prompt}\n\n"
-            "人格只用于理解 Bot 的身份以及可选的短句 persona_reaction，"
+            "人格用于理解 Bot 的身份，并优先为能体现当前人格态度、感受或关系意义的 fact "
+            "生成配套短句 persona_reaction；纯客观、只有复述或需要勉强揣测时省略。"
             "不得把人格设定本身写成新事实。"
         ),
     },

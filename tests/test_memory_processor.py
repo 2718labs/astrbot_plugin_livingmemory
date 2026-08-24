@@ -15,6 +15,7 @@ from astrbot_plugin_livingmemory.core.prompts.prompt_manager import (
     get_prompt_manager,
     init_prompt_manager,
 )
+from astrbot_plugin_livingmemory.core.utils.fact_packing import estimate_token_count
 
 
 class _DummyLLMProvider:
@@ -120,6 +121,7 @@ async def test_process_conversation_rejects_non_json_after_one_repair():
     assert llm.text_chat.await_count == 2
     repair_prompt = llm.text_chat.await_args_list[1].kwargs["prompt"]
     assert "每条 memory 只包含 key_facts" in repair_prompt
+    assert "已有 persona_reaction 必须原样保留" in repair_prompt
     assert "source_indexes" not in repair_prompt
 
 
@@ -187,6 +189,7 @@ async def test_fragmented_output_is_compacted_once_before_storage():
     assert "总 fact 最多 5 条" in repair_prompt
     assert "合并同一事件" in repair_prompt
     assert "不得新增事实" in repair_prompt
+    assert "已有 persona_reaction 必须跟随对应事实" in repair_prompt
 
 
 def test_original_five_fact_capacity_is_preserved_across_multiple_memories():
@@ -1155,11 +1158,10 @@ def test_s1_output_contract_rewrites_relative_time_inside_fact_text():
     assert "相对时间" in contract
     assert "改写为具体日期和自然时段" in contract
     assert "2026-08-24晚" in contract
-    assert "日期必须明确" in contract
-    assert "凌晨、早晨、上午、中午、下午、傍晚、晚上、深夜" in contract
-    assert "不限定固定词表" in contract
+    assert "明确日期＋自然时段" in contract
+    assert "时段可自然发挥" in contract
     assert "00:00-05:59" not in contract
-    assert "不要用消息发送时间冒充" in contract
+    assert "若事实明确指向其他时刻，则保留事件时间" in contract
     assert '"time"' not in contract
 
 
@@ -1184,49 +1186,55 @@ def test_s1_output_contract_keeps_bot_and_user_roles_distinct():
 def test_s1_output_contract_prevents_utterance_level_fragmentation():
     contract = MemoryProcessor._build_admission_output_contract(False)
 
-    assert "每条最多 5 个 fact" in contract
-    assert "整个窗口合计最多 5 个 fact" in contract
-    assert "同一事件、同一段关系变化或同一结论的过程话语必须合并" in contract
-    assert "不要为了覆盖每句话而拆成多条 fact" in contract
-    assert "允许包含同一事件的原因、发展与结果" in contract
+    assert "整个窗口最多输出 5 个 fact" in contract
+    assert "每条 memory 也不得超过 5 个" in contract
+    assert "同一事件、关系变化或结论的原因、发展和结果合成一个 fact" in contract
+    assert "不逐句拆分" in contract
 
 
 def test_s0_output_contract_keeps_agreements_as_ordinary_facts():
     contract = MemoryProcessor._build_admission_output_contract(False)
 
-    assert "以窗口结尾已经明确确认的状态为准" in contract
-    assert "被后续否认或纠正的中间说法不保存" in contract
-    assert "讨论形成约定时，只保存最终约定" in contract
-    assert "承诺、约定、边界和偏好按普通事实保存" in contract
+    assert "只保留结尾已确认的状态或最终约定" in contract
+    assert "不保存被后续否认、纠正的版本" in contract
+    assert "承诺或双方约定写清谁提出、是否接受" in contract
+    assert "边界和偏好写清属于谁" in contract
     assert "短期定时任务不由记忆系统代办" in contract
-    assert "未经对方确认的建议或旧约定，不得写入" in contract
+    assert "未经对方确认的建议或旧约定不写入" in contract
     assert "几周或几个月后的另一场对话" not in contract
     assert "单次玩笑、昵称或亲昵称呼不自动成为稳定偏好" in contract
     assert "单次重要冲突、修复或共同意义仍可保存" in contract
     assert "Bot 复述的旧记忆" in contract
 
 
-def test_s1_output_contract_teaches_nested_shape_without_requiring_reaction():
+def test_s1_output_contract_pairs_reaction_but_allows_objective_omission():
     contract = MemoryProcessor._build_admission_output_contract(False)
 
     assert "## 完整示例" in contract
     assert 'topic 候选：["项目进度","工作安排"]' in contract
     assert "2025-11-24交付" in contract
-    assert "Bot 的复述不是新的用户事实" in contract
+    assert "Bot 的复述不是新事实" in contract
 
     primary_example = contract.split("对应输出：", 1)[1].split(
-        "importance 表示", 1
+        "示例要点", 1
     )[0]
-    assert '"persona_reaction"' not in primary_example
-
-    optional_example = contract.split("需要记录人格反应时", 1)[1].split(
-        "## 提取规则", 1
-    )[0]
-    assert optional_example.index('"importance": 0.8,') < optional_example.index(
+    assert primary_example.index('"importance": 0.8,') < primary_example.index(
         '"persona_reaction"'
     )
-    assert '"emotion": "关心"' in optional_example
-    assert '"thought": "我想记得这件事对小林很重要"' in optional_example
+    assert '"emotion": "关心"' in primary_example
+    assert '"thought": "我想记得这件事对小林很重要"' in primary_example
+
+    objective_example = contract.split(
+        "纯技术事实可以省略 persona_reaction，例如：\n", 1
+    )[1].split("## 提取规则", 1)[0]
+    assert '"persona_reaction"' not in objective_example
+    assert "小林确认项目使用 Python 3.12" in objective_example
+    assert "而不是少数事实才有的点缀" not in contract
+    assert "persona_reaction 与单个 fact 配对" in contract
+    assert "真实且可长期保留的反应，优先写" in contract
+    assert "纯客观事实、复述 fact 或勉强揣测则省略" in contract
+    assert "thought 使用当前 Bot 的第一人称" in contract
+    assert "不补造事实" in contract
 
 
 def test_s1_output_contract_gives_fact_level_importance_axis():
@@ -1237,7 +1245,8 @@ def test_s1_output_contract_gives_fact_level_importance_axis():
     assert "0.7-0.8：明确计划、偏好" in contract
     assert "0.5-0.6：有帮助但影响有限的日常事实" in contract
     assert "0.3-0.4：次要、未来参考价值较低的事实" in contract
-    assert "0.0-0.2：纯测试或没有实质内容，通常不应输出" in contract
+    assert "0.0-0.2：仅有极弱参考价值的边缘事实" in contract
+    assert "纯测试或没有实质内容不应输出" in contract
 
 
 @pytest.mark.asyncio
@@ -1414,6 +1423,29 @@ async def test_s1_topic_candidate_is_reused_with_same_stable_id():
     }
 
 
+@pytest.mark.asyncio
+async def test_s1_new_topic_is_created_when_candidates_do_not_fit():
+    unit = _unit_from_json(
+        _memory_json("张三正在学习水彩画", topics=["绘画学习"])
+    )
+    processor = MemoryProcessor(
+        llm_provider=_DummyLLMProvider(
+            json.dumps({"memories": [unit]}, ensure_ascii=False)
+        ),
+        context=None,
+    )
+
+    result = await processor.process_conversation_result(
+        _make_messages(),
+        topic_candidates=[{"topic_id": "topic_existing", "name": "插件开发"}],
+    )
+
+    topic_ref = result.metadata["key_facts"][0]["topic_refs"][0]
+    assert topic_ref["name"] == "绘画学习"
+    assert topic_ref["decision"] == "created"
+    assert topic_ref["topic_id"] != "topic_existing"
+
+
 def test_s1_atom_projection_uses_each_fact_own_entities():
     # S4: atom generation is retired; the pure classifier helper still works
     # when explicitly enabled (component-level coverage only).
@@ -1538,3 +1570,7 @@ async def test_topic_candidates_prompt_hides_machine_ids():
 
     assert "topic_secret_id" not in captured["prompt"]
     assert '"插件开发"' in captured["prompt"]
+    assert "没有合适候选就写一个简短明确的新 topic" in captured["prompt"]
+    assert "系统会创建它" in captured["prompt"]
+    assert "不要强行套用近义候选" in captured["prompt"]
+    assert estimate_token_count(captured["prompt"]) <= 1500

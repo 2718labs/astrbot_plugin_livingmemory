@@ -130,8 +130,8 @@ class MemoryProcessor(MemoryProcessorParseMixin, MemoryProcessorBuildMixin):
         return (
             "## 输出格式\n"
             '- 只输出合法 JSON，结构必须是 {"memories":[{"key_facts":[...]}]}。\n'
-            '- 每个 fact 必须包含 "fact"、"topics"、"importance"；需要时可以增加 '
-            '"persona_reaction"，不要输出其他字段。\n'
+            '- 每个 fact 必须包含 "fact"、"topics"、"importance"；符合下方条件时增加 '
+            '"persona_reaction"；不要输出其他字段。\n'
             "\n"
             "## 完整示例\n"
             'topic 候选：["项目进度","工作安排"]\n'
@@ -151,56 +151,45 @@ class MemoryProcessor(MemoryProcessorParseMixin, MemoryProcessorBuildMixin):
             "        {\n"
             '          "fact": "2025-11-19傍晚，小林确认项目最终于2025-11-24交付，并表示对此有些紧张。",\n'
             '          "topics": ["项目进度"],\n'
-            '          "importance": 0.8\n'
+            '          "importance": 0.8,\n'
+            '          "persona_reaction": {\n'
+            '            "emotion": "关心",\n'
+            '            "thought": "我想记得这件事对小林很重要"\n'
+            "          }\n"
             "        }\n"
             "      ]\n"
             "    }\n"
             "  ]\n"
             "}\n"
             "\n"
-            "这个示例中：\n"
-            "- “周五”是被纠正的旧计划，不作为当前事实保存。\n"
-            "- “下周一”按消息时间换算为 2025-11-24。\n"
-            "- 对话发生时间写为 2025-11-19傍晚。\n"
-            "- Bot 的复述不是新的用户事实。\n"
-            "- 已有的“项目进度”与事实含义一致，因此直接复用。\n"
-            "- 同一事件的确认、情绪和纠正合并为一条 fact。\n"
+            "示例要点：丢弃已被纠正的“周五”，将“下周一”换算为 2025-11-24；"
+            "按消息时间写“2025-11-19傍晚”，复用候选“项目进度”，并把同一事件合成一个 fact。"
+            "Bot 的复述不是新事实；助手的明确关心作为人格反应保留。\n"
             "\n"
-            "importance 表示该 fact 对未来交流的参考价值，具体评分标准见下文。\n"
-            "persona_reaction 是 key_facts 中单个事实对象的可选字段，只在当前人格对该事实有值得长期保留的反应时使用。\n"
-            "需要记录人格反应时，key_facts 中对应的事实对象可以写成：\n"
+            "persona_reaction 与单个 fact 配对，只包含 emotion 和 thought。若当前人格对关系变化、"
+            "明确情绪、冲突修复、重要经历、承诺或边界形成了真实且可长期保留的反应，优先写；"
+            "纯客观事实、复述 fact 或勉强揣测则省略。thought 使用当前 Bot 的第一人称，保持简短，不补造事实。\n"
+            "\n"
+            "纯技术事实可以省略 persona_reaction，例如：\n"
             "{\n"
-            '  "fact": "2025-11-19傍晚，小林确认项目最终于2025-11-24交付，并表示对此有些紧张。",\n'
-            '  "topics": ["项目进度"],\n'
-            '  "importance": 0.8,\n'
-            '  "persona_reaction": {\n'
-            '    "emotion": "关心",\n'
-            '    "thought": "我想记得这件事对小林很重要"\n'
-            "  }\n"
+            '  "fact": "2025-11-19傍晚，小林确认项目使用 Python 3.12。",\n'
+            '  "topics": ["项目技术"],\n'
+            '  "importance": 0.5\n'
             "}\n"
             "\n"
             "## 提取规则\n"
-            "- 最多输出 5 条 memory，每条最多 5 个 fact，整个窗口合计最多 5 个 fact。\n"
+            "- 整个窗口最多输出 5 个 fact，每条 memory 也不得超过 5 个。\n"
             "- 只输出值得长期接续的事实；寒暄、填充、临时报错、无后果的即时状态和重复内容直接不输出。\n"
-            "- 先读完整窗口。对于同一件事，以窗口结尾已经明确确认的状态为准；被后续否认或纠正的中间说法不保存。"
-            "讨论形成约定时，只保存最终约定。\n"
-            f"- 只提取本窗口新确认的信息。Bot 复述的旧记忆、人格设定、单方面推测，以及未经{peer}确认的建议或旧约定，不得写入。\n"
-            "- 承诺、约定、边界和偏好按普通事实保存，写清谁提出、是否接受；短期定时任务不由记忆系统代办。\n"
+            "- 读完整窗口；同一件事只保留结尾已确认的状态或最终约定，不保存被后续否认、纠正的版本。\n"
+            f"- 只提取本窗口新确认的信息；Bot 复述的旧记忆、人格设定、单方面推测及未经{peer}确认的建议或旧约定不写入。\n"
+            "- 承诺或双方约定写清谁提出、是否接受；边界和偏好写清属于谁。短期定时任务不由记忆系统代办。\n"
             "- 单次玩笑、昵称或亲昵称呼不自动成为稳定偏好；单次重要冲突、修复或共同意义仍可保存。\n"
-            "- 一条 memory 只围绕一个中心；同一事件、同一段关系变化或同一结论的过程话语必须合并，"
-            "不要为了覆盖每句话而拆成多条 fact。\n"
-            "- 每条 fact 记录一个以后需要整体接续的事实或事件，允许包含同一事件的原因、发展与结果；"
-            "topics 只属于该 fact。\n"
+            "- 一条 memory 只围绕一个中心；同一事件、关系变化或结论的原因、发展和结果合成一个 fact，不逐句拆分。topics 只属于该 fact。\n"
             f"- fact 必须中性、自包含，并使用{peer}的具体昵称。描述当前 Bot 自己时只用第一人称“我”；[Bot: ...] 不是用户。\n"
             "\n"
             "## 时间写法\n"
-            "- 每条消息都带发送时间。fact 描述本窗口中发生、说出、确认或形成的事情时，"
-            "按承载该事实的消息时间在正文写“具体日期＋自然时段”。日期必须明确；时段根据"
-            "消息时间自然表达，例如“凌晨、早晨、上午、中午、下午、傍晚、晚上、深夜”，"
-            "不限定固定词表，例如“2026-08-24晚”。\n"
-            "- fact 中的“今天、昨天、明天、下周”等相对时间，也按说出该时间的消息时间"
-            "改写为具体日期和自然时段；若事实明确描述其他时刻发生的事件，保留该事件时间，"
-            "不要用消息发送时间冒充。不要输出 time 字段。\n"
+            "- 本窗口事实按承载它的消息时间写“明确日期＋自然时段”（如“2026-08-24晚”）；"
+            "相对时间也按该消息改写为具体日期和自然时段。时段可自然发挥。若事实明确指向其他时刻，则保留事件时间。不要输出 time 字段。\n"
             "\n"
             "## importance 评分\n"
             "先判断事实是否值得保存，再按该 fact 对未来交流的参考价值评分：\n"
@@ -208,7 +197,7 @@ class MemoryProcessor(MemoryProcessorParseMixin, MemoryProcessorBuildMixin):
             "- 0.7-0.8：明确计划、偏好、具体要求、重要个人信息。\n"
             "- 0.5-0.6：有帮助但影响有限的日常事实。\n"
             "- 0.3-0.4：次要、未来参考价值较低的事实。\n"
-            "- 0.0-0.2：纯测试或没有实质内容，通常不应输出。\n"
+            "- 0.0-0.2：仅有极弱参考价值的边缘事实；纯测试或没有实质内容不应输出。\n"
             "\n"
             '没有值得保存的事实时，输出 {"memories":[]}。'
         )
@@ -354,7 +343,8 @@ class MemoryProcessor(MemoryProcessorParseMixin, MemoryProcessorBuildMixin):
             f"{base_prompt}\n\n"
             f"## 当前人格\n"
             f"{persona_prompt}\n\n"
-            "人格只用于理解 Bot 的身份以及可选的短句 persona_reaction，"
+            "人格用于理解 Bot 的身份，并优先为能体现当前人格态度、感受或关系意义的 fact "
+            "生成配套短句 persona_reaction；纯客观、只有复述或需要勉强揣测时省略。"
             "不得把人格设定本身写成新事实。"
         )
 
@@ -466,7 +456,9 @@ class MemoryProcessor(MemoryProcessorParseMixin, MemoryProcessorBuildMixin):
                 "- 必须优先保留明确事实、重要冲突、关系变化、承诺、约定、边界、偏好、"
                 "后续纠正和最终结论；可删除仅用于铺垫的动作或重复说法。\n"
                 "- 合并后的 importance 取被合并事实中的最高值；topics 去重。\n"
-                "- 每条 key_fact 必须包含 fact、topics、importance；persona_reaction 可选。\n"
+                "- 每条 key_fact 必须包含 fact、topics、importance；字段 persona_reaction 本身仍可选。\n"
+                "- 已有 persona_reaction 必须跟随对应事实；合并时可把已有反应收束为一个，"
+                "不得凭空新增或丢失。\n"
                 "只输出 JSON，不要解释。\n\n"
                 f"原始回答：\n{response_text}"
             )
@@ -478,7 +470,8 @@ class MemoryProcessor(MemoryProcessorParseMixin, MemoryProcessorBuildMixin):
             "不得新增、删除、合并、拆分或改写任何 fact，也不得改变 importance。\n"
             "要求：\n"
             '- 顶层只能包含数组 "memories"；每条 memory 只包含 key_facts。\n'
-            '- 每条 key_fact 必须包含 fact、topics、importance；persona_reaction 可选。\n'
+            '- 每条 key_fact 必须包含 fact、topics、importance；字段 persona_reaction 本身仍可选。\n'
+            "- 已有 persona_reaction 必须原样保留，不得补造新的反应。\n"
             "- 删除其他字段；不得补造缺失内容。\n"
             "如果原回答缺少某个事实判断所需的信息，不要猜测或补造；保留缺失，"
             "让后续校验拒绝。只输出 JSON，不要解释。\n\n"
@@ -558,7 +551,8 @@ class MemoryProcessor(MemoryProcessorParseMixin, MemoryProcessorBuildMixin):
         prompt += (
             "\n\n## 当前 scope 可复用的 topic 候选\n"
             f"{candidates_payload}\n"
-            "只有确认是同一概念时才复用候选名称；不要做近义词合并。"
+            "同一概念原样复用候选名称；没有合适候选就写一个简短明确的新 topic，系统会创建它；"
+            "不要强行套用近义候选。"
         )
         prompt = f"{prompt}\n\n{self._build_admission_output_contract(is_group_chat)}"
 

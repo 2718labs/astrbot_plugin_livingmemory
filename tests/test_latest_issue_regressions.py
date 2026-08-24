@@ -112,5 +112,7 @@ def test_persona_system_prompt_fallback_does_not_repeat_fact_rules() -> None:
 
     assert "## 当前人格" in prompt
     assert "persona_reaction" in prompt
+    assert "优先为能体现当前人格态度、感受或关系意义的 fact" in prompt
+    assert "纯客观、只有复述或需要勉强揣测时省略" in prompt
     assert "source_indexes" not in prompt
     assert "承诺、约定" not in prompt
