@@ -50,7 +50,7 @@ def _memory_json(
             "topics": list(topics or []),
             "importance": fact_importance,
         }
-        # Old custom prompts remain readable, including their skip decision.
+        # Used only to build an explicitly invalid legacy payload in format tests.
         if action == "skip":
             candidate["action"] = "skip"
         key_facts.append(candidate)
@@ -238,22 +238,35 @@ async def test_fragmented_output_is_invalid_when_compaction_still_exceeds_limit(
 
 
 @pytest.mark.asyncio
-async def test_all_skipped_and_low_importance_facts_make_valid_skip():
+@pytest.mark.parametrize("importance", [0.0, 0.2])
+async def test_importance_is_metadata_not_a_storage_threshold(importance):
     llm = _DummyLLMProvider(
         _memory_json(
-            ("张三刚才说有点饿", "skip", 0.4),
-            ("张三发了一个表情", "store", 0.2),
-            summary="",
-            importance=0.4,
+            ("张三发了一个表情", "store", importance),
+            topics=["闲聊"],
         )
     )
     processor = MemoryProcessor(llm_provider=llm, context=None)
 
     result = await processor.process_conversation_result(_make_messages())
 
-    assert result.status == "skip"
-    assert result.stored_fact_count == 0
-    assert result.skipped_fact_count == 2
+    assert result.status == "store"
+    assert result.stored_fact_count == 1
+    assert result.importance == importance
+    assert llm.text_chat.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_legacy_action_skip_is_not_part_of_current_contract():
+    legacy = _memory_json(("张三刚才说有点饿", "skip", 0.4))
+    llm = _DummyLLMProvider([legacy, legacy])
+    processor = MemoryProcessor(llm_provider=llm, context=None)
+
+    result = await processor.process_conversation_result(_make_messages())
+
+    assert result.status == "invalid"
+    assert "不得包含字段: action" in (result.error or "")
+    assert llm.text_chat.await_count == 2
 
 
 def test_strict_format_gate_accepts_complete_fence_and_rejects_missing_importance():
@@ -469,13 +482,73 @@ async def test_empty_candidate_list_is_a_valid_skip():
 
     assert result.status == "skip"
     assert result.stored_fact_count == 0
+    assert llm.text_chat.await_count == 1
 
 
 @pytest.mark.asyncio
-async def test_generic_store_fact_is_invalid_instead_of_written():
+async def test_zero_character_llm_response_retries_and_can_recover(monkeypatch):
+    llm = _DummyLLMProvider(
+        [
+            "",
+            _memory_json(
+                ("张三明确要求以后不要反复解释这个称呼", "store", 0.8),
+                topics=["互动边界"],
+            ),
+        ]
+    )
+    processor = MemoryProcessor(llm_provider=llm, context=None)
+    sleep = AsyncMock()
+    monkeypatch.setattr(
+        "astrbot_plugin_livingmemory.core.processors.memory_processor.asyncio.sleep",
+        sleep,
+    )
+
+    result = await processor.process_conversation_result(
+        messages=_make_messages(),
+        is_group_chat=False,
+        persona_id=None,
+    )
+
+    assert result.status == "store"
+    assert result.stored_fact_count == 1
+    assert llm.text_chat.await_count == 2
+    assert llm.text_chat.await_args_list[0].kwargs == llm.text_chat.await_args_list[1].kwargs
+    sleep.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_zero_character_llm_response_raises_after_retry_limit(monkeypatch):
+    llm = _DummyLLMProvider(["", "", ""])
+    processor = MemoryProcessor(llm_provider=llm, context=None)
+    sleep = AsyncMock()
+    monkeypatch.setattr(
+        "astrbot_plugin_livingmemory.core.processors.memory_processor.asyncio.sleep",
+        sleep,
+    )
+
+    with pytest.raises(RuntimeError, match="0 字符"):
+        await processor.process_conversation_result(
+            messages=_make_messages(),
+            is_group_chat=False,
+            persona_id=None,
+        )
+
+    assert llm.text_chat.await_count == 3
+    assert sleep.await_count == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "fact",
+    [
+        "某用户说了话",
+        "后来张三决定周三参加考试",
+    ],
+)
+async def test_hardcoded_subject_phrases_do_not_reject_candidate(fact):
     llm = _DummyLLMProvider(
         _memory_json(
-            ("某用户说了话", "store", 0.5),
+            (fact, "store", 0.5),
             topics=["闲聊"],
             importance=0.5,
         )
@@ -488,8 +561,8 @@ async def test_generic_store_fact_is_invalid_instead_of_written():
         persona_id=None,
     )
 
-    assert result.status == "invalid"
-    assert result.content == ""
+    assert result.status == "store"
+    assert result.metadata["key_facts"][0]["fact"] == fact
 
 
 def test_validate_summary_quality_directly():

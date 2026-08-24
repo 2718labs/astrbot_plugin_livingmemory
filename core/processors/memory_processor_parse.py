@@ -110,10 +110,17 @@ class MemoryProcessorParseMixin:
         label = f"memories[{unit_index}].key_facts[{fact_index}]"
         if not isinstance(item, dict):
             raise InvalidMemoryOutputError(f"{label} 必须是 object")
-        missing = {"fact", "topics", "importance"}.difference(item)
+        required = {"fact", "topics", "importance"}
+        allowed = required | {"persona_reaction"}
+        missing = required.difference(item)
         if missing:
             raise InvalidMemoryOutputError(
                 f"{label} 缺少字段: {', '.join(sorted(missing))}"
+            )
+        extras = sorted(set(item).difference(allowed))
+        if extras:
+            raise InvalidMemoryOutputError(
+                f"{label} 不得包含字段: {', '.join(extras)}"
             )
 
         fact = item["fact"]
@@ -129,14 +136,11 @@ class MemoryProcessorParseMixin:
             item.get("persona_reaction"), f"{label}.persona_reaction"
         )
 
-        # Accept and discard fields emitted by an older custom prompt. The
-        # canonical contract keeps only values the model must actually judge.
         return {
             "fact": fact.strip(),
             "topics": topics,
             "importance": importance,
             "persona_reaction": reaction,
-            "_legacy_skip": item.get("action") == "skip",
         }
 
     @staticmethod
@@ -186,42 +190,15 @@ class MemoryProcessorParseMixin:
             raise InvalidMemoryOutputError(f"{field} 必须在 0.0 到 1.0 之间")
         return importance
 
-    def _prepare_admitted_units(
+    def _prepare_storage_units(
         self, structured_data: dict[str, Any]
     ) -> tuple[list[tuple[int, dict[str, Any]]], int, int]:
-        """Filter candidate facts while retaining their single-centre unit."""
+        """Build single-centre storage units from validated candidate facts."""
         admitted_units: list[tuple[int, dict[str, Any]]] = []
         stored_count = 0
-        skipped_count = 0
-        invalid_terms = {
-            "对话记录",
-            "聊天记录",
-            "无实质内容",
-            "没有重要内容",
-        }
-        generic_subjects = (
-            "某用户",
-            "某人",
-            "有人",
-            "用户说",
-            "对方说",
-            "群成员说",
-        )
 
         for unit_index, unit in enumerate(structured_data["memories"]):
-            stored_facts: list[dict[str, Any]] = []
-            for candidate in unit["key_facts"]:
-                if candidate.pop("_legacy_skip", False) or candidate["importance"] <= 0.2:
-                    skipped_count += 1
-                    continue
-                fact = candidate["fact"]
-                if fact in invalid_terms or any(
-                    term in fact for term in generic_subjects
-                ):
-                    raise InvalidMemoryOutputError(f"store fact 内容不合格: {fact}")
-                if fact.startswith(("她", "他", "他们", "她们", "那个", "这件事", "后来")):
-                    raise InvalidMemoryOutputError(f"store fact 缺少独立主体: {fact}")
-                stored_facts.append(candidate)
+            stored_facts = list(unit["key_facts"])
             if not stored_facts:
                 continue
             admitted = {
@@ -238,7 +215,7 @@ class MemoryProcessorParseMixin:
             admitted_units.append((unit_index, admitted))
             stored_count += len(stored_facts)
 
-        return admitted_units, stored_count, skipped_count
+        return admitted_units, stored_count, 0
 
     def _normalize_parsed_data(self, data: dict, is_group_chat: bool) -> dict[str, Any]:
         """

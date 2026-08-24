@@ -313,7 +313,14 @@ class MemoryProcessor(MemoryProcessorParseMixin, MemoryProcessorBuildMixin):
                 response = await provider.text_chat(
                     prompt=prompt, system_prompt=system_prompt
                 )
-                return response.completion_text
+                completion_text = response.completion_text
+                if completion_text is None:
+                    completion_text = ""
+                if not isinstance(completion_text, str):
+                    completion_text = str(completion_text)
+                if len(completion_text) == 0:
+                    raise RuntimeError("LLM 返回空响应（0 字符）")
+                return completion_text
             except Exception as e:
                 last_error = e
                 if attempt == max_retries - 1:
@@ -403,7 +410,7 @@ class MemoryProcessor(MemoryProcessorParseMixin, MemoryProcessorBuildMixin):
             "不得新增、删除、合并、拆分或改写任何 fact，也不得改变 importance。\n"
             "要求：\n"
             '- 顶层只能包含数组 "memories"；每条 memory 只包含 key_facts。\n'
-            '- 每条 key_fact 必须包含 fact、topics、importance；time 和 persona_reaction 可选。\n'
+            '- 每条 key_fact 必须包含 fact、topics、importance；persona_reaction 可选。\n'
             "- 删除其他字段；不得补造缺失内容。\n"
             "如果原回答缺少某个事实判断所需的信息，不要猜测或补造；保留缺失，"
             "让后续校验拒绝。只输出 JSON，不要解释。\n\n"
@@ -411,6 +418,27 @@ class MemoryProcessor(MemoryProcessorParseMixin, MemoryProcessorBuildMixin):
         )
         system_prompt = "你只负责修复 JSON 表达形式，不负责重新总结或判断记忆价值。"
         return await self._call_llm_with_retry(prompt, system_prompt)
+
+    async def _parse_response_with_single_repair(
+        self, response_text: str, is_group_chat: bool
+    ) -> dict[str, Any]:
+        """Parse one extraction response, allowing one structure-only repair."""
+        try:
+            return self._parse_llm_response(response_text, is_group_chat)
+        except InvalidMemoryOutputError as first_error:
+            logger.warning(
+                f"[MemoryProcessor] 原始回答格式不合格，尝试一次格式修复: {first_error}"
+            )
+            repaired_text = await self._repair_llm_response_format(
+                response_text, is_group_chat, first_error
+            )
+            try:
+                return self._parse_llm_response(repaired_text, is_group_chat)
+            except InvalidMemoryOutputError as second_error:
+                logger.warning(
+                    f"[MemoryProcessor] 格式修复后仍不合格: {second_error}"
+                )
+                raise second_error from first_error
 
     async def process_conversation_result(
         self,
@@ -493,33 +521,19 @@ class MemoryProcessor(MemoryProcessorParseMixin, MemoryProcessorBuildMixin):
 
             # 4. 原始回答先过严格格式门；失败时只请求一次格式修复。
             try:
-                structured_data = self._parse_llm_response(
+                structured_data = await self._parse_response_with_single_repair(
                     llm_response_text, is_group_chat
                 )
-            except InvalidMemoryOutputError as first_error:
-                logger.warning(
-                    f"[MemoryProcessor] 原始回答格式不合格，尝试一次格式修复: {first_error}"
+            except InvalidMemoryOutputError as parse_error:
+                return MemoryProcessingResult(
+                    status="invalid",
+                    error=str(parse_error),
                 )
-                repaired_text = await self._repair_llm_response_format(
-                    llm_response_text, is_group_chat, first_error
-                )
-                try:
-                    structured_data = self._parse_llm_response(
-                        repaired_text, is_group_chat
-                    )
-                except InvalidMemoryOutputError as second_error:
-                    logger.warning(
-                        f"[MemoryProcessor] 格式修复后仍不合格: {second_error}"
-                    )
-                    return MemoryProcessingResult(
-                        status="invalid",
-                        error=str(second_error),
-                    )
 
-            # 4.5 逐 fact 准入，并保留每个单中心 memory unit。
+            # 4.5 将已校验的 fact 组装为单中心 memory unit。
             try:
                 admitted_units, stored_count, skipped_count = (
-                    self._prepare_admitted_units(structured_data)
+                    self._prepare_storage_units(structured_data)
                 )
             except InvalidMemoryOutputError as quality_error:
                 logger.warning(f"[MemoryProcessor] 候选事实不合格: {quality_error}")
@@ -530,7 +544,7 @@ class MemoryProcessor(MemoryProcessorParseMixin, MemoryProcessorBuildMixin):
 
             if not admitted_units:
                 logger.info(
-                    f"[MemoryProcessor] 本窗口没有获准保存的事实，跳过 {skipped_count} 条候选"
+                    "[MemoryProcessor] LLM 明确返回空候选，本窗口正常跳过"
                 )
                 return MemoryProcessingResult(
                     status="skip",
