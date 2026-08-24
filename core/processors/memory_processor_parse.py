@@ -111,7 +111,14 @@ class MemoryProcessorParseMixin:
         if not isinstance(item, dict):
             raise InvalidMemoryOutputError(f"{label} 必须是 object")
         required = {"fact", "topics", "importance"}
-        allowed = required | {"persona_reaction"}
+        # Saved custom prompts may still emit these retired projection fields.
+        # They carry no authority in v3 and are deliberately discarded below.
+        allowed = required | {
+            "persona_reaction",
+            "time",
+            "source",
+            "source_indexes",
+        }
         missing = required.difference(item)
         if missing:
             raise InvalidMemoryOutputError(

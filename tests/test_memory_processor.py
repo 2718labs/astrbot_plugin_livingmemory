@@ -288,7 +288,6 @@ def test_strict_format_gate_accepts_complete_fence_and_rejects_missing_importanc
             json.dumps(conflicting, ensure_ascii=False), False
         )
 
-
 class TestPromptLiveReload:
     """验证 WebUI 保存后 MemoryProcessor 立即使用新 prompt（不依赖实例字段缓存）。"""
 
@@ -343,11 +342,11 @@ async def test_persona_prompt_is_included_when_available():
 
 
 @pytest.mark.asyncio
-async def test_mixed_fact_admission_excludes_skipped_text_from_storage():
+async def test_current_contract_stores_every_returned_candidate_fact():
     llm = _DummyLLMProvider(
         _memory_json(
             ("张三明天下午三点开会", "store", 0.8),
-            ("张三刚才随口说有点饿", "skip", 0.3),
+            ("张三刚才说有点饿", "store", 0.3),
             summary="这段原始总结不应直接进入存储",
             topics=["会议提醒"],
         )
@@ -361,13 +360,13 @@ async def test_mixed_fact_admission_excludes_skipped_text_from_storage():
     )
 
     assert result.status == "store"
-    assert result.stored_fact_count == 1
-    assert result.skipped_fact_count == 1
-    assert result.content == "张三明天下午三点开会"
+    assert result.stored_fact_count == 2
+    assert result.skipped_fact_count == 0
+    assert result.content == "张三明天下午三点开会；张三刚才说有点饿"
     assert [item["fact"] for item in result.metadata["key_facts"]] == [
-        "张三明天下午三点开会"
+        "张三明天下午三点开会",
+        "张三刚才说有点饿",
     ]
-    assert "随口说有点饿" not in json.dumps(result.metadata, ensure_ascii=False)
     assert "这段原始总结" not in json.dumps(result.metadata, ensure_ascii=False)
 
 
@@ -921,7 +920,7 @@ async def test_process_group_chat_long_content():
 
 
 @pytest.mark.asyncio
-async def test_process_group_chat_generic_store_fact_is_invalid():
+async def test_process_group_chat_generic_fact_is_not_code_filtered():
     llm = _DummyLLMProvider(
         _memory_json(
             ("有人说话了", "store", 0.4),
@@ -938,7 +937,8 @@ async def test_process_group_chat_generic_store_fact_is_invalid():
         persona_id=None,
     )
 
-    assert result.status == "invalid"
+    assert result.status == "store"
+    assert result.metadata["key_facts"][0]["fact"] == "有人说话了"
 
 
 def test_format_conversation_sanitizes_multimodal_private_message():
