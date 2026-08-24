@@ -22,6 +22,56 @@ function factText(value) {
   return String(value == null ? "" : value);
 }
 
+export function renderFactCard(value) {
+  let html = '<article class="memory-fact-card">';
+  html += '<div class="memory-fact-text">' + esc(factText(value)) + '</div>';
+
+  if (value && typeof value === "object") {
+    const reaction = value.persona_reaction || {};
+    const reactionText = [reaction.emotion, reaction.thought].filter(Boolean).join("；");
+    if (reactionText) {
+      html += '<div class="memory-fact-reaction">' + esc(
+        window.t("detail.personaReaction", reactionText)
+      ) + '</div>';
+    }
+
+    const topics = Array.isArray(value.topics) ? value.topics.filter(Boolean) : [];
+    const participants = Array.isArray(value.participants)
+      ? value.participants.filter(Boolean)
+      : [];
+    if (topics.length || participants.length) {
+      html += '<div class="memory-fact-tags">';
+      topics.forEach(topic => {
+        html += '<span class="memory-fact-chip memory-fact-chip-topic">' + esc(
+          window.t("detail.factTopics", String(topic))
+        ) + '</span>';
+      });
+      participants.forEach(participant => {
+        html += '<span class="memory-fact-chip memory-fact-chip-person">' + esc(
+          window.t("detail.factParticipants", String(participant))
+        ) + '</span>';
+      });
+      html += '</div>';
+    }
+
+    const lifecycle = value.lifecycle || {};
+    const lifecycleText = window.t(
+      "detail.factLifecycle",
+      String(value.fact_id || "--"),
+      String(lifecycle.status || "active"),
+      Number(lifecycle.retrieval_count || 0),
+      Number(lifecycle.injection_count || 0)
+    );
+    html += '<details class="memory-fact-technical">';
+    html += '<summary>' + esc(window.t("detail.factTechnical")) + '</summary>';
+    html += '<div class="memory-fact-lifecycle">' + esc(lifecycleText) + '</div>';
+    html += '</details>';
+  }
+
+  html += '</article>';
+  return html;
+}
+
 export class PeekPanel {
   constructor(state, apiClient) {
     this.state = state;
@@ -209,34 +259,9 @@ export class PeekPanel {
 
     // 关键事实
     if (keyFacts.length) {
-      html += '<div class="peek-section"><div class="peek-section-title">' + window.t("detail.keyFacts") + '</div><div class="peek-fact-list">';
+      html += '<div class="peek-section"><div class="peek-section-title">' + window.t("detail.keyFacts") + '</div><div class="memory-fact-list">';
       keyFacts.forEach(f => {
-        html += '<div class="peek-fact-item"><div>' + esc(factText(f)) + '</div>';
-        if (f && typeof f === "object") {
-          const lifecycle = f.lifecycle || {};
-          const reaction = f.persona_reaction || {};
-          const reactionText = [reaction.emotion, reaction.thought].filter(Boolean).join("；");
-          html += '<div class="text-secondary" style="font-size:11px;margin-top:4px">' + esc(window.t(
-            "detail.factLifecycle",
-            String(f.fact_id || "--"),
-            String(lifecycle.status || "active"),
-            Number(lifecycle.retrieval_count || 0),
-            Number(lifecycle.injection_count || 0)
-          )) + '</div>';
-          if (reactionText) {
-            html += '<div class="text-secondary" style="font-size:11px;margin-top:3px">' + esc(window.t("detail.personaReaction", reactionText)) + '</div>';
-          }
-          const factTopics = Array.isArray(f.topics) ? f.topics.join("、") : "";
-          const participants = Array.isArray(f.participants) ? f.participants.join("、") : "";
-          const evidence = [
-            factTopics ? window.t("detail.factTopics", factTopics) : "",
-            participants ? window.t("detail.factParticipants", participants) : ""
-          ].filter(Boolean).join(" · ");
-          if (evidence) {
-            html += '<div class="text-secondary" style="font-size:11px;margin-top:3px">' + esc(evidence) + '</div>';
-          }
-        }
-        html += '</div>';
+        html += renderFactCard(f);
       });
       html += '</div></div>';
     }

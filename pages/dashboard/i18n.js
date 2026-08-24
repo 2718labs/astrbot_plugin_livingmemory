@@ -490,6 +490,7 @@
     "detail.canonicalEditHint":{ zh: "事实正文和主题由 canonical fact 契约管理；此处只调整状态、类型和重要度。", en: "Fact text and topics are governed by the canonical fact contract; only status, type, and importance are editable here.", ru: "Текст и темы управляются контрактом canonical fact; здесь меняются только статус, тип и важность." },
     "detail.factTopics":  { zh: "主题 {0}", en: "Topics {0}", ru: "Темы {0}" },
     "detail.factParticipants":{ zh: "人物 {0}", en: "Participants {0}", ru: "Участники {0}" },
+    "detail.factTechnical":{ zh: "技术信息", en: "Technical details", ru: "Технические данные" },
     "detail.noGraphData": { zh: "暂无图谱数据", en: "No graph data", ru: "Нет данных графа" },
     "detail.noChanges":   { zh: "没有检测到修改", en: "No changes", ru: "Нет изменений" },
     "detail.contentRequired":{ zh: "记忆内容不能为空", en: "Memory content cannot be empty", ru: "Содержимое памяти не может быть пустым" },

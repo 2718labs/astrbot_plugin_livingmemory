@@ -1038,6 +1038,107 @@ body {
   background: var(--text-tertiary);
 }
 
+.memory-fact-list {
+  display: grid;
+  gap: var(--space-4);
+}
+
+.memory-fact-card {
+  padding: var(--space-4) var(--space-5);
+  background: color-mix(in srgb, var(--bg-card) 88%, var(--bg-hover));
+  border: 1px solid var(--border-light);
+  border-left: 3px solid var(--cyan, var(--accent));
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-xs);
+}
+
+.memory-fact-text {
+  color: var(--text-primary);
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 1.7;
+  overflow-wrap: anywhere;
+}
+
+.memory-fact-reaction {
+  padding: 10px 12px;
+  margin-top: var(--space-3);
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.6;
+  background: color-mix(in srgb, var(--accent-light) 54%, transparent);
+  border-left: 2px solid var(--accent);
+}
+
+.memory-fact-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: var(--space-3);
+}
+
+.memory-fact-chip {
+  max-width: 100%;
+  padding: 3px 8px;
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-full);
+  font-size: 11px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.memory-fact-chip-topic {
+  color: var(--node-topic);
+  background: var(--signal-soft, var(--bg-hover));
+}
+
+.memory-fact-chip-person {
+  color: var(--node-person);
+  background: color-mix(in srgb, var(--accent-light) 72%, var(--bg-card));
+}
+
+.memory-fact-technical {
+  padding-top: var(--space-2);
+  margin-top: var(--space-3);
+  border-top: 1px solid var(--border-light);
+}
+
+.memory-fact-technical summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  color: var(--text-tertiary);
+  font-size: 11px;
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+}
+
+.memory-fact-technical summary::-webkit-details-marker {
+  display: none;
+}
+
+.memory-fact-technical summary::after {
+  content: '+';
+  color: var(--text-secondary);
+  font-size: 15px;
+  font-weight: 400;
+  line-height: 1;
+}
+
+.memory-fact-technical[open] summary::after {
+  content: '−';
+}
+
+.memory-fact-lifecycle {
+  padding-top: var(--space-2);
+  color: var(--text-secondary);
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 10px;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+
 /* ── Memory Detail View ──────────────────────────────────── */
 .memory-detail-header {
   display: flex;
