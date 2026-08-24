@@ -43,6 +43,37 @@ def participant_id(scope: str, name: str) -> str:
     return f"person_{_stable_hash({'scope': scope, 'name': concept_key(name)})}"
 
 
+def build_participant_identity(
+    *,
+    platform: str,
+    sender_id: str,
+    display_name: str | None = None,
+    aliases: list[str] | None = None,
+    is_bot: bool = False,
+) -> dict[str, Any]:
+    """Build the stable sender identity shared by summaries and explicit tools."""
+    resolved_sender_id = str(sender_id or "").strip()
+    if not resolved_sender_id:
+        return {}
+    resolved_platform = str(platform or "unknown").strip().casefold() or "unknown"
+    resolved_name = (
+        str(display_name or resolved_sender_id).strip() or resolved_sender_id
+    )
+    resolved_aliases: list[str] = []
+    for value in [resolved_name, *(aliases or [])]:
+        alias = str(value or "").strip()
+        if alias and alias not in resolved_aliases:
+            resolved_aliases.append(alias)
+    return {
+        "identity_key": f"{resolved_platform}:{resolved_sender_id}",
+        "sender_id": resolved_sender_id,
+        "platform": resolved_platform,
+        "display_name": resolved_name,
+        "aliases": resolved_aliases,
+        "is_bot": bool(is_bot),
+    }
+
+
 def message_reference(message: Message, index: int) -> int | str:
     """Use the database ID when available, otherwise a deterministic local ref."""
     if isinstance(message.id, int) and message.id > 0:

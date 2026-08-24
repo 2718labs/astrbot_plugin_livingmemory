@@ -58,6 +58,10 @@ def _make_run_context():
     event.unified_msg_origin = "test:private:mem-tool-session"
     event.message_obj = None
     event.get_message_type = Mock(return_value=MessageType.FRIEND_MESSAGE)
+    event.get_platform_name = Mock(return_value="test")
+    event.get_sender_id = Mock(return_value="user-1")
+    event.get_sender_name = Mock(return_value="测试用户")
+    event.get_self_id = Mock(return_value="bot-1")
     run_context = Mock()
     run_context.context = Mock()
     run_context.context.event = event
@@ -79,12 +83,24 @@ async def test_memorize_tool_persists_fact_into_real_storage(tmp_path):
             new_callable=AsyncMock,
         ) as get_persona:
             get_persona.return_value = "persona_x"
+            prepared = json.loads(
+                await tool.call(
+                    _make_run_context(),
+                    memory="用户喜欢在雨天听爵士乐",
+                    key_facts=["用户雨天会放爵士乐"],
+                    participants=["测试用户"],
+                    sentiment="positive",
+                    importance=0.8,
+                )
+            )
+            assert prepared["requires_topic_selection"] is True
+            assert prepared["topic_candidates"] == []
             raw = await tool.call(
                 _make_run_context(),
                 memory="用户喜欢在雨天听爵士乐",
-                topics=["音乐偏好"],
+                new_topic="音乐偏好",
                 key_facts=["用户雨天会放爵士乐"],
-                participants=[],
+                participants=["测试用户"],
                 sentiment="positive",
                 importance=0.8,
             )
@@ -116,6 +132,8 @@ async def test_memorize_tool_persists_fact_into_real_storage(tmp_path):
             fact = json.loads(row[0])
             assert fact["fact"] == "用户雨天会放爵士乐"
             assert fact["topics"] == ["音乐偏好"]
+            assert fact["participant_refs"][0]["participant_id"] == "test:user-1"
+            assert fact["participant_refs"][0]["identity_key"] == "test:user-1"
 
             cursor = await db.execute(
                 "SELECT overview FROM memory_parents LIMIT 1"

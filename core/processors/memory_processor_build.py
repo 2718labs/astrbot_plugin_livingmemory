@@ -26,6 +26,32 @@ from ..utils.memory_facts import fact_texts, unique_strings
 from .atom_classifier import classify_metadata_atoms
 
 
+def _build_identity_alias_lookup(
+    identities: list[dict[str, Any]],
+) -> dict[str, list[dict[str, Any]]]:
+    """Keep every identity behind an alias so duplicate names stay ambiguous."""
+    lookup: dict[str, list[dict[str, Any]]] = {}
+    for identity in identities:
+        identity_key = str(identity.get("identity_key") or "").strip()
+        aliases = unique_strings(
+            [
+                str(identity.get("display_name") or ""),
+                str(identity.get("sender_id") or ""),
+                *(str(item) for item in (identity.get("aliases") or [])),
+            ]
+        )
+        for alias in aliases:
+            key = concept_key(alias)
+            if not key:
+                continue
+            matches = lookup.setdefault(key, [])
+            if identity_key not in {
+                str(item.get("identity_key") or "").strip() for item in matches
+            }:
+                matches.append(identity)
+    return lookup
+
+
 class MemoryProcessorBuildMixin:
     """MemoryProcessor 拆分模块：MemoryProcessorBuildMixin"""
 
@@ -119,17 +145,7 @@ class MemoryProcessorBuildMixin:
             catalog.setdefault(key, item)
 
         identities = self._extract_participant_identities(messages)
-        identity_lookup: dict[str, dict[str, Any]] = {}
-        for identity in identities:
-            aliases = [
-                identity.get("display_name"),
-                identity.get("sender_id"),
-                *(identity.get("aliases") or []),
-            ]
-            for alias in aliases:
-                key = concept_key(str(alias or ""))
-                if key:
-                    identity_lookup[key] = identity
+        identity_lookup = _build_identity_alias_lookup(identities)
 
         def _resolve_topic(raw_name: str) -> dict[str, str]:
             raw = normalize_concept_name(raw_name)
@@ -176,44 +192,40 @@ class MemoryProcessorBuildMixin:
                 "decision": decision,
             }
 
-        def _resolve_participant(raw_name: str) -> dict[str, Any]:
-            name = normalize_concept_name(raw_name)
-            identity = identity_lookup.get(concept_key(name))
-            if identity:
-                return {
+        def _participant_refs_for_fact(fact_text: str) -> list[dict[str, Any]]:
+            """Bind named speakers and first-person Bot facts to stable identities."""
+            text_key = concept_key(fact_text)
+            refs: list[dict[str, Any]] = []
+
+            def _append_identity(identity: dict[str, Any]) -> None:
+                ref = {
                     "participant_id": str(identity["identity_key"]),
                     "name": str(identity["display_name"]),
                     "identity_key": str(identity["identity_key"]),
                     "source": "message_sender",
+                    "sender_id": str(identity.get("sender_id") or ""),
+                    "platform": str(identity.get("platform") or "unknown"),
+                    "is_bot": bool(identity.get("is_bot")),
                 }
-            return {
-                "participant_id": participant_id(scope, name),
-                "name": name,
-                "identity_key": None,
-                "source": "mentioned",
-            }
-
-        def _participant_refs_for_fact(fact_text: str) -> list[dict[str, Any]]:
-            """Bind named human speakers deterministically from the window."""
-            text_key = concept_key(fact_text)
-            refs: list[dict[str, Any]] = []
-            for identity in identities:
-                if bool(identity.get("is_bot")):
-                    continue
-                aliases = unique_strings(
-                    [
-                        str(identity.get("display_name") or ""),
-                        *(str(item) for item in (identity.get("aliases") or [])),
-                    ]
-                )
-                alias_keys = {concept_key(alias) for alias in aliases if alias}
-                if not any(alias_key in text_key for alias_key in alias_keys):
-                    continue
-                ref = _resolve_participant(str(identity["display_name"]))
                 if ref["participant_id"] not in {
                     item["participant_id"] for item in refs
                 }:
                     refs.append(ref)
+
+            for alias_key, matches in identity_lookup.items():
+                if alias_key not in text_key or len(matches) != 1:
+                    continue
+                _append_identity(matches[0])
+
+            # The non-overridable output contract reserves first-person “我”
+            # for the current Bot. Bind it here because the fact deliberately
+            # does not repeat a volatile Bot nickname.
+            if "我" in str(fact_text or ""):
+                bot_identities = [
+                    identity for identity in identities if bool(identity.get("is_bot"))
+                ]
+                if len(bot_identities) == 1:
+                    _append_identity(bot_identities[0])
             return refs
 
         records: list[MemoryWriteRecord] = []
@@ -333,6 +345,7 @@ class MemoryProcessorBuildMixin:
         sentiment: str = "neutral",
         importance: float = 0.7,
         topic_candidates: list[dict[str, Any] | str] | None = None,
+        participant_identities: list[dict[str, Any]] | None = None,
         source_reference: str | int | None = None,
         origin: str = "agent_memorize_tool",
         is_group_chat: bool = False,
@@ -379,6 +392,41 @@ class MemoryProcessorBuildMixin:
             normalize_concept_name(item) for item in (participants or []) if item
         )[:8]
 
+        identities: list[dict[str, Any]] = []
+        seen_identity_keys: set[str] = set()
+        for raw_identity in participant_identities or []:
+            if not isinstance(raw_identity, dict):
+                continue
+            identity_key = str(raw_identity.get("identity_key") or "").strip()
+            sender_id = str(raw_identity.get("sender_id") or "").strip()
+            platform = str(
+                raw_identity.get("platform") or "unknown"
+            ).strip().casefold()
+            display_name = str(
+                raw_identity.get("display_name") or sender_id
+            ).strip()
+            if not identity_key or not sender_id or not display_name:
+                continue
+            aliases = unique_strings(
+                [
+                    display_name,
+                    sender_id,
+                    *(str(item) for item in (raw_identity.get("aliases") or [])),
+                ]
+            )
+            identity = {
+                "identity_key": identity_key,
+                "sender_id": sender_id,
+                "platform": platform or "unknown",
+                "display_name": display_name,
+                "aliases": aliases,
+                "is_bot": bool(raw_identity.get("is_bot", False)),
+            }
+            if identity_key not in seen_identity_keys:
+                seen_identity_keys.add(identity_key)
+                identities.append(identity)
+        identity_lookup = _build_identity_alias_lookup(identities)
+
         topic_catalog: dict[str, dict[str, str]] = {}
         for candidate in topic_candidates or []:
             if isinstance(candidate, dict):
@@ -407,15 +455,40 @@ class MemoryProcessorBuildMixin:
                     "decision": "reused" if existing else "created",
                 }
             )
-        participant_refs = [
-            {
-                "participant_id": participant_id(scope, name),
-                "name": name,
-                "identity_key": None,
-                "source": "explicit",
-            }
-            for name in participant_names
-        ]
+        participant_refs: list[dict[str, Any]] = []
+        resolved_participant_names: list[str] = []
+        for name in participant_names:
+            matches = identity_lookup.get(concept_key(name), [])
+            if len(matches) > 1:
+                logger.warning(
+                    f"[MemoryProcessor] 跳过同名参与者绑定（命中多个身份）: {name}"
+                )
+                continue
+            resolved_participant_names.append(name)
+            if len(matches) == 1:
+                identity = matches[0]
+                participant_refs.append(
+                    {
+                        "participant_id": identity["identity_key"],
+                        "name": identity["display_name"],
+                        "identity_key": identity["identity_key"],
+                        "source": "message_sender",
+                        "sender_id": identity["sender_id"],
+                        "platform": identity["platform"],
+                        "is_bot": identity["is_bot"],
+                    }
+                )
+            else:
+                participant_refs.append(
+                    {
+                        "participant_id": participant_id(scope, name),
+                        "name": name,
+                        "identity_key": None,
+                        "source": "mentioned",
+                        "is_bot": False,
+                    }
+                )
+        participant_names = resolved_participant_names
 
         source_window = build_explicit_source_descriptor(
             scope,
@@ -469,6 +542,7 @@ class MemoryProcessorBuildMixin:
             "topic_refs": topic_refs,
             "participants": participant_names,
             "participant_refs": participant_refs,
+            "participant_identities": identities,
             "key_facts": prepared_facts,
             "sentiment": normalized_sentiment,
             "interaction_type": "group_chat" if is_group_chat else "private_chat",

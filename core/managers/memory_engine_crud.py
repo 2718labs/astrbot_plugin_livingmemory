@@ -650,6 +650,102 @@ class MemoryEngineCrudMixin:
                 break
         return list(candidates.values())[:limit]
 
+    async def search_topic_candidates(
+        self,
+        query: str,
+        *,
+        scope: str,
+        persona_id: str | None = None,
+        limit: int = 5,
+    ) -> list[dict[str, str]]:
+        """Find reusable topics through related canonical facts for the tool flow."""
+        cleaned_query = str(query or "").strip()
+        cleaned_scope = str(scope or "").strip()
+        result_limit = max(1, int(limit))
+        if not cleaned_query or not cleaned_scope or self.canonical_store is None:
+            return []
+
+        fact_limit = max(10, result_limit * 4)
+        routes = await self.canonical_store.search_candidates(
+            cleaned_query,
+            limit=fact_limit,
+            scope=cleaned_scope,
+            persona_id=persona_id,
+        )
+        fact_scores: dict[str, float] = {}
+        fact_first_rank: dict[str, int] = {}
+        for route_name in ("bm25", "vector"):
+            for rank, item in enumerate(routes.get(route_name, []), 1):
+                fact_id = str(item.get("fact_id") or "").strip()
+                if not fact_id:
+                    continue
+                fact_scores[fact_id] = fact_scores.get(fact_id, 0.0) + 1.0 / (
+                    60 + rank
+                )
+                fact_first_rank.setdefault(fact_id, rank)
+        if not fact_scores:
+            return []
+
+        ranked_fact_ids = sorted(
+            fact_scores,
+            key=lambda fact_id: (
+                -fact_scores[fact_id],
+                fact_first_rank[fact_id],
+                fact_id,
+            ),
+        )
+        records = await self.canonical_store.get_fact_records(ranked_fact_ids)
+        topics: dict[str, dict[str, Any]] = {}
+        for fact_rank, fact_id in enumerate(ranked_fact_ids, 1):
+            record = records.get(fact_id) or {}
+            fact = record.get("fact") or {}
+            refs = fact.get("topic_refs") if isinstance(fact, dict) else []
+            normalized_refs: list[dict[str, str]] = []
+            if isinstance(refs, list):
+                for ref in refs:
+                    if not isinstance(ref, dict):
+                        continue
+                    name = normalize_concept_name(str(ref.get("name") or ""))
+                    ref_id = str(ref.get("topic_id") or "").strip()
+                    if name:
+                        normalized_refs.append(
+                            {
+                                "topic_id": ref_id or topic_id(cleaned_scope, name),
+                                "name": name,
+                            }
+                        )
+            if not normalized_refs and isinstance(fact, dict):
+                for raw_name in fact.get("topics") or []:
+                    name = normalize_concept_name(str(raw_name or ""))
+                    if name:
+                        normalized_refs.append(
+                            {
+                                "topic_id": topic_id(cleaned_scope, name),
+                                "name": name,
+                            }
+                        )
+            for ref in normalized_refs:
+                entry = topics.setdefault(
+                    ref["topic_id"],
+                    {
+                        "topic_id": ref["topic_id"],
+                        "name": ref["name"],
+                        "score": 0.0,
+                        "first_rank": fact_rank,
+                    },
+                )
+                entry["score"] += fact_scores[fact_id]
+                entry["first_rank"] = min(entry["first_rank"], fact_rank)
+
+        ranked_topics = sorted(
+            topics.values(),
+            key=lambda item: (-item["score"], item["first_rank"], item["name"]),
+        )
+        return [
+            {"topic_id": item["topic_id"], "name": item["name"]}
+            for item in ranked_topics[:result_limit]
+        ]
+
     async def get_canonical_index_status(self) -> dict[str, Any]:
         if self.canonical_store is None:
             return {

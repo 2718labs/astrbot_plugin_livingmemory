@@ -159,6 +159,21 @@ class GraphExtractor:
             payload.update(extra)
             return payload
 
+        # Upstream 2.5.1+ kept every stable sender identity as a person node,
+        # including the Bot. Preserve that visibility without recreating the
+        # old person × fact cross-product: edges still require fact-level refs.
+        stable_participants: list[tuple[str, str, dict[str, Any]]] = []
+        for display_name, canonical_value, identity_metadata in self._participant_nodes(
+            metadata
+        ):
+            node_key = _add_node(
+                "person", display_name, canonical_value, identity_metadata
+            )
+            if node_key:
+                stable_participants.append(
+                    (node_key, display_name, identity_metadata)
+                )
+
         for fact in facts:
             if not isinstance(fact, dict):
                 continue
@@ -263,30 +278,55 @@ class GraphExtractor:
 
             # Explicit participant bindings: person -> fact (mentioned_in)
             participant_bindings = [
-                (
-                    str(ref.get("participant_id") or "").strip(),
-                    str(ref.get("name") or "").strip(),
-                )
+                {
+                    "participant_id": str(ref.get("participant_id") or "").strip(),
+                    "name": str(ref.get("name") or "").strip(),
+                    "identity_key": EntityResolver.canonicalize(
+                        str(ref.get("identity_key") or "")
+                    ),
+                    "source": str(ref.get("source") or "").strip(),
+                    "sender_id": str(ref.get("sender_id") or "").strip(),
+                    "platform": str(ref.get("platform") or "").strip(),
+                    "is_bot": bool(ref.get("is_bot", False)),
+                }
                 for ref in (fact.get("participant_refs") or [])
                 if isinstance(ref, dict)
             ]
             if not participant_bindings:
                 participant_bindings = [
-                    (
-                        participant_stable_id(scope, str(name)),
-                        str(name).strip(),
-                    )
+                    {
+                        "participant_id": participant_stable_id(scope, str(name)),
+                        "name": str(name).strip(),
+                        "identity_key": "",
+                        "source": "legacy_name",
+                        "sender_id": "",
+                        "platform": "",
+                        "is_bot": False,
+                    }
                     for name in (fact.get("participants") or [])
                     if str(name or "").strip()
                 ]
-            for participant_identifier, participant_name in participant_bindings:
+            for binding in participant_bindings:
+                participant_identifier = (
+                    f"account:{binding['identity_key']}"
+                    if binding["identity_key"]
+                    else binding["participant_id"]
+                )
+                participant_name = binding["name"]
                 if not participant_identifier or not participant_name:
                     continue
                 person_key = _add_node(
                     "person",
                     participant_name,
                     participant_identifier,
-                    {"participant_id": participant_identifier},
+                    {
+                        "participant_id": binding["participant_id"],
+                        "identity_key": binding["identity_key"],
+                        "source": binding["source"],
+                        "sender_id": binding["sender_id"],
+                        "platform": binding["platform"],
+                        "is_bot": binding["is_bot"],
+                    },
                 )
                 if not person_key:
                     continue
@@ -322,6 +362,32 @@ class GraphExtractor:
                         relation_type="mentioned_in",
                     )
                 )
+
+        # Keep a source-backed participant entry so sender-only nodes are not
+        # removed as graph-store orphans. Its retrieval text stays neutral;
+        # only fact-backed edges may compete in canonical graph recall.
+        for node_key, display_name, identity_metadata in stable_participants:
+            graph.entries.append(
+                GraphEntry(
+                    entry_key=hashlib.sha1(
+                        f"participant|{source_memory_id}|{node_key}".encode("utf-8")
+                    ).hexdigest(),
+                    source_memory_id=source_memory_id,
+                    session_id=session_id,
+                    persona_id=persona_id,
+                    entry_type="participant",
+                    # This entry anchors node lifecycle only. Keep names out of
+                    # retrieval text so it cannot displace fact-backed edges.
+                    content="Graph identity anchor",
+                    metadata=_entry_metadata(
+                        0.7,
+                        identity_key=identity_metadata.get("identity_key"),
+                        is_bot=bool(identity_metadata.get("is_bot", False)),
+                    ),
+                    node_keys=[node_key],
+                    relation_type="participant",
+                )
+            )
 
         graph.nodes = list(node_map.values())
         return graph

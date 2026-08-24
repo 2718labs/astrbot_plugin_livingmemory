@@ -113,6 +113,7 @@ async def _add_canonical_fact(
     importance: float = 0.8,
     session_id: str = "test:private:s1",
     persona_id: str = "persona_1",
+    topic_name: str | None = None,
 ) -> tuple[int, str]:
     parent_id = f"memory_{suffix}"
     fact_id = f"fact_{suffix}"
@@ -134,7 +135,19 @@ async def _add_canonical_fact(
                 "fact_id": fact_id,
                 "parent_id": parent_id,
                 "fact": text,
-                "topics": [],
+                "topics": [topic_name] if topic_name else [],
+                "topic_refs": (
+                    [
+                        {
+                            "topic_id": f"topic_{suffix}",
+                            "name": topic_name,
+                            "raw_name": topic_name,
+                            "decision": "created",
+                        }
+                    ]
+                    if topic_name
+                    else []
+                ),
                 "participants": [],
                 "importance": importance,
             }
@@ -328,6 +341,99 @@ async def test_s1_idempotency_reuses_active_record_and_topic_candidate(tmp_path:
     assert len(faiss.docs) == 1
     assert len(fact_faiss.docs) == 1
     assert candidates == [{"topic_id": "topic_plugin", "name": "插件开发"}]
+    await engine.close()
+
+
+@pytest.mark.asyncio
+async def test_search_topic_candidates_uses_related_fact_routes(tmp_path: Path):
+    engine = MemoryEngine(
+        db_path=str(tmp_path / "topic_candidates.db"),
+        faiss_db=_FakeFaissDB(),
+    )
+    store = Mock()
+    store.search_candidates = AsyncMock(
+        return_value={
+            "bm25": [
+                {"fact_id": "fact_a", "score": -2.0},
+                {"fact_id": "fact_b", "score": -1.0},
+            ],
+            "vector": [
+                {"fact_id": "fact_b", "score": 0.9},
+                {"fact_id": "fact_c", "score": 0.8},
+            ],
+        }
+    )
+    store.get_fact_records = AsyncMock(
+        return_value={
+            "fact_a": {
+                "fact": {
+                    "topic_refs": [
+                        {"topic_id": "topic_game", "name": "游戏开发"}
+                    ]
+                }
+            },
+            "fact_b": {
+                "fact": {
+                    "topic_refs": [
+                        {"topic_id": "topic_game", "name": "游戏开发"}
+                    ]
+                }
+            },
+            "fact_c": {
+                "fact": {
+                    "topic_refs": [
+                        {"topic_id": "topic_project", "name": "项目进展"}
+                    ]
+                }
+            },
+        }
+    )
+    engine.canonical_store = store
+
+    candidates = await engine.search_topic_candidates(
+        "张三正在开发五子棋",
+        scope="scope:s1",
+        persona_id="persona_a",
+        limit=2,
+    )
+
+    assert candidates == [
+        {"topic_id": "topic_game", "name": "游戏开发"},
+        {"topic_id": "topic_project", "name": "项目进展"},
+    ]
+    store.search_candidates.assert_awaited_once_with(
+        "张三正在开发五子棋",
+        limit=10,
+        scope="scope:s1",
+        persona_id="persona_a",
+    )
+    store.get_fact_records.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_search_topic_candidates_reads_real_fact_indexes(tmp_path: Path):
+    engine = MemoryEngine(
+        db_path=str(tmp_path / "topic_candidate_indexes.db"),
+        faiss_db=_FakeFaissDB(),
+        fact_vector_db=_FakeFaissDB(),
+        config={"fallback_enabled": True},
+    )
+    await engine.initialize()
+    await _add_canonical_fact(
+        engine,
+        "张三正在开发五子棋",
+        suffix="game",
+        topic_name="游戏开发",
+    )
+
+    candidates = await engine.search_topic_candidates(
+        "开发五子棋",
+        scope="test:private:s1",
+        persona_id="persona_1",
+        limit=5,
+    )
+
+    assert candidates == [{"topic_id": "topic_game", "name": "游戏开发"}]
     await engine.close()
 
 

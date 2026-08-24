@@ -806,6 +806,52 @@ async def test_process_group_chat_derives_participants_from_named_speakers():
 
 
 @pytest.mark.asyncio
+async def test_process_group_chat_does_not_guess_between_same_named_speakers():
+    messages = [
+        Message(
+            id=1,
+            session_id="s1",
+            role="user",
+            content="我负责客户端",
+            sender_id="u1",
+            sender_name="张三",
+            group_id="g1",
+            platform="test",
+            metadata={},
+        ),
+        Message(
+            id=2,
+            session_id="s1",
+            role="user",
+            content="我负责服务端",
+            sender_id="u2",
+            sender_name="张三",
+            group_id="g1",
+            platform="test",
+            metadata={},
+        ),
+    ]
+    llm = _DummyLLMProvider(
+        _memory_json("张三正在开发五子棋", topics=["游戏开发"])
+    )
+    processor = MemoryProcessor(llm_provider=llm, context=None)
+
+    result = await processor.process_conversation_result(
+        messages=messages,
+        is_group_chat=True,
+        persona_id=None,
+    )
+
+    assert result.status == "store"
+    assert result.metadata["key_facts"][0]["participants"] == []
+    assert result.metadata["key_facts"][0]["participant_refs"] == []
+    assert {
+        identity["identity_key"]
+        for identity in result.metadata["participant_identities"]
+    } == {"test:u1", "test:u2"}
+
+
+@pytest.mark.asyncio
 async def test_process_private_chat_keeps_fact_participant_binding():
     """私聊 v3 同样保留 fact 自身的 participant 绑定。"""
     llm = _DummyLLMProvider(
@@ -1235,7 +1281,17 @@ async def test_bot_fact_reuses_first_person_persona_semantics():
     assert result.status == "store"
     stored_fact = result.metadata["key_facts"][0]
     assert stored_fact["fact"] == "我答应以后不再反复解释这个称呼"
-    assert stored_fact["participant_refs"] == []
+    assert stored_fact["participant_refs"] == [
+        {
+            "participant_id": "test:2783785959",
+            "name": "2783785959",
+            "identity_key": "test:2783785959",
+            "source": "message_sender",
+            "sender_id": "2783785959",
+            "platform": "test",
+            "is_bot": True,
+        }
+    ]
 
 
 @pytest.mark.asyncio

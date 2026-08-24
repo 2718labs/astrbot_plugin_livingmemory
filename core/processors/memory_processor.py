@@ -13,6 +13,7 @@ from typing import Any
 from astrbot.api import logger
 
 from ..models.conversation_models import Message
+from ..models.memory_contract import build_participant_identity
 from ..models.memory_processing import (
     InvalidMemoryOutputError,
     MemoryAdmissionSkipped,
@@ -692,23 +693,22 @@ class MemoryProcessor(MemoryProcessorParseMixin, MemoryProcessorBuildMixin):
             if not sender_id:
                 continue
             platform = str(message.platform or "unknown").strip().lower() or "unknown"
-            identity_key = f"{platform}:{sender_id}"
             display_name = str(message.sender_name or sender_id).strip() or sender_id
             is_bot = bool(
                 message.metadata.get("is_bot_message", False)
                 or message.role == "assistant"
             )
+            candidate = build_participant_identity(
+                platform=platform,
+                sender_id=sender_id,
+                display_name=display_name,
+                is_bot=is_bot,
+            )
+            identity_key = str(candidate["identity_key"])
 
             identity = identities.setdefault(
                 identity_key,
-                {
-                    "identity_key": identity_key,
-                    "sender_id": sender_id,
-                    "platform": platform,
-                    "display_name": display_name,
-                    "aliases": [],
-                    "is_bot": is_bot,
-                },
+                candidate,
             )
             identity["display_name"] = display_name
             identity["is_bot"] = bool(identity["is_bot"] or is_bot)

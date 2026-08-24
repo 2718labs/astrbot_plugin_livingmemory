@@ -43,6 +43,43 @@ def test_explicit_memory_uses_same_v3_fact_contract_and_stable_ids():
     assert "source_message_ids" not in fact
 
 
+def test_explicit_memory_does_not_guess_between_same_named_identities():
+    processor = MemoryProcessor(llm_provider=object())
+    identities = [
+        {
+            "identity_key": "test:u1",
+            "sender_id": "u1",
+            "platform": "test",
+            "display_name": "张三",
+            "aliases": ["张三"],
+            "is_bot": False,
+        },
+        {
+            "identity_key": "test:bot",
+            "sender_id": "bot",
+            "platform": "test",
+            "display_name": "张三",
+            "aliases": ["张三"],
+            "is_bot": True,
+        },
+    ]
+
+    record = processor.build_explicit_memory_record(
+        memory="张三正在开发五子棋",
+        source_scope="scope:user:1",
+        participants=["张三"],
+        participant_identities=identities,
+    )
+
+    assert {
+        identity["identity_key"]
+        for identity in record.metadata["participant_identities"]
+    } == {"test:u1", "test:bot"}
+    assert record.metadata["participants"] == []
+    assert record.metadata["key_facts"][0]["participants"] == []
+    assert record.metadata["key_facts"][0]["participant_refs"] == []
+
+
 def test_fact_search_projection_excludes_persona_reaction():
     search_text = CanonicalMemoryStore.fact_search_text(
         {

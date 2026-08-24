@@ -9,6 +9,7 @@ from astrbot.api.platform import MessageType
 
 from astrbot_plugin_livingmemory.core.base.config_manager import ConfigManager
 from astrbot_plugin_livingmemory.core.models.memory_processing import MemoryWriteRecord
+from astrbot_plugin_livingmemory.core.processors.memory_processor import MemoryProcessor
 from astrbot_plugin_livingmemory.core.tools.memory_memorize_tool import (
     MemoryMemorizeTool,
 )
@@ -20,6 +21,7 @@ def memory_engine():
     engine.add_memory = AsyncMock(return_value=42)
     engine.add_canonical_memory = AsyncMock(return_value=42)
     engine.get_topic_candidates = AsyncMock(return_value=[])
+    engine.search_topic_candidates = AsyncMock(return_value=[])
     return engine
 
 
@@ -52,6 +54,10 @@ def _make_run_context(message_type=MessageType.FRIEND_MESSAGE):
     event.unified_msg_origin = "test:private:session-1"
     event.message_obj = None
     event.get_message_type = Mock(return_value=message_type)
+    event.get_platform_name = Mock(return_value="test")
+    event.get_sender_id = Mock(return_value="user-1")
+    event.get_sender_name = Mock(return_value="张三")
+    event.get_self_id = Mock(return_value="bot-1")
 
     run_context = Mock()
     run_context.context = Mock()
@@ -60,9 +66,50 @@ def _make_run_context(message_type=MessageType.FRIEND_MESSAGE):
 
 
 @pytest.mark.asyncio
+async def test_memory_memorize_tool_first_call_returns_relevant_topics_without_write(
+    memory_engine, memory_processor
+):
+    memory_engine.search_topic_candidates.return_value = [
+        {"topic_id": "topic_game", "name": "游戏开发"}
+    ]
+    tool = MemoryMemorizeTool(
+        context=Mock(),
+        memory_engine=memory_engine,
+        memory_processor=memory_processor,
+    )
+
+    with patch(
+        "astrbot_plugin_livingmemory.core.tools.memory_memorize_tool.get_persona_id",
+        new_callable=AsyncMock,
+        return_value="persona_a",
+    ):
+        raw_result = await tool.call(
+            _make_run_context(), memory="张三正在开发五子棋"
+        )
+
+    result = json.loads(raw_result)
+    assert result["memorized"] is False
+    assert result["requires_topic_selection"] is True
+    assert result["topic_candidates"] == [
+        {"topic_id": "topic_game", "name": "游戏开发"}
+    ]
+    memory_engine.search_topic_candidates.assert_awaited_once_with(
+        "张三正在开发五子棋",
+        scope="test:private:session-1",
+        persona_id="persona_a",
+        limit=5,
+    )
+    memory_processor.build_explicit_memory_record.assert_not_called()
+    memory_engine.add_canonical_memory.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_memory_memorize_tool_writes_current_session_and_persona(
     memory_engine, memory_processor
 ):
+    memory_engine.search_topic_candidates.return_value = [
+        {"topic_id": "topic_food", "name": "饮食偏好"}
+    ]
     tool = MemoryMemorizeTool(
         context=Mock(),
         memory_engine=memory_engine,
@@ -77,7 +124,7 @@ async def test_memory_memorize_tool_writes_current_session_and_persona(
         raw_result = await tool.call(
             _make_run_context(),
             memory="用户喜欢黑咖啡",
-            topics=["饮食偏好"],
+            topic_id="topic_food",
             key_facts=["不加糖"],
             importance=0.8,
         )
@@ -90,6 +137,11 @@ async def test_memory_memorize_tool_writes_current_session_and_persona(
     call_kwargs = memory_engine.add_canonical_memory.await_args.kwargs
     assert call_kwargs["session_id"] == "test:private:session-1"
     assert call_kwargs["persona_id"] == "persona_a"
+    build_kwargs = memory_processor.build_explicit_memory_record.call_args.kwargs
+    assert build_kwargs["topics"] == ["饮食偏好"]
+    assert build_kwargs["topic_candidates"] == [
+        {"topic_id": "topic_food", "name": "饮食偏好"}
+    ]
 
 
 @pytest.mark.asyncio
@@ -114,7 +166,9 @@ async def test_memory_memorize_tool_writes_resolved_user_scope(
         new_callable=AsyncMock,
         return_value="persona_a",
     ):
-        await tool.call(run_context, memory="remember this")
+        await tool.call(
+            run_context, memory="remember this", commit_without_topic=True
+        )
 
     build_kwargs = memory_processor.build_explicit_memory_record.call_args.kwargs
     call_kwargs = memory_engine.add_canonical_memory.await_args.kwargs
@@ -140,7 +194,7 @@ async def test_memory_memorize_tool_uses_memory_processor_format(
         await tool.call(
             _make_run_context(),
             memory="用户喜欢黑咖啡",
-            topics=["饮食偏好", "", "咖啡"],
+            new_topic="饮食偏好",
             key_facts=["不加糖"],
             sentiment="neutral",
             importance=2.0,
@@ -150,12 +204,30 @@ async def test_memory_memorize_tool_uses_memory_processor_format(
     memory_processor.build_explicit_memory_record.assert_called_once_with(
         memory="用户喜欢黑咖啡",
         source_scope="test:private:session-1",
-        topics=["饮食偏好", "咖啡"],
+        topics=["饮食偏好"],
         key_facts=["不加糖"],
         participants=[],
         sentiment="neutral",
         importance=2.0,
         topic_candidates=[],
+        participant_identities=[
+            {
+                "identity_key": "test:user-1",
+                "sender_id": "user-1",
+                "platform": "test",
+                "display_name": "张三",
+                "aliases": ["张三"],
+                "is_bot": False,
+            },
+            {
+                "identity_key": "test:bot-1",
+                "sender_id": "bot-1",
+                "platform": "test",
+                "display_name": "bot-1",
+                "aliases": ["bot-1"],
+                "is_bot": True,
+            },
+        ],
         source_reference=None,
         origin="agent_memorize_tool",
         is_group_chat=False,
@@ -164,6 +236,70 @@ async def test_memory_memorize_tool_uses_memory_processor_format(
     assert call_kwargs["importance"] == 0.8
     assert call_kwargs["metadata"]["memory_origin"] == "agent_memorize_tool"
     assert call_kwargs["metadata"]["memorize_reason"] == "用户明确要求记住"
+
+
+@pytest.mark.asyncio
+async def test_memory_memorize_tool_reuses_event_sender_identity(memory_engine):
+    tool = MemoryMemorizeTool(
+        context=Mock(),
+        memory_engine=memory_engine,
+        memory_processor=MemoryProcessor(llm_provider=object()),
+    )
+
+    with patch(
+        "astrbot_plugin_livingmemory.core.tools.memory_memorize_tool.get_persona_id",
+        new_callable=AsyncMock,
+        return_value="persona_a",
+    ):
+        raw_result = await tool.call(
+            _make_run_context(),
+            memory="张三正在开发五子棋",
+            participants=["张三"],
+            commit_without_topic=True,
+        )
+
+    assert json.loads(raw_result)["memorized"] is True
+    metadata = memory_engine.add_canonical_memory.await_args.kwargs["metadata"]
+    user_identity = next(
+        item
+        for item in metadata["participant_identities"]
+        if not item["is_bot"]
+    )
+    assert user_identity["identity_key"] == "test:user-1"
+    participant_ref = metadata["key_facts"][0]["participant_refs"][0]
+    assert participant_ref["participant_id"] == "test:user-1"
+    assert participant_ref["identity_key"] == "test:user-1"
+    assert participant_ref["source"] == "message_sender"
+
+
+@pytest.mark.asyncio
+async def test_memory_memorize_tool_rejects_topic_id_outside_current_candidates(
+    memory_engine, memory_processor
+):
+    memory_engine.search_topic_candidates.return_value = [
+        {"topic_id": "topic_game", "name": "游戏开发"}
+    ]
+    tool = MemoryMemorizeTool(
+        context=Mock(),
+        memory_engine=memory_engine,
+        memory_processor=memory_processor,
+    )
+
+    with patch(
+        "astrbot_plugin_livingmemory.core.tools.memory_memorize_tool.get_persona_id",
+        new_callable=AsyncMock,
+        return_value="persona_a",
+    ):
+        raw_result = await tool.call(
+            _make_run_context(),
+            memory="张三正在开发五子棋",
+            topic_id="topic_invented",
+        )
+
+    result = json.loads(raw_result)
+    assert result["memorized"] is False
+    assert result["error"] == "topic_id is not a current candidate for this memory"
+    memory_engine.add_canonical_memory.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -182,6 +318,7 @@ async def test_memory_memorize_tool_detects_group_chat(memory_engine, memory_pro
         await tool.call(
             _make_run_context(MessageType.GROUP_MESSAGE),
             memory="群里约定周五复盘",
+            commit_without_topic=True,
         )
 
     assert memory_processor.build_explicit_memory_record.call_args.kwargs[
@@ -207,6 +344,7 @@ async def test_memory_memorize_tool_normalizes_invalid_sentiment(
         await tool.call(
             _make_run_context(),
             memory="用户希望记住插件行为",
+            commit_without_topic=True,
             sentiment="SURPRISED",
         )
 
@@ -234,6 +372,7 @@ async def test_memory_memorize_tool_handles_non_string_sentiment(
         await tool.call(
             _make_run_context(),
             memory="用户希望记住插件行为",
+            commit_without_topic=True,
             sentiment=1,
         )
 
@@ -297,7 +436,9 @@ async def test_memory_memorize_tool_hides_internal_exception_details(
         new_callable=AsyncMock,
     ) as get_persona:
         get_persona.return_value = "persona_a"
-        raw_result = await tool.call(_make_run_context(), memory="异常测试")
+        raw_result = await tool.call(
+            _make_run_context(), memory="异常测试", commit_without_topic=True
+        )
 
     result = json.loads(raw_result)
     assert result == {"memorized": False, "error": "internal_error"}
@@ -321,4 +462,6 @@ async def test_memory_memorize_tool_propagates_cancellation(
     ) as get_persona:
         get_persona.return_value = "persona_a"
         with pytest.raises(asyncio.CancelledError):
-            await tool.call(_make_run_context(), memory="取消测试")
+            await tool.call(
+                _make_run_context(), memory="取消测试", commit_without_topic=True
+            )

@@ -163,6 +163,128 @@ class _FakeFaissDB:
         return None
 
 
+def test_canonical_graph_keeps_bot_identity_without_fabricating_fact_edge():
+    metadata = {
+        "memory_schema_version": "v3",
+        "source_session_id": "aiocqhttp:private:s1",
+        "participant_identities": [
+            {
+                "identity_key": "aiocqhttp:10001",
+                "sender_id": "10001",
+                "platform": "aiocqhttp",
+                "display_name": "张三",
+                "aliases": ["张三"],
+                "is_bot": False,
+            },
+            {
+                "identity_key": "aiocqhttp:bot",
+                "sender_id": "bot",
+                "platform": "aiocqhttp",
+                "display_name": "Bot",
+                "aliases": ["Bot"],
+                "is_bot": True,
+            },
+        ],
+        "key_facts": [
+            {
+                "fact_id": "fact_1",
+                "parent_id": "memory_1",
+                "fact": "张三周五参加会议",
+                "participant_refs": [
+                    {
+                        "participant_id": "aiocqhttp:10001",
+                        "identity_key": "aiocqhttp:10001",
+                        "name": "张三",
+                        "source": "message_sender",
+                        "is_bot": False,
+                    }
+                ],
+            }
+        ],
+    }
+
+    graph = GraphExtractor().extract(1, "张三周五参加会议", metadata=metadata)
+
+    people = {node.node_key: node for node in graph.nodes if node.node_type == "person"}
+    assert set(people) == {
+        "person:account:aiocqhttp:10001",
+        "person:account:aiocqhttp:bot",
+    }
+    assert people["person:account:aiocqhttp:bot"].metadata["is_bot"] is True
+    participant_edges = [
+        edge for edge in graph.edges if edge.relation_type == "mentioned_in"
+    ]
+    assert [edge.source_key for edge in participant_edges] == [
+        "person:account:aiocqhttp:10001"
+    ]
+    participant_entries = [
+        entry for entry in graph.entries if entry.entry_type == "participant"
+    ]
+    assert {entry.node_keys[0] for entry in participant_entries} == set(people)
+
+
+@pytest.mark.asyncio
+async def test_sender_only_bot_node_survives_other_memory_deletion(tmp_path: Path):
+    graph_store = GraphStore(str(tmp_path / "bot_node_lifecycle.db"))
+    await graph_store.initialize()
+    manager = GraphMemoryManager(
+        graph_store=graph_store,
+        graph_vector_retriever=GraphVectorRetriever(_FakeFaissDB()),
+        graph_extractor=GraphExtractor(),
+    )
+
+    def _metadata(memory_id: int) -> dict:
+        return {
+            "memory_schema_version": "v3",
+            "session_id": "test:private:s1",
+            "canonical_summary": f"用户事实 {memory_id}",
+            "participant_identities": [
+                {
+                    "identity_key": "test:user",
+                    "sender_id": "user",
+                    "platform": "test",
+                    "display_name": "用户",
+                    "aliases": ["用户"],
+                    "is_bot": False,
+                },
+                {
+                    "identity_key": "test:bot",
+                    "sender_id": "bot",
+                    "platform": "test",
+                    "display_name": "Bot",
+                    "aliases": ["Bot"],
+                    "is_bot": True,
+                },
+            ],
+            "key_facts": [
+                {
+                    "fact_id": f"fact_{memory_id}",
+                    "parent_id": f"memory_{memory_id}",
+                    "fact": f"用户事实 {memory_id}",
+                    "participant_refs": [
+                        {
+                            "participant_id": "test:user",
+                            "identity_key": "test:user",
+                            "name": "用户",
+                            "source": "message_sender",
+                            "is_bot": False,
+                        }
+                    ],
+                }
+            ],
+        }
+
+    await manager.index_memory(1, "用户事实 1", _metadata(1))
+    await manager.index_memory(2, "用户事实 2", _metadata(2))
+    await manager.delete_memory(1)
+
+    snapshot = await graph_store.get_full_graph_snapshot(
+        session_id="test:private:s1"
+    )
+    people = {node["key"] for node in snapshot["nodes"] if node["type"] == "person"}
+    assert "person:account:test:bot" in people
+
+
 @pytest.mark.asyncio
 async def test_graph_vector_retriever_uses_bulk_faiss_operations():
     vector_db = SimpleNamespace(
