@@ -2,6 +2,14 @@
 
 本文件只记录 [2718labs fork](https://github.com/2718labs/astrbot_plugin_livingmemory) 相对[原版 LivingMemory](https://github.com/lxfight-s-Astrbot-Plugins/astrbot_plugin_livingmemory)产生的变更。原项目自身的版本历史见 [CHANGELOG.md](CHANGELOG.md)。
 
+## [2.6.0-a3] - 2026-08-24
+
+- 重写自动总结的输出契约：增加一份完整的 topic 候选、对话输入和嵌套 JSON 输出示例，并单独展示可选 `persona_reaction` 的正确插入位置，降低结构误解和字段照抄。
+- 明确同一事件只保留窗口结束时已确认的最终状态；Bot 复述不算新用户事实，同一事件的确认、情绪与纠正合并为一条 fact。
+- 为 fact 级 `importance` 增加 0.0–1.0 的分档参照；评分只描述未来参考价值，不增加代码侧存储阈值。
+- 自动总结可见每条消息的完整时间；本窗口事实在正文中固定具体日期、自然描述时段，相对日期按对应消息换算，外部事件时间仍以事件本身为准。
+- 在 Sfuture 中加入“从同一人物的父记忆及事实提炼可追溯用户偏好画像”的远期愿景，本版本不实现画像状态或消费链。
+
 ## [2.6.0-a2] - 2026-08-23
 
 ### 2026-08-23 收尾波次：recent 短期连续性、预算默认值与泄漏修复
