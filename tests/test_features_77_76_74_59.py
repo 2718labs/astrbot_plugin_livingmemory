@@ -596,7 +596,7 @@ async def test_group_prompt_template_contains_current_date():
 
 @pytest.mark.asyncio
 async def test_original_time_handling_rewrites_relative_date_inside_fact():
-    """Relative dates stay in fact prose instead of a separate time object."""
+    """Conversation time stays in fact prose instead of a separate time object."""
     llm = _DummyLLMProvider(_VALID_JSON_RESPONSE)
     processor = MemoryProcessor(llm_provider=llm, context=None)
 
@@ -605,7 +605,8 @@ async def test_original_time_handling_rewrites_relative_date_inside_fact():
 
     assert "当前日期时间" in system_prompt
     assert "相对时间" in contract
-    assert "改写为具体日期" in contract
+    assert "改写为具体日期和自然时段" in contract
+    assert "2026-08-24晚" in contract
     assert '"time"' not in contract
 
 

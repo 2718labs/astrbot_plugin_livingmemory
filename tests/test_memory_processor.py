@@ -1153,9 +1153,24 @@ def test_s1_output_contract_rewrites_relative_time_inside_fact_text():
     contract = MemoryProcessor._build_admission_output_contract(False)
 
     assert "相对时间" in contract
-    assert "改写为具体日期" in contract
-    assert "不要把消息发送时间本身写成事实" in contract
+    assert "改写为具体日期和自然时段" in contract
+    assert "2026-08-24晚" in contract
+    assert "日期必须明确" in contract
+    assert "凌晨、早晨、上午、中午、下午、傍晚、晚上、深夜" in contract
+    assert "不限定固定词表" in contract
+    assert "00:00-05:59" not in contract
+    assert "不要用消息发送时间冒充" in contract
     assert '"time"' not in contract
+
+
+def test_format_conversation_exposes_each_message_time_for_fact_periods():
+    messages = _make_messages()
+    messages[0].timestamp = datetime(2026, 8, 24, 22, 15, 30).timestamp()
+    processor = MemoryProcessor(llm_provider=_DummyLLMProvider("{}"), context=None)
+
+    conversation = processor._format_conversation(messages[:1])
+
+    assert "2026-08-24 22:15:30" in conversation
 
 
 def test_s1_output_contract_keeps_bot_and_user_roles_distinct():
@@ -1179,8 +1194,9 @@ def test_s1_output_contract_prevents_utterance_level_fragmentation():
 def test_s0_output_contract_keeps_agreements_as_ordinary_facts():
     contract = MemoryProcessor._build_admission_output_contract(False)
 
-    assert "后面的明确否认、纠正、澄清或形成的约定" in contract
-    assert "不得保存已被否认的版本" in contract
+    assert "以窗口结尾已经明确确认的状态为准" in contract
+    assert "被后续否认或纠正的中间说法不保存" in contract
+    assert "讨论形成约定时，只保存最终约定" in contract
     assert "承诺、约定、边界和偏好按普通事实保存" in contract
     assert "短期定时任务不由记忆系统代办" in contract
     assert "未经对方确认的建议或旧约定，不得写入" in contract
@@ -1188,6 +1204,40 @@ def test_s0_output_contract_keeps_agreements_as_ordinary_facts():
     assert "单次玩笑、昵称或亲昵称呼不自动成为稳定偏好" in contract
     assert "单次重要冲突、修复或共同意义仍可保存" in contract
     assert "Bot 复述的旧记忆" in contract
+
+
+def test_s1_output_contract_teaches_nested_shape_without_requiring_reaction():
+    contract = MemoryProcessor._build_admission_output_contract(False)
+
+    assert "## 完整示例" in contract
+    assert 'topic 候选：["项目进度","工作安排"]' in contract
+    assert "2025-11-24交付" in contract
+    assert "Bot 的复述不是新的用户事实" in contract
+
+    primary_example = contract.split("对应输出：", 1)[1].split(
+        "importance 表示", 1
+    )[0]
+    assert '"persona_reaction"' not in primary_example
+
+    optional_example = contract.split("需要记录人格反应时", 1)[1].split(
+        "## 提取规则", 1
+    )[0]
+    assert optional_example.index('"importance": 0.8,') < optional_example.index(
+        '"persona_reaction"'
+    )
+    assert '"emotion": "关心"' in optional_example
+    assert '"thought": "我想记得这件事对小林很重要"' in optional_example
+
+
+def test_s1_output_contract_gives_fact_level_importance_axis():
+    contract = MemoryProcessor._build_admission_output_contract(False)
+
+    assert "先判断事实是否值得保存" in contract
+    assert "0.9-1.0：关键需求、重大决定" in contract
+    assert "0.7-0.8：明确计划、偏好" in contract
+    assert "0.5-0.6：有帮助但影响有限的日常事实" in contract
+    assert "0.3-0.4：次要、未来参考价值较低的事实" in contract
+    assert "0.0-0.2：纯测试或没有实质内容，通常不应输出" in contract
 
 
 @pytest.mark.asyncio

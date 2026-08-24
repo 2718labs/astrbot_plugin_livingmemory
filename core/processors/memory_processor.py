@@ -125,20 +125,65 @@ class MemoryProcessor(MemoryProcessorParseMixin, MemoryProcessorBuildMixin):
 
     @staticmethod
     def _build_admission_output_contract(is_group_chat: bool) -> str:
-        """Return the compact, non-overridable memory-output contract."""
+        """Return the non-overridable memory-output contract and examples."""
         peer = "群成员" if is_group_chat else "对方"
         return (
-            "## 输出与判断规则\n"
-            '- 只输出 {"memories":[{"key_facts":[...]}]}；最多 5 条 memory，'
-            '每条最多 5 个 fact，整个窗口合计最多 5 个 fact。\n'
-            '- 每个 fact 只写 "fact"、"topics"、"importance"；确有价值时可加 '
-            '"persona_reaction"。不要输出其他字段。\n'
-            '- fact 中的“今天、昨天、明天、下周”等相对时间，按说出该时间的消息日期'
-            '改写为具体日期；不要把消息发送时间本身写成事实。persona_reaction 格式为 '
-            '{"emotion","thought"}。\n'
+            "## 输出格式\n"
+            '- 只输出合法 JSON，结构必须是 {"memories":[{"key_facts":[...]}]}。\n'
+            '- 每个 fact 必须包含 "fact"、"topics"、"importance"；需要时可以增加 '
+            '"persona_reaction"，不要输出其他字段。\n'
+            "\n"
+            "## 完整示例\n"
+            'topic 候选：["项目进度","工作安排"]\n'
+            "对话：\n"
+            "[M1] [小林 | ID: 10001 | 2025-11-19 18:42:10] "
+            "我原本说周五交项目，刚确认改成下周一了。\n"
+            "[M2] [Bot: 助手 | ID: bot-01 | 2025-11-19 18:42:25] "
+            "好，我记住最终是下周一。第一次负责这么大的项目，会紧张吗？\n"
+            "[M3] [小林 | ID: 10001 | 2025-11-19 18:43:02] "
+            "有一点，不过交付时间就是下周一，别再记成周五。\n"
+            "\n"
+            "对应输出：\n"
+            "{\n"
+            '  "memories": [\n'
+            "    {\n"
+            '      "key_facts": [\n'
+            "        {\n"
+            '          "fact": "2025-11-19傍晚，小林确认项目最终于2025-11-24交付，并表示对此有些紧张。",\n'
+            '          "topics": ["项目进度"],\n'
+            '          "importance": 0.8\n'
+            "        }\n"
+            "      ]\n"
+            "    }\n"
+            "  ]\n"
+            "}\n"
+            "\n"
+            "这个示例中：\n"
+            "- “周五”是被纠正的旧计划，不作为当前事实保存。\n"
+            "- “下周一”按消息时间换算为 2025-11-24。\n"
+            "- 对话发生时间写为 2025-11-19傍晚。\n"
+            "- Bot 的复述不是新的用户事实。\n"
+            "- 已有的“项目进度”与事实含义一致，因此直接复用。\n"
+            "- 同一事件的确认、情绪和纠正合并为一条 fact。\n"
+            "\n"
+            "importance 表示该 fact 对未来交流的参考价值，具体评分标准见下文。\n"
+            "persona_reaction 是 key_facts 中单个事实对象的可选字段，只在当前人格对该事实有值得长期保留的反应时使用。\n"
+            "需要记录人格反应时，key_facts 中对应的事实对象可以写成：\n"
+            "{\n"
+            '  "fact": "2025-11-19傍晚，小林确认项目最终于2025-11-24交付，并表示对此有些紧张。",\n'
+            '  "topics": ["项目进度"],\n'
+            '  "importance": 0.8,\n'
+            '  "persona_reaction": {\n'
+            '    "emotion": "关心",\n'
+            '    "thought": "我想记得这件事对小林很重要"\n'
+            "  }\n"
+            "}\n"
+            "\n"
+            "## 提取规则\n"
+            "- 最多输出 5 条 memory，每条最多 5 个 fact，整个窗口合计最多 5 个 fact。\n"
             "- 只输出值得长期接续的事实；寒暄、填充、临时报错、无后果的即时状态和重复内容直接不输出。\n"
-            "- 先读到窗口结尾。后面的明确否认、纠正、澄清或形成的约定覆盖前面的说法；"
-            "不得保存已被否认的版本。\n"
+            "- 先读完整窗口。对于同一件事，以窗口结尾已经明确确认的状态为准；被后续否认或纠正的中间说法不保存。"
+            "讨论形成约定时，只保存最终约定。\n"
             f"- 只提取本窗口新确认的信息。Bot 复述的旧记忆、人格设定、单方面推测，以及未经{peer}确认的建议或旧约定，不得写入。\n"
             "- 承诺、约定、边界和偏好按普通事实保存，写清谁提出、是否接受；短期定时任务不由记忆系统代办。\n"
             "- 单次玩笑、昵称或亲昵称呼不自动成为稳定偏好；单次重要冲突、修复或共同意义仍可保存。\n"
@@ -147,7 +192,25 @@ class MemoryProcessor(MemoryProcessorParseMixin, MemoryProcessorBuildMixin):
             "- 每条 fact 记录一个以后需要整体接续的事实或事件，允许包含同一事件的原因、发展与结果；"
             "topics 只属于该 fact。\n"
             f"- fact 必须中性、自包含，并使用{peer}的具体昵称。描述当前 Bot 自己时只用第一人称“我”；[Bot: ...] 不是用户。\n"
-            "- importance 为 0.0 到 1.0；没有事实时输出 {\"memories\":[]}。"
+            "\n"
+            "## 时间写法\n"
+            "- 每条消息都带发送时间。fact 描述本窗口中发生、说出、确认或形成的事情时，"
+            "按承载该事实的消息时间在正文写“具体日期＋自然时段”。日期必须明确；时段根据"
+            "消息时间自然表达，例如“凌晨、早晨、上午、中午、下午、傍晚、晚上、深夜”，"
+            "不限定固定词表，例如“2026-08-24晚”。\n"
+            "- fact 中的“今天、昨天、明天、下周”等相对时间，也按说出该时间的消息时间"
+            "改写为具体日期和自然时段；若事实明确描述其他时刻发生的事件，保留该事件时间，"
+            "不要用消息发送时间冒充。不要输出 time 字段。\n"
+            "\n"
+            "## importance 评分\n"
+            "先判断事实是否值得保存，再按该 fact 对未来交流的参考价值评分：\n"
+            "- 0.9-1.0：关键需求、重大决定、承诺或边界、强烈情绪表达、重要关系变化。\n"
+            "- 0.7-0.8：明确计划、偏好、具体要求、重要个人信息。\n"
+            "- 0.5-0.6：有帮助但影响有限的日常事实。\n"
+            "- 0.3-0.4：次要、未来参考价值较低的事实。\n"
+            "- 0.0-0.2：纯测试或没有实质内容，通常不应输出。\n"
+            "\n"
+            '没有值得保存的事实时，输出 {"memories":[]}。'
         )
 
     def _load_prompts_fallback(self) -> None:
@@ -276,7 +339,11 @@ class MemoryProcessor(MemoryProcessorParseMixin, MemoryProcessorBuildMixin):
     @staticmethod
     def _build_base_prompt_fallback(current_date: str) -> str:
         """后备基础 system prompt（当 PromptManager 不可用时）"""
-        return f"你负责从对话窗口提取可长期接续的事实，并严格输出指定 JSON。当前日期时间：{current_date}"
+        return (
+            "你负责从对话窗口提取可长期接续的事实，并严格输出指定 JSON。"
+            "根据每条消息的发送时间，在事实正文中使用具体日期和自然时段；"
+            f"不单独输出时间字段。当前日期时间：{current_date}"
+        )
 
     @staticmethod
     def _build_enhanced_prompt_fallback(

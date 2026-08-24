@@ -36,8 +36,8 @@ PROMPT_REGISTRY: dict[str, dict[str, Any]] = {
         "name_en": "Group Chat Memory Prompt",
         "description": "群聊场景下总结对话历史、提取结构化记忆的提示词模板",
         "description_en": "Template for summarizing group chat history and extracting structured memories",
-        "usage_note": "JSON 顶层输出 memories；模型只需生成 fact、topics、importance 及可选人格反应。相对时间直接改写进 fact 正文。",
-        "usage_note_en": "JSON uses top-level memories; the model emits fact, topics, importance, and an optional persona reaction. Relative time is rewritten inside the fact text.",
+        "usage_note": "JSON 顶层输出 memories；模型只需生成 fact、topics、importance 及可选人格反应。对话内事实按消息时间在正文写入具体日期和自然时段。",
+        "usage_note_en": "JSON uses top-level memories; the model emits fact, topics, importance, and an optional persona reaction. Conversation facts include the message date and a natural time-of-day description in the fact text.",
         "category": "memory_processing",
         "file": "group_chat_prompt.txt",
         "variables": ["{conversation}", "{current_date}"],
@@ -48,8 +48,8 @@ PROMPT_REGISTRY: dict[str, dict[str, Any]] = {
         "name_en": "Private Chat Memory Prompt",
         "description": "私聊场景下总结对话历史、提取结构化记忆的提示词模板",
         "description_en": "Template for summarizing private chat history and extracting structured memories",
-        "usage_note": "JSON 顶层输出 memories；模型只需生成 fact、topics、importance 及可选人格反应。相对时间直接改写进 fact 正文。",
-        "usage_note_en": "JSON uses top-level memories; the model emits fact, topics, importance, and an optional persona reaction. Relative time is rewritten inside the fact text.",
+        "usage_note": "JSON 顶层输出 memories；模型只需生成 fact、topics、importance 及可选人格反应。对话内事实按消息时间在正文写入具体日期和自然时段。",
+        "usage_note_en": "JSON uses top-level memories; the model emits fact, topics, importance, and an optional persona reaction. Conversation facts include the message date and a natural time-of-day description in the fact text.",
         "category": "memory_processing",
         "file": "private_chat_prompt.txt",
         "variables": ["{conversation}", "{current_date}"],
@@ -67,7 +67,8 @@ PROMPT_REGISTRY: dict[str, dict[str, Any]] = {
         "variables": ["{current_date}"],
         "default": (
             "你负责从对话窗口提取可长期接续的事实，并严格输出指定 JSON。"
-            "将事实正文中的相对时间改写为具体日期，不单独输出时间字段。"
+            "根据每条消息的发送时间，在事实正文中使用具体日期和自然时段；"
+            "不单独输出时间字段。"
             "当前日期时间：{current_date}"
         ),
     },
