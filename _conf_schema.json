@@ -201,6 +201,12 @@
                 "type": "float",
                 "default": 0.42
             },
+            "importance_grace_enabled": {
+                "description": "重要性宽容准入",
+                "hint": "关闭（默认）。开启后，importance 达到 0.8 的记忆（写侧打了高分的关系/情感/信任级）在检索时放宽向量/词面准入门槛（0.62→0.50），普通记忆门槛不变；阈值与放宽幅度已写死。适合需要稳定召回较早高价值事实（如质疑轮追问）的场景。",
+                "type": "bool",
+                "default": false
+            },
             "injection_token_budget": {
                 "description": "单轮事实注入硬预算",
                 "hint": "预算覆盖注入说明、完整事实、必要时间和可选人格反应；放不下下一条时停止，不截断事实。",

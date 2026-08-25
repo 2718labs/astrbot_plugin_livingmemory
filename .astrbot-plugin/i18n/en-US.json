@@ -118,6 +118,10 @@
         "description": "Minimum Final Fact Score",
         "hint": "Final relevance threshold after reliable route signals, importance, and the small recency tie-break are combined."
       },
+      "importance_grace_enabled": {
+        "description": "Importance Grace Admission",
+        "hint": "Disabled by default. When enabled, facts whose importance reaches 0.8 (the high-scored relationship/emotion/trust facts) get relaxed vector/lexical admission thresholds (0.62→0.50); ordinary facts keep the original thresholds. The threshold and scale are fixed. Useful when you want to reliably recall earlier high-value facts (e.g. follow-up questions)."
+      },
       "injection_token_budget": {
         "description": "Memory Injection Budget",
         "hint": "Hard per-request upper bound for the complete fact payload, measured conservatively by UTF-8 bytes."

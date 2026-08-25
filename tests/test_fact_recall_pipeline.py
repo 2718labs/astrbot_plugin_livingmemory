@@ -363,3 +363,97 @@ def test_fact_injection_uses_absolute_date_already_written_in_fact_text():
 
     assert "张三将在2026年8月8日早上九点复习" in entry
     assert "时间：" not in entry
+
+
+@pytest.mark.asyncio
+async def test_high_importance_relaxes_admission_threshold():
+    """开启重要性宽容（importance_grace_enabled=True）：importance>=0.8 的记忆
+    按固定 0.8 系数放宽准入，vector 0.50（原门槛 0.62 之下、0.62×0.8≈0.50 之上）得以进入。"""
+    store = SimpleNamespace(
+        search_candidates=AsyncMock(
+            return_value={
+                "bm25": [],
+                "vector": [
+                    {"fact_id": "fact_important", "parent_id": "parent_shared", "score": 0.50}
+                ],
+            }
+        ),
+        get_fact_records=AsyncMock(
+            return_value={
+                "fact_important": _record(
+                    "fact_important", "unrelated archive note", importance=0.9
+                )
+            }
+        ),
+    )
+    retriever = CanonicalFactRetriever(
+        store,
+        _TextProcessor(),
+        config={"importance_grace_enabled": True},
+    )
+
+    bundle = await retriever.search("new compiler error", limit=4)
+
+    assert [hit.metadata["fact_id"] for hit in bundle.hits] == ["fact_important"]
+    assert bundle.explanation == "relevant_canonical_facts_selected"
+
+
+@pytest.mark.asyncio
+async def test_low_importance_keeps_original_admission_threshold():
+    """开启宽容时，importance<0.8 的普通记忆不受影响：同分数仍被拒。"""
+    store = SimpleNamespace(
+        search_candidates=AsyncMock(
+            return_value={
+                "bm25": [],
+                "vector": [
+                    {"fact_id": "fact_plain", "parent_id": "parent_shared", "score": 0.50}
+                ],
+            }
+        ),
+        get_fact_records=AsyncMock(
+            return_value={
+                "fact_plain": _record(
+                    "fact_plain", "unrelated archive note", importance=0.5
+                )
+            }
+        ),
+    )
+    retriever = CanonicalFactRetriever(
+        store,
+        _TextProcessor(),
+        config={"importance_grace_enabled": True},
+    )
+
+    bundle = await retriever.search("new compiler error", limit=4)
+
+    assert bundle.hits == []
+    assert bundle.explanation == "all_candidates_rejected_by_relevance_policy"
+    assert bundle.rejected[0]["reason"] == "insufficient_relevance_evidence"
+
+
+@pytest.mark.asyncio
+async def test_grace_disabled_by_default():
+    """默认配置（importance_grace_enabled=False）即关闭宽容：高重要性记忆也走原门槛。"""
+    store = SimpleNamespace(
+        search_candidates=AsyncMock(
+            return_value={
+                "bm25": [],
+                "vector": [
+                    {"fact_id": "fact_important", "parent_id": "parent_shared", "score": 0.50}
+                ],
+            }
+        ),
+        get_fact_records=AsyncMock(
+            return_value={
+                "fact_important": _record(
+                    "fact_important", "unrelated archive note", importance=0.9
+                )
+            }
+        ),
+    )
+    retriever = CanonicalFactRetriever(store, _TextProcessor())
+
+    bundle = await retriever.search("new compiler error", limit=4)
+
+    assert bundle.hits == []
+    assert bundle.rejected[0]["reason"] == "insufficient_relevance_evidence"

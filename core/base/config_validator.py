@@ -113,6 +113,10 @@ class RecallEngineConfig(BaseModel):
     fact_min_final_score: float = Field(
         default=0.42, ge=0.0, le=1.0, description="最终事实相关性门槛"
     )
+    importance_grace_enabled: bool = Field(
+        default=False,
+        description="重要性宽容准入：开启时，importance>=0.8 的记忆放宽向量/词面准入门槛（×0.8）",
+    )
     injection_token_budget: int = Field(
         default=1600, ge=128, le=16000, description="单轮长期事实注入硬预算"
     )

@@ -71,6 +71,11 @@ class CanonicalFactRetriever:
         "previously",
     )
 
+    # 重要性宽容准入（可选开关 importance_grace_enabled）：
+    # 写死的高价值判定与放宽幅度，不对外暴露数值配置。
+    _GRACE_THRESHOLD = 0.8
+    _GRACE_FACTOR = 0.8
+
     def __init__(
         self,
         canonical_store: Any,
@@ -88,6 +93,9 @@ class CanonicalFactRetriever:
         self.min_final = float(self.config.get("fact_min_final_score", 0.42))
         self.min_importance = float(
             self.config.get("min_importance_for_retrieval", 0.0)
+        )
+        self.importance_grace_enabled = bool(
+            self.config.get("importance_grace_enabled", False)
         )
         self.document_weight = float(self.config.get("document_route_weight", 0.65))
         self.graph_weight = float(self.config.get("graph_route_weight", 0.35))
@@ -270,10 +278,26 @@ class CanonicalFactRetriever:
                 )
                 continue
 
+            # 重要性宽容准入：importance 达 0.8 的记忆放宽向量/词面准入门槛。
+            # 写侧已按价值打分（0.9+ 承诺/边界、0.7 计划/偏好），
+            # 读侧对高价值记忆多给一次机会；普通记忆门槛不变。
+            grace = (
+                self.importance_grace_enabled
+                and importance >= self._GRACE_THRESHOLD
+            )
+            eff_min_lexical = (
+                min_lexical * self._GRACE_FACTOR if grace else min_lexical
+            )
+            eff_min_vector = (
+                min_vector * self._GRACE_FACTOR if grace else min_vector
+            )
             document_reliable = (
-                lexical >= min_lexical
-                or vector >= min_vector
-                or (lexical >= min_lexical * 0.6 and vector >= min_vector * 0.82)
+                lexical >= eff_min_lexical
+                or vector >= eff_min_vector
+                or (
+                    lexical >= eff_min_lexical * 0.6
+                    and vector >= eff_min_vector * 0.82
+                )
             )
             graph_reliable = graph >= self.min_graph
             if not document_reliable and not graph_reliable:
