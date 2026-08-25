@@ -8,9 +8,12 @@
 
   /* ── 配置（与 graph-2d.js 的布局参数保持一致） ─────────────────── */
   var CFG = {
-    NODE_RADIUS_MIN: 4,
-    NODE_RADIUS_MAX: 10,
-    NODE_RADIUS_BASE: 4,
+    NODE_RADIUS_MIN: 3.4,
+    NODE_RADIUS_MAX: 12,
+NODE_RADIUS_BASE: 3.8,
+    NODE_DEGREE_GAIN: 1.25,
+    NODE_LEAF_SCALE: 0.78,
+    PERSON_NODE_SCALE: 0.85,
     FORCE_ITERATIONS: 400,
     FORCE_REPULSION: 1680,
     FORCE_LINK_DISTANCE: 108,
@@ -18,6 +21,8 @@
     FORCE_GRAVITY: 0.0095,
     FORCE_DAMPING: 0.82,
     FORCE_MAX_SPEED: 15,
+    OVERVIEW_COMPONENT_LIMIT: 80,
+    LABEL_COLLISION_NODE_LIMIT: 120,
   };
 
   function clamp(value, lo, hi) { return Math.min(hi, Math.max(lo, value)); }
@@ -33,13 +38,123 @@
   }
 
   function layoutRadius(node) {
+    var explicitRadius = Number(node.visual_radius || 0);
+    if (isFinite(explicitRadius) && explicitRadius > 0) {
+      return clamp(explicitRadius, CFG.NODE_RADIUS_MIN, CFG.NODE_RADIUS_MAX);
+    }
+    var degree = clamp(Number(node.degree || 0), 0, 36);
     var w = clamp(Number(node.weight || 0), 0, 20);
     var mr = clamp(Number(node.memory_count || 0), 0, 15);
-    var radius = CFG.NODE_RADIUS_BASE + Math.sqrt(w) * 0.75 + Math.sqrt(mr) * 0.4;
+    var radius = CFG.NODE_RADIUS_BASE +
+      Math.sqrt(degree) * CFG.NODE_DEGREE_GAIN +
+      Math.sqrt(w) * 0.28 +
+      Math.sqrt(mr) * 0.22;
+if (degree <= 1) radius *= CFG.NODE_LEAF_SCALE;
+    if (node && node.type === "person") radius *= CFG.PERSON_NODE_SCALE;
     return clamp(radius, CFG.NODE_RADIUS_MIN, CFG.NODE_RADIUS_MAX);
   }
 
-  function buildTopologySeed(nodes, edges) {
+  function labelBoxOverlap(a, b) {
+    if (a.labelWidth <= 0 && b.labelWidth <= 0) return null;
+    var padding = 3;
+    var aLeft = a.x - a.radius - padding;
+    var aRight = a.x + a.radius + padding +
+      (a.labelWidth > 0 ? 7 + a.labelWidth : 0);
+    var bLeft = b.x - b.radius - padding;
+    var bRight = b.x + b.radius + padding +
+      (b.labelWidth > 0 ? 7 + b.labelWidth : 0);
+    var aHalfHeight = Math.max(a.radius, a.labelHeight / 2) + padding;
+    var bHalfHeight = Math.max(b.radius, b.labelHeight / 2) + padding;
+    var overlapX = Math.min(aRight, bRight) - Math.max(aLeft, bLeft);
+    var overlapY = Math.min(a.y + aHalfHeight, b.y + bHalfHeight) -
+      Math.max(a.y - aHalfHeight, b.y - bHalfHeight);
+    if (overlapX <= 0 || overlapY <= 0) return null;
+
+    if (overlapX < overlapY) {
+      var aCenterX = (aLeft + aRight) / 2;
+      var bCenterX = (bLeft + bRight) / 2;
+      return {
+        axis: "x",
+        amount: overlapX,
+        direction: aCenterX === bCenterX
+          ? (hashUnit(a.id + ":" + b.id, 79) < 0.5 ? -1 : 1)
+          : (aCenterX < bCenterX ? -1 : 1),
+      };
+    }
+    return {
+      axis: "y",
+      amount: overlapY,
+      direction: a.y === b.y
+        ? (hashUnit(a.id + ":" + b.id, 83) < 0.5 ? -1 : 1)
+        : (a.y < b.y ? -1 : 1),
+    };
+  }
+
+  function settleLabelOverlaps(sim) {
+    if (sim.length > CFG.LABEL_COLLISION_NODE_LIMIT) return;
+    for (var pass = 0; pass < 24; pass++) {
+      var moved = false;
+      for (var i = 0; i < sim.length; i++) {
+        for (var j = i + 1; j < sim.length; j++) {
+          var a = sim[i];
+          var b = sim[j];
+          var overlap = labelBoxOverlap(a, b);
+          if (!overlap) continue;
+          moved = true;
+          var distance = overlap.amount + 0.75;
+          var aDistance = a.isFocus ? 0 : b.isFocus ? distance : distance / 2;
+          var bDistance = b.isFocus ? 0 : a.isFocus ? distance : distance / 2;
+          if (overlap.axis === "x") {
+            a.x += overlap.direction * aDistance;
+            b.x -= overlap.direction * bDistance;
+          } else {
+            a.y += overlap.direction * aDistance;
+            b.y -= overlap.direction * bDistance;
+          }
+        }
+      }
+      if (!moved) break;
+    }
+  }
+
+  function assignConnectedComponents(nodes, adjacency) {
+    var visited = {};
+    var components = [];
+    var orderedNodes = nodes.slice().sort(function(a, b) {
+      return String(a.id).localeCompare(String(b.id));
+    });
+
+    orderedNodes.forEach(function(node) {
+      if (visited[node.id]) return;
+      var component = [];
+      var queue = [node.id];
+      visited[node.id] = true;
+      for (var index = 0; index < queue.length; index++) {
+        var current = queue[index];
+        component.push(current);
+        var neighbors = adjacency[current].slice().sort(function(a, b) {
+          return String(a).localeCompare(String(b));
+        });
+        neighbors.forEach(function(neighbor) {
+          if (visited[neighbor]) return;
+          visited[neighbor] = true;
+          queue.push(neighbor);
+        });
+      }
+      components.push(component);
+    });
+
+    components.sort(function(a, b) {
+      return b.length - a.length || String(a[0]).localeCompare(String(b[0]));
+    });
+    var assignment = {};
+    components.forEach(function(component, community) {
+      component.forEach(function(nodeId) { assignment[nodeId] = community; });
+    });
+    return assignment;
+  }
+
+  function buildTopologySeed(nodes, edges, viewMode) {
     var adjacency = {};
     nodes.forEach(function(node) { adjacency[node.id] = []; });
     edges.forEach(function(edge) {
@@ -48,63 +163,70 @@
       adjacency[edge.target].push(edge.source);
     });
 
-    var targetCount = nodes.length < 8
-      ? 1
-      : clamp(Math.round(Math.sqrt(nodes.length / 6)), 2, 12);
-    var ranked = nodes.slice().sort(function(a, b) {
-      var degreeDiff = adjacency[b.id].length - adjacency[a.id].length;
-      if (degreeDiff) return degreeDiff;
-      var weightDiff = Number(b.weight || 0) - Number(a.weight || 0);
-      return weightDiff || String(a.id).localeCompare(String(b.id));
-    });
-
-    var hubs = [];
-    var hubSet = new Set();
-    ranked.forEach(function(node) {
-      if (hubs.length >= targetCount) return;
-      var touchesHub = adjacency[node.id].some(function(id) { return hubSet.has(id); });
-      if (!touchesHub || hubs.length === 0) {
-        hubs.push(node.id);
-        hubSet.add(node.id);
-      }
-    });
-    for (var ri = 0; hubs.length < targetCount && ri < ranked.length; ri++) {
-      if (!hubSet.has(ranked[ri].id)) {
-        hubs.push(ranked[ri].id);
-        hubSet.add(ranked[ri].id);
-      }
-    }
-
     var assignment = {};
-    var distance = {};
-    var queue = [];
-    hubs.forEach(function(id, index) {
-      assignment[id] = index;
-      distance[id] = 0;
-      queue.push(id);
-    });
-    for (var qi = 0; qi < queue.length; qi++) {
-      var current = queue[qi];
-      var neighbors = adjacency[current].slice().sort(function(a, b) {
-        return String(a).localeCompare(String(b));
+    var orphanCommunity = -1;
+    var useComponents = viewMode === "overview" &&
+      nodes.length <= CFG.OVERVIEW_COMPONENT_LIMIT;
+    if (useComponents) {
+      assignment = assignConnectedComponents(nodes, adjacency);
+    } else {
+      var targetCount = nodes.length < 8
+        ? 1
+        : clamp(Math.round(Math.sqrt(nodes.length / 6)), 2, 12);
+      var ranked = nodes.slice().sort(function(a, b) {
+        var degreeDiff = adjacency[b.id].length - adjacency[a.id].length;
+        if (degreeDiff) return degreeDiff;
+        var weightDiff = Number(b.weight || 0) - Number(a.weight || 0);
+        return weightDiff || String(a.id).localeCompare(String(b.id));
       });
-      neighbors.forEach(function(neighbor) {
-        var nextDistance = distance[current] + 1;
-        if (distance[neighbor] == null || nextDistance < distance[neighbor]) {
-          distance[neighbor] = nextDistance;
-          assignment[neighbor] = assignment[current];
-          queue.push(neighbor);
+
+      var hubs = [];
+      var hubSet = new Set();
+      ranked.forEach(function(node) {
+        if (hubs.length >= targetCount) return;
+        var touchesHub = adjacency[node.id].some(function(id) { return hubSet.has(id); });
+        if (!touchesHub || hubs.length === 0) {
+          hubs.push(node.id);
+          hubSet.add(node.id);
         }
       });
-    }
+      for (var ri = 0; hubs.length < targetCount && ri < ranked.length; ri++) {
+        if (!hubSet.has(ranked[ri].id)) {
+          hubs.push(ranked[ri].id);
+          hubSet.add(ranked[ri].id);
+        }
+      }
 
-    /* Keep disconnected nodes visible, but collect them into one deliberate
-       island. Giving every orphan its own community creates hundreds of
-       outliers and forces the viewport to shrink the connected graph. */
-    var orphanCommunity = hubs.length;
-    nodes.forEach(function(node) {
-      if (assignment[node.id] == null) assignment[node.id] = orphanCommunity;
-    });
+      var distance = {};
+      var queue = [];
+      hubs.forEach(function(id, index) {
+        assignment[id] = index;
+        distance[id] = 0;
+        queue.push(id);
+      });
+      for (var qi = 0; qi < queue.length; qi++) {
+        var current = queue[qi];
+        var neighbors = adjacency[current].slice().sort(function(a, b) {
+          return String(a).localeCompare(String(b));
+        });
+        neighbors.forEach(function(neighbor) {
+          var nextDistance = distance[current] + 1;
+          if (distance[neighbor] == null || nextDistance < distance[neighbor]) {
+            distance[neighbor] = nextDistance;
+            assignment[neighbor] = assignment[current];
+            queue.push(neighbor);
+          }
+        });
+      }
+
+      /* Keep disconnected nodes visible, but collect them into one deliberate
+         island. Giving every orphan its own community creates hundreds of
+         outliers and forces the viewport to shrink the connected graph. */
+      orphanCommunity = hubs.length;
+      nodes.forEach(function(node) {
+        if (assignment[node.id] == null) assignment[node.id] = orphanCommunity;
+      });
+    }
 
     var groups = {};
     nodes.forEach(function(node) {
@@ -113,8 +235,8 @@
       groups[community].push(node);
     });
     var orderedGroups = Object.entries(groups).sort(function(a, b) {
-      var aIsOrphan = Number(a[0]) === orphanCommunity;
-      var bIsOrphan = Number(b[0]) === orphanCommunity;
+      var aIsOrphan = orphanCommunity >= 0 && Number(a[0]) === orphanCommunity;
+      var bIsOrphan = orphanCommunity >= 0 && Number(b[0]) === orphanCommunity;
       if (aIsOrphan !== bIsOrphan) return aIsOrphan ? 1 : -1;
       return b[1].length - a[1].length || Number(a[0]) - Number(b[0]);
     });
@@ -185,10 +307,15 @@
       });
     });
 
-    return { assignment: remapped, positions: positions, centers: centers };
+    return {
+      assignment: remapped,
+      positions: positions,
+      centers: centers,
+      strategy: useComponents ? "components" : "hubs",
+    };
   }
 
-  function begin(nodes, edges, focusId) {
+  function begin(nodes, edges, focusId, viewMode) {
     var self = this;
     this.positions = {};
     this.rings = {};
@@ -212,7 +339,7 @@
 
     var largeGraph = n > 220;
     this._largeGraph = largeGraph;
-    var topology = buildTopologySeed(nodes, edges);
+    var topology = buildTopologySeed(nodes, edges, viewMode);
     this._topology = topology;
     this.communities = topology.assignment;
     var sim = nodes.map(function(nd, i) {
@@ -229,6 +356,12 @@
         vx: 0,
         vy: 0,
         radius: layoutRadius(nd),
+        labelWidth: n <= CFG.LABEL_COLLISION_NODE_LIMIT
+          ? clamp(Number(nd.label_collision_width || 0), 0, 88)
+          : 0,
+        labelHeight: n <= CFG.LABEL_COLLISION_NODE_LIMIT
+          ? clamp(Number(nd.label_collision_height || 0), 0, 20)
+          : 0,
       };
     });
     this._sim = sim;
@@ -268,6 +401,21 @@
       : n > 220 ? 150
       : n > 100 ? 350
       : CFG.FORCE_ITERATIONS;
+    var labelCollisionEnabled = n <= CFG.LABEL_COLLISION_NODE_LIMIT;
+
+    var separateLabelBoxes = function(a, b, cooled) {
+      var overlap = labelBoxOverlap(a, b);
+      if (!overlap) return;
+      if (overlap.axis === "x") {
+        var pushX = (overlap.amount + 1) * 0.16 * cooled;
+        a.vx += overlap.direction * pushX;
+        b.vx -= overlap.direction * pushX;
+      } else {
+        var pushY = (overlap.amount + 1) * 0.18 * cooled;
+        a.vy += overlap.direction * pushY;
+        b.vy -= overlap.direction * pushY;
+      }
+    };
 
     var repelPair = function(a, b, cooled, effectiveRange) {
       var dx = a.x - b.x;
@@ -295,6 +443,7 @@
       var fy = dy / dist * repulse;
       a.vx += fx; a.vy += fy;
       b.vx -= fx; b.vy -= fy;
+      if (labelCollisionEnabled) separateLabelBoxes(a, b, cooled);
     };
     this._repelPair = repelPair;
 
@@ -434,14 +583,16 @@
       });
     }
 
+    settleLabelOverlaps(sim);
+
     sim.forEach(function(sn) {
       self.rings[sn.id] = sn.isFocus ? 0 : 1;
       self.positions[sn.id] = { tx: sn.x, ty: sn.y };
     });
   }
 
-  function compute(nodes, edges, focusId) {
-    this.begin(nodes, edges, focusId);
+  function compute(nodes, edges, focusId, viewMode) {
+    this.begin(nodes, edges, focusId, viewMode);
     if (!this._done) this.runLayoutSteps(this._iterations);
   }
 

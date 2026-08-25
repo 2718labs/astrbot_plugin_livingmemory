@@ -17,6 +17,7 @@
   var easeInOutCubic = global.GraphShared.easeInOutCubic;
   var pointToSegmentDistance = global.GraphShared.pointToSegmentDistance;
   var nodeTypography = global.GraphShared.nodeTypography;
+  var nodeVisualRadius = global.GraphShared.nodeVisualRadius;
 
   /* ═══════════════════════════════════════════════════════════════
      Renderer — Canvas 2D drawing
@@ -237,14 +238,7 @@
   };
 
   Renderer.prototype.nodeWorldRadius = function(nodeData, isCenter) {
-    var w = clamp(Number(nodeData.weight || 0), 0, 20);
-    var mr = clamp(Number(nodeData.memory_count || 0), 0, 15);
-    var r = CFG.NODE_RADIUS_BASE + Math.sqrt(w) * 0.75 + Math.sqrt(mr) * 0.4;
-    if (isCenter) {
-      r = Math.min(CFG.CENTER_MAX_RADIUS, r * CFG.CENTER_SCALE);
-    }
-    if (nodeData.isSelected) r += 1.5;
-    return clamp(r, CFG.NODE_RADIUS_MIN, isCenter ? CFG.CENTER_MAX_RADIUS : CFG.NODE_RADIUS_MAX);
+    return nodeVisualRadius(nodeData, isCenter);
   };
 
   Renderer.prototype.nodeScreenRadius = function(nodeData, isCenter) {
@@ -396,13 +390,16 @@
         type: nd.type || "other", label: nd.label || "Unnamed",
         memoryCount: nd.memory_count || 0, degree: nd.degree || 0,
         labelScore: nd.labelScore || 0,
+        isLeaf: Number(nd.degree || 0) <= 1,
         color: TYPE_COLORS[nd.type] || TYPE_COLORS.other, fixed: nd.fixed,
       };
       this._drawnNodes.push(drawInfo);
 
       var needsDetail = drawInfo.isSelected || drawInfo.isHovered || drawInfo.isCenter;
       if (denseMode && !needsDetail) {
-        var bucketKey = drawInfo.isMuted ? "muted" : drawInfo.type;
+        var bucketKey = drawInfo.isMuted
+          ? "muted"
+          : drawInfo.isLeaf ? "leaf:" + drawInfo.type : drawInfo.type;
         if (!denseBuckets[bucketKey]) denseBuckets[bucketKey] = [];
         denseBuckets[bucketKey].push(drawInfo);
       } else {
@@ -448,7 +445,7 @@
       groups[community].push(this.worldToScreen(px, py));
     }
     var keys = Object.keys(groups);
-    if (keys.length < 2) return;
+    if (!keys.length) return;
 
     var palette = ["#78a94b", "#2a9e96", "#df6d62", "#c58c2a", "#74868a", "#6684b8"];
     var ctx = this.ctx;
@@ -570,9 +567,15 @@
         ctx.moveTo(item.sx + radius, item.sy);
         ctx.arc(item.sx, item.sy, radius, 0, Math.PI * 2);
       }
+      var leafPrefix = "leaf:";
+      var isLeaf = key.indexOf(leafPrefix) === 0;
+      var nodeType = isLeaf ? key.substring(leafPrefix.length) : key;
       ctx.fillStyle = key === "muted"
         ? (dark ? "rgba(92,99,112,0.24)" : "rgba(176,188,187,0.28)")
-        : hexToRgba(TYPE_COLORS[key] || TYPE_COLORS.other, dark ? 0.9 : 0.86);
+        : hexToRgba(
+            TYPE_COLORS[nodeType] || TYPE_COLORS.other,
+            isLeaf ? CFG.NODE_LEAF_OPACITY : (dark ? 0.9 : 0.86)
+          );
       ctx.fill();
     });
   };
@@ -641,7 +644,8 @@
     var x = dn.sx, y = dn.sy, r = Math.max(1.4, dn.sr);
 
     ctx.save();
-    ctx.globalAlpha = dn.isMuted ? 0.26 : 1;
+    var subduedLeaf = dn.isLeaf && !dn.isHovered && !dn.isSelected && !dn.isCenter;
+    ctx.globalAlpha = dn.isMuted ? 0.26 : subduedLeaf ? CFG.NODE_LEAF_OPACITY : 1;
 
     var pulse = this.performanceTier === 0
       ? 0.5 + Math.sin(Date.now() * 0.0024 + Number(dn.id || 0) * 0.73) * 0.5

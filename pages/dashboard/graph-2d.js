@@ -49,18 +49,27 @@
     }
   }
 
-  WorkerForceLayout.prototype.begin = function(nodes, edges, centerId) {
+  WorkerForceLayout.prototype.begin = function(nodes, edges, centerId, viewMode) {
     this._done = false;
     this._lastSimPositions = {};
     this._worker.postMessage({
       type: "begin",
       nodes: nodes.map(function(n) {
-        return { id: n.id, weight: n.weight || 0, degree: n.degree || 0, memory_count: n.memory_count || 0 };
+        return {
+          id: n.id,
+          weight: n.weight || 0,
+          degree: n.degree || 0,
+          memory_count: n.memory_count || 0,
+          visual_radius: n.visual_radius || 0,
+          label_collision_width: n.label_collision_width || 0,
+          label_collision_height: n.label_collision_height || 0,
+        };
       }),
       edges: edges.map(function(e) {
         return { id: e.id, source: e.source, target: e.target, weight: e.weight || 1, confidence: e.confidence || 0.8 };
       }),
       centerId: centerId == null ? null : centerId,
+      viewMode: viewMode || "query",
     });
   };
 
@@ -76,8 +85,8 @@
     this._worker.postMessage({ type: "end" });
   };
 
-  WorkerForceLayout.prototype.compute = function(nodes, edges, focusId) {
-    this.begin(nodes, edges, focusId);
+  WorkerForceLayout.prototype.compute = function(nodes, edges, focusId, viewMode) {
+    this.begin(nodes, edges, focusId, viewMode);
   };
 
   WorkerForceLayout.prototype.getTarget = function(nodeId) {
@@ -214,15 +223,16 @@
     this._instantLayout = tier >= 2 || reduceMotion;
   };
 
-  Animator.prototype.layoutGraph = function(centerId) {
+  Animator.prototype.layoutGraph = function(centerId, viewMode) {
     var self = this;
+    viewMode = viewMode || "query";
     /* Save previous positions for animation */
     this._nodes.forEach(function(n) {
       n._prevX = n.x;
       n._prevY = n.y;
     });
     /* 布局缓存：结构未变且上次布局已完成时复用结果，跳过整轮 compute()。 */
-    var signature = this._graphSignature();
+    var signature = this._graphSignature(viewMode);
     if (signature === this._lastLayoutSignature && this._layout._done) {
       if (centerId != null) this._layout.centerId = centerId;
       this._finishLayout(centerId, true);
@@ -242,10 +252,10 @@
         this.renderer._structuralEdges = [];
         this.renderer._communityBundles = [];
       }
-      this._layout.begin(this._nodes, this._edges, centerId);
+      this._layout.begin(this._nodes, this._edges, centerId, viewMode);
       this._progressiveLayout(centerId, this._layoutGeneration);
     } else {
-      this._layout.compute(this._nodes, this._edges, centerId);
+      this._layout.compute(this._nodes, this._edges, centerId, viewMode);
       this._finishLayout(centerId);
     }
   };
@@ -321,13 +331,13 @@
     this._needsRender = false;
   };
 
-  Animator.prototype._graphSignature = function() {
+  Animator.prototype._graphSignature = function(viewMode) {
     /* 轻量签名：排序后的节点 id + 边 key。O(N log N)，远低于力布局成本。 */
     var nodeIds = this._nodes.map(function(n) { return String(n.id); }).sort().join(",");
     var edgeKeys = this._edges.map(function(e) {
       return e.source + ">" + e.target;
     }).sort().join(",");
-    return nodeIds + "|" + edgeKeys;
+    return String(viewMode || "query") + "|" + nodeIds + "|" + edgeKeys;
   };
 
   Animator.prototype.recenter = function(centerId) {
@@ -514,10 +524,7 @@
         memory_count: Number(node.memory_count || 0),
         degree: Number(node.degree || 0),
         entry_count: Number(node.entry_count || 0),
-        labelScore: Number(node.degree || 0) * 2 +
-          Number(node.memory_count || 0) * 3 +
-          Number(node.entry_count || 0) +
-          Number(node.weight || 0),
+        labelScore: 0,
         color: TYPE_COLORS[node.type] || TYPE_COLORS.other,
       });
     });
@@ -540,6 +547,23 @@
         __color: relationColor(edge.relation_type),
         _bendSign: bendSeed % 2 ? 1 : -1,
       });
+    });
+
+    var localDegree = {};
+    edges.forEach(function(edge) {
+      localDegree[edge.source] = (localDegree[edge.source] || 0) + 1;
+      localDegree[edge.target] = (localDegree[edge.target] || 0) + 1;
+    });
+    nodes.forEach(function(node) {
+      node.degree = Math.max(node.degree, localDegree[node.id] || 0);
+      node.labelScore = node.degree * 2 + node.memory_count * 3 +
+        node.entry_count + node.weight;
+      node.visual_radius = GraphShared.nodeVisualRadius(node, false);
+      var collisionLabel = node.degree >= 3 || node.memory_count >= 4 ||
+        node.labelScore >= 15;
+      var labelMetrics = GraphShared.labelCollisionMetrics(node.label);
+      node.label_collision_width = collisionLabel ? labelMetrics.width : 0;
+      node.label_collision_height = collisionLabel ? labelMetrics.height : 0;
     });
 
     /* Build memory→node index */
@@ -566,7 +590,7 @@
     }
 
     /* Apply centered force layout with animation */
-    this.animator.layoutGraph(centerId);
+    this.animator.layoutGraph(centerId, payload.mode || "query");
 
     this.animator.wake();
   };

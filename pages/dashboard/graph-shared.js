@@ -7,9 +7,13 @@
   "use strict";
 
   var CFG = {
-    NODE_RADIUS_MIN: 4,
-    NODE_RADIUS_MAX: 10,
-    NODE_RADIUS_BASE: 4,
+    NODE_RADIUS_MIN: 3.4,
+    NODE_RADIUS_MAX: 12,
+NODE_RADIUS_BASE: 3.8,
+    NODE_DEGREE_GAIN: 1.25,
+NODE_LEAF_SCALE: 0.78,
+    NODE_LEAF_OPACITY: 0.68,
+    PERSON_NODE_SCALE: 0.85,
     NODE_FONT_SIZE: 11,
     NODE_META_SIZE: 9,
     NODE_FONT_ZOOM_WEIGHT: 0.25,
@@ -37,8 +41,8 @@
     FORCE_DAMPING: 0.82,
     FORCE_MAX_SPEED: 15,
     /* Center node is larger */
-    CENTER_SCALE: 1.65,
-    CENTER_MAX_RADIUS: 15,
+    CENTER_SCALE: 1.15,
+    CENTER_MAX_RADIUS: 12,
     /* Animation */
     ANIM_SPEED: 0.075,
     IDLE_DAMPING: 0.05,
@@ -204,6 +208,39 @@
     };
   }
 
+  function nodeVisualRadius(node, isCenter) {
+    var degree = clamp(Number(node && node.degree || 0), 0, 36);
+    var weight = clamp(Number(node && node.weight || 0), 0, 20);
+    var memoryCount = clamp(Number(node && node.memory_count || 0), 0, 15);
+    var radius = CFG.NODE_RADIUS_BASE +
+      Math.sqrt(degree) * CFG.NODE_DEGREE_GAIN +
+      Math.sqrt(weight) * 0.28 +
+      Math.sqrt(memoryCount) * 0.22;
+if (degree <= 1) radius *= CFG.NODE_LEAF_SCALE;
+    if (node && node.type === "person") radius *= CFG.PERSON_NODE_SCALE;
+    if (isCenter) {
+      radius = Math.min(CFG.CENTER_MAX_RADIUS, radius * CFG.CENTER_SCALE);
+    }
+    return clamp(
+      radius,
+      CFG.NODE_RADIUS_MIN,
+      isCenter ? CFG.CENTER_MAX_RADIUS : CFG.NODE_RADIUS_MAX
+    );
+  }
+
+  function labelCollisionMetrics(value) {
+    var width = 0;
+    Array.from(String(value || "")).forEach(function(character) {
+      if (/[\u3400-\u9fff\uff01-\uff60]/.test(character)) width += 8.2;
+      else if (/\s/.test(character)) width += 3.2;
+      else width += 5.4;
+    });
+    return {
+      width: clamp(width, 0, 88),
+      height: 12,
+    };
+  }
+
   global.GraphShared = {
     CFG: CFG,
     TYPE_COLORS: TYPE_COLORS,
@@ -219,5 +256,7 @@
     factDisplayLabel: factDisplayLabel,
     displayGraphLabel: displayGraphLabel,
     nodeTypography: nodeTypography,
+    nodeVisualRadius: nodeVisualRadius,
+    labelCollisionMetrics: labelCollisionMetrics,
   };
 })(typeof self !== "undefined" ? self : window);

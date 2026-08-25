@@ -2,7 +2,7 @@
    graph-layout-worker.js — 力导向布局 Web Worker
    在主线程外运行布局迭代，通过消息协议回传位置。
    协议：
-     begin {nodes, edges, centerId}  → 准备布局
+     begin {nodes, edges, centerId, viewMode}  → 准备布局
      step  {count}                  → 跑 count 次迭代 → positions
      end                            → 收尾（目标位置 + rings + communities）
    ================================================================ */
@@ -13,7 +13,7 @@ var layout = GraphLayoutCore.createForceLayout();
 self.onmessage = function(e) {
   var msg = e.data;
   if (msg.type === "begin") {
-    layout.begin(msg.nodes, msg.edges, msg.centerId);
+    layout.begin(msg.nodes, msg.edges, msg.centerId, msg.viewMode);
     return;
   }
   if (msg.type === "step") {

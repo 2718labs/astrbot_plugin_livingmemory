@@ -150,6 +150,126 @@ test("small graph layout completes synchronously with positions", async () => {
   assert.ok(Array.isArray(g.renderer._communityCache));
 });
 
+test("small overview keeps each connected component in one force system", async () => {
+  const rafQueue = loadGraph();
+  const g = global.window.Graph2D;
+  g.init(makeContainer(), {});
+
+  const connected = makePayload(20, 19);
+  connected.mode = "overview";
+  g.loadData(connected);
+  await settle(rafQueue);
+
+  assert.equal(g.animator._layout._topology.strategy, "components");
+  assert.equal(new Set(g._nodes.map((node) => node.community)).size, 1);
+  assert.ok(g.animator._layout._simEdges.every((edge) => edge.sameCommunity));
+  assert.equal(g.renderer._communityCache.length, 1, "单个真实连通分量仍保留社区轮廓");
+
+  const disconnected = makePayload(10, 0);
+  disconnected.mode = "overview";
+  disconnected.snapshot.edges = [
+    { id: 1, source: 1, target: 2, relation_type: "relates", memory_id: 1 },
+    { id: 2, source: 2, target: 3, relation_type: "relates", memory_id: 1 },
+    { id: 3, source: 3, target: 4, relation_type: "relates", memory_id: 1 },
+    { id: 4, source: 4, target: 5, relation_type: "relates", memory_id: 1 },
+    { id: 5, source: 6, target: 7, relation_type: "relates", memory_id: 2 },
+    { id: 6, source: 7, target: 8, relation_type: "relates", memory_id: 2 },
+    { id: 7, source: 8, target: 9, relation_type: "relates", memory_id: 2 },
+    { id: 8, source: 9, target: 10, relation_type: "relates", memory_id: 2 },
+  ];
+  g.loadData(disconnected);
+
+  assert.equal(new Set(g._nodes.map((node) => node.community)).size, 2);
+});
+
+test("query mode keeps the existing hub topology for the same small graph", () => {
+  loadGraph();
+  const g = global.window.Graph2D;
+  g.init(makeContainer(), {});
+
+  const payload = makePayload(20, 19);
+  payload.mode = "overview";
+  g.loadData(payload);
+  assert.equal(g.animator._layout._topology.strategy, "components");
+
+  payload.mode = "query";
+  g.loadData(payload);
+  assert.equal(g.animator._layout._topology.strategy, "hubs");
+  assert.ok(new Set(g._nodes.map((node) => node.community)).size > 1);
+});
+
+test("visible labels reserve one-sided rectangles in the force layout", () => {
+  loadGraph();
+  const g = global.window.Graph2D;
+  g.init(makeContainer(), {});
+
+  const nodes = [];
+  for (let id = 1; id <= 8; id++) {
+    nodes.push({ id, type: "topic", label: id <= 2 ? "长期计划调整" : "外围节点" });
+  }
+  const pairs = [[1, 2], [1, 3], [1, 4], [1, 5], [2, 6], [2, 7], [2, 8]];
+  const edges = pairs.map(([source, target], index) => ({
+    id: index + 1,
+    source,
+    target,
+    relation_type: "relates",
+    memory_id: 1,
+    weight: 1,
+    confidence: 0.8,
+  }));
+  g.loadData({ enabled: true, mode: "overview", snapshot: { nodes, edges } });
+
+  const hubs = g.animator._layout._sim.filter((node) => node.id === 1 || node.id === 2);
+  const leaf = g.animator._layout._sim.find((node) => node.id === 3);
+  assert.ok(hubs.every((node) => node.labelWidth > 0));
+  assert.equal(leaf.labelWidth, 0);
+
+  function occupiedBox(node) {
+    const padding = 3;
+    return {
+      x1: node.x - node.radius - padding,
+      x2: node.x + node.radius + padding +
+        (node.labelWidth > 0 ? 7 + node.labelWidth : 0),
+      y1: node.y - Math.max(node.radius, node.labelHeight / 2) - padding,
+      y2: node.y + Math.max(node.radius, node.labelHeight / 2) + padding,
+    };
+  }
+  const boxes = g.animator._layout._sim.map(occupiedBox);
+  for (let i = 0; i < boxes.length; i++) {
+    for (let j = i + 1; j < boxes.length; j++) {
+      const overlapX = Math.min(boxes[i].x2, boxes[j].x2) -
+        Math.max(boxes[i].x1, boxes[j].x1);
+      const overlapY = Math.min(boxes[i].y2, boxes[j].y2) -
+        Math.max(boxes[i].y1, boxes[j].y1);
+      assert.ok(overlapX <= 0 || overlapY <= 0, "常驻标签矩形不应覆盖其他节点或标签");
+    }
+  }
+});
+
+test("degree radius and leaf treatment create a restrained visual hierarchy", () => {
+  loadGraph();
+  const radius = global.window.GraphShared.nodeVisualRadius;
+  const leaf = radius({ degree: 1, weight: 1, memory_count: 1 }, false);
+  const branch = radius({ degree: 4, weight: 1, memory_count: 1 }, false);
+  const hub = radius({ degree: 16, weight: 1, memory_count: 1 }, false);
+
+assert.ok(leaf < branch);
+  assert.ok(branch < hub);
+  assert.ok(hub <= global.window.GraphShared.CFG.NODE_RADIUS_MAX);
+  assert.equal(global.window.GraphShared.CFG.NODE_LEAF_OPACITY, 0.68);
+  assert.match(rendererSource, /subduedLeaf \? CFG\.NODE_LEAF_OPACITY : 1/);
+});
+
+test("person nodes stay visually smaller than same-degree regular nodes", () => {
+  loadGraph();
+  const radius = global.window.GraphShared.nodeVisualRadius;
+  const person = radius({ degree: 6, weight: 3, memory_count: 5, type: "person" }, false);
+  const regular = radius({ degree: 6, weight: 3, memory_count: 5 }, false);
+  assert.ok(person < regular);
+  assert.ok(Math.abs(person - regular * 0.85) < 1e-9);
+  assert.ok(person <= global.window.GraphShared.CFG.NODE_RADIUS_MAX);
+});
+
 test("label width cache populates when labels render", async () => {
   const rafQueue = loadGraph();
   const g = global.window.Graph2D;
@@ -358,6 +478,20 @@ test("worker layout completes via fake worker round trip", async () => {
   assert.equal(g._nodes.length, 300);
   assert.equal(g.animator._layout._done, true);
   assert.equal(Object.keys(g.animator._layout.positions).length, 300);
+});
+
+test("worker forwards overview mode to component topology", async () => {
+  const rafQueue = loadGraph();
+  installFakeWorker();
+  const g = global.window.Graph2D;
+  g.init(makeContainer(), {});
+
+  const payload = makePayload(70, 69);
+  payload.mode = "overview";
+  g.loadData(payload);
+  await settle(rafQueue);
+
+  assert.equal(new Set(Object.values(g.animator._layout.communities)).size, 1);
 });
 
 test("worker layout falls back to inline when Worker unavailable", async () => {
