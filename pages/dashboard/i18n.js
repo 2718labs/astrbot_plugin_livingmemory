@@ -183,6 +183,8 @@
     "detail.lastAccess":  { zh: "最后访问", en: "Last Access", ru: "Доступ" },
     "detail.notFound":    { zh: "未找到对应的记录", en: "Record not found", ru: "Запись не найдена" },
     "detail.factLifecycle":{ zh: "事实 {0} · {1} · 检索 {2} · 注入 {3}", en: "Fact {0} · {1} · retrieved {2} · injected {3}", ru: "Факт {0} · {1} · найдено {2} · внедрено {3}" },
+    "detail.factImportance":{ zh: "重要性 {0}/10", en: "Importance {0}/10", ru: "Важность {0}/10" },
+    "detail.importanceStoredNote":{ zh: "此为父级存储值（影响检索/排序/图谱）；列表与详情显示值为子事实加权", en: "Stored parent value (affects retrieval/sorting/graph); the shown aggregate is the self-weighted sum of child facts", ru: "Хранимое значение родителя (влияет на поиск/сортировку/граф); отображаемое значение — взвешенная сумма дочерних фактов" },
     "detail.personaReaction":{ zh: "当时反应：{0}", en: "Reaction then: {0}", ru: "Реакция тогда: {0}" },
 
     /* ---- Edit Modal ---- */

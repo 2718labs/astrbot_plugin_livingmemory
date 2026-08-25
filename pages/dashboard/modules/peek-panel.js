@@ -5,6 +5,7 @@
 
 import {
   normalizeImportance,
+  weightedImportance,
   formatTimestamp,
   getDetailText,
   esc,
@@ -55,16 +56,24 @@ export function renderFactCard(value) {
     }
 
     const lifecycle = value.lifecycle || {};
-    const lifecycleText = window.t(
+const lifecycleText = window.t(
       "detail.factLifecycle",
       String(value.fact_id || "--"),
       String(lifecycle.status || "active"),
       Number(lifecycle.retrieval_count || 0),
       Number(lifecycle.injection_count || 0)
     );
+    const rawFactImportance = value.importance != null
+      ? value.importance
+      : (lifecycle.importance != null ? lifecycle.importance : null);
     html += '<details class="memory-fact-technical">';
     html += '<summary>' + esc(window.t("detail.factTechnical")) + '</summary>';
     html += '<div class="memory-fact-lifecycle">' + esc(lifecycleText) + '</div>';
+    if (rawFactImportance != null) {
+      html += '<div class="memory-fact-lifecycle">' + esc(
+        window.t("detail.factImportance", normalizeImportance(rawFactImportance).toFixed(1))
+      ) + '</div>';
+    }
     html += '</details>';
   }
 
@@ -144,7 +153,7 @@ export class PeekPanel {
         text: memory.summary || memory.content || "",
         summary: memory.summary || "",
         memory_type: memory.memory_type || rawMeta.memory_type || "GENERAL",
-        importance: memory.importance != null ? Number(memory.importance) : 5,
+        importance: rawMeta.importance != null ? Number(rawMeta.importance) : 0.5,
         status: memory.status || rawMeta.status || "active",
         session_id: rawMeta.session_id || "--",
         persona_id: rawMeta.persona_id || "--",
@@ -154,12 +163,21 @@ export class PeekPanel {
         topics: Array.isArray(rawMeta.topics) ? rawMeta.topics : [],
         update_history: Array.isArray(rawMeta.update_history) ? rawMeta.update_history : [],
         graph_context: null,
+        metadata: rawMeta,
       };
     }
 
     // 确保数值类型正确
     if (detail.memory_id != null) detail.memory_id = parseInt(detail.memory_id);
-    detail.importance = normalizeImportance(detail.importance);
+    // 显示口径：父级展示值 = 子事实自加权；无有效子事实时回退父级存储值。
+    // 编辑滑条仍操作父级存储值（detail.storedImportance），见 renderDetailView。
+    const storedRawImportance = detail.metadata && detail.metadata.importance != null
+      ? Number(detail.metadata.importance)
+      : Number(detail.importance);
+    detail.storedImportance = normalizeImportance(storedRawImportance);
+    detail.importance = normalizeImportance(
+      weightedImportance(detail.key_facts, storedRawImportance)
+    );
 
     this.renderDetailView(detail);
     this.open(true);
@@ -178,6 +196,7 @@ export class PeekPanel {
     const type = detail.memory_type || "GENERAL";
     const status = detail.status || "active";
     const importance = normalizeImportance(detail.importance).toFixed(1);
+    const storedImportance = (detail.storedImportance != null ? detail.storedImportance : normalizeImportance(detail.importance)).toFixed(1);
     const content = getDetailText(detail);
     const created = formatTimestamp(detail.create_time, formatTimestamp(detail.created_at));
     const updated = formatTimestamp(detail.updated_at, created);
@@ -330,6 +349,7 @@ export class PeekPanel {
     const id = detail.memory_id;
     const content = getDetailText(detail);
     const importance = normalizeImportance(detail.importance).toFixed(1);
+    const storedImportance = (detail.storedImportance != null ? detail.storedImportance : normalizeImportance(detail.importance)).toFixed(1);
     const type = detail.memory_type || "GENERAL";
     const status = detail.status || "active";
     const topics = Array.isArray(detail.topics) ? detail.topics : [];
@@ -384,9 +404,10 @@ export class PeekPanel {
     html += '<div class="memory-detail-meta-item" style="grid-column:1/-1">';
     html += '<span class="memory-detail-meta-label">' + window.t("detail.importance") + '</span>';
     html += '<div class="memory-detail-slider">';
-    html += '<input type="range" id="edit-importance" min="0" max="10" step="0.1" value="' + importance + '" />';
-    html += '<span class="memory-detail-slider-value" id="importance-value">' + importance + '</span>';
-    html += '</div></div>';
+    html += '<input type="range" id="edit-importance" min="0" max="10" step="0.1" value="' + storedImportance + '" />';
+    html += '<span class="memory-detail-slider-value" id="importance-value">' + storedImportance + '</span>';
+    html += '</div>';
+    html += '<div class="memory-detail-meta-hint">' + esc(window.t("detail.importanceStoredNote")) + '</div></div>';
 
     html += '<div class="memory-detail-meta-item" style="grid-column:1/-1">';
     html += '<span class="memory-detail-meta-label">' + window.t("detail.updateReason") + '</span>';
@@ -475,7 +496,7 @@ export class PeekPanel {
         if (!sameList(newKeyFacts, oldKeyFacts)) messages.push(window.t("detail.keyFactsUpdated"));
         if (newStatus !== detail.status) messages.push(window.t("detail.statusUpdated", statusLabel(newStatus)));
         if (newType !== detail.memory_type) messages.push(window.t("detail.typeUpdated", newType));
-        if (Math.abs(newImportance - normalizeImportance(detail.importance)) > 0.01) {
+        if (Math.abs(newImportance - (detail.storedImportance != null ? detail.storedImportance : normalizeImportance(detail.importance))) > 0.01) {
           messages.push(window.t("detail.importanceUpdated", newImportance.toFixed(1)));
         }
       } else {
@@ -492,7 +513,7 @@ export class PeekPanel {
           });
           messages.push(window.t("detail.typeUpdated", newType));
         }
-        if (Math.abs(newImportance - normalizeImportance(detail.importance)) > 0.01) {
+        if (Math.abs(newImportance - (detail.storedImportance != null ? detail.storedImportance : normalizeImportance(detail.importance))) > 0.01) {
           await this.api.post("memories/update", {
             memory_id: id,
             field: "importance",

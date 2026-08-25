@@ -16,6 +16,31 @@ export function normalizeImportance(value) {
 }
 
 /**
+ * 子事实 importance 自加权（Σ(imp²)/Σ(imp)）：强事实主导但不独占，弱事实也参与。
+ * 只用于父记忆条目的显示口径，不改动存储值与排序。
+ * @param {Array} facts - fact 对象数组（含 importance 0-1 字段）
+ * @param {number} fallback - 无有效 fact 时回退的 0-1 值
+ * @returns {number} 0-1 加权值；无有效输入时返回 fallback
+ */
+export function weightedImportance(facts, fallback) {
+  let weightedSum = 0;
+  let weightSum = 0;
+  for (const fact of Array.isArray(facts) ? facts : []) {
+    const value = fact && fact.importance;
+    const n = Number(value);
+    if (!Number.isFinite(n)) continue;
+    const imp = Math.min(1, Math.max(0, n));
+    weightedSum += imp * imp;
+    weightSum += imp;
+  }
+  if (weightSum <= 0) {
+    const fb = Number(fallback);
+    return Number.isFinite(fb) ? Math.min(1, Math.max(0, fb)) : 0.5;
+  }
+  return weightedSum / weightSum;
+}
+
+/**
  * 统一显示时间：兼容秒/毫秒时间戳、ISO 字符串和旧 SQLite 微秒字符串。
  * @param {number|string|Date|null|undefined} value - 时间值
  * @param {string} fallback - 空值回退文本

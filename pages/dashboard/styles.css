@@ -1310,6 +1310,15 @@ body {
   border-color: var(--accent);
 }
 
+/* Meta hint (display-scope notes) */
+.memory-detail-meta-hint {
+  margin-top: var(--space-1);
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+  opacity: 0.8;
+}
+
 /* Edit history list */
 .edit-history-list {
   display: flex;

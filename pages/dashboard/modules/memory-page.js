@@ -5,6 +5,7 @@
 
 import {
   normalizeImportance,
+  weightedImportance,
   formatTimestamp,
   esc,
   statusPill,
@@ -68,7 +69,9 @@ export class MemoryPage {
           "",
         content: item.text || item.content,
         memory_type: (item.metadata && item.metadata.memory_type) || "GENERAL",
-        importance: normalizeImportance(item.metadata && item.metadata.importance),
+        importance: normalizeImportance(
+          weightedImportance(item.canonical_facts, item.metadata && item.metadata.importance)
+        ),
         status: (item.metadata && item.metadata.status) || "active",
         created_at: formatTimestamp(
           item.metadata && item.metadata.create_time,
