@@ -169,6 +169,58 @@ test("label width cache populates when labels render", async () => {
   assert.ok(Object.keys(g.renderer._labelWidthCache).length > 0, "标签宽度缓存应有条目");
 });
 
+test("fact labels remove narration prefixes and keep 6-8 whole characters before an ellipsis", () => {
+  loadGraph();
+  const label = global.window.GraphShared.factDisplayLabel;
+  const cases = [
+    ["2026-08-24深夜，Alice告诉爱丽丝，周末需要重新整理书架", "告诉爱丽丝周末…"],
+    ["2026-08-24深夜，Alice询问可否把会议改到周五上午", "询问可否把会议…"],
+    ["2026-08-24深夜至25日凌晨，我提到Alice已经寄出蓝色文件夹", "提到已经寄出蓝色…"],
+    ["2026-08-24晚，Alice讨论知识图谱字体优化", "讨论知识图谱字体…"],
+  ];
+
+  for (const [raw, expected] of cases) {
+    const actual = label(raw);
+    assert.equal(actual, expected);
+    assert.ok(actual.endsWith("…"));
+    const summary = Array.from(actual.slice(0, -1));
+    assert.ok(summary.length >= 6 && summary.length <= 8);
+  }
+  assert.equal(global.window.GraphShared.CFG.NODE_FONT_SIZE, 11);
+  assert.equal(global.window.GraphShared.CFG.NODE_META_SIZE, 9);
+  assert.match(rendererSource, /var typography = nodeTypography\(scale\);/);
+  assert.match(rendererSource, /var fontSize = typography\.labelSize;/);
+  assert.match(rendererSource, /var metaFs = typography\.metaSize;/);
+});
+
+test("node typography applies one-quarter zoom with readable limits", () => {
+  loadGraph();
+  const typography = global.window.GraphShared.nodeTypography;
+
+  assert.deepEqual(typography(1), { labelSize: 11, metaSize: 9 });
+  assert.ok(Math.abs(typography(1.65).labelSize - 12.7875) < 1e-9);
+  assert.ok(Math.abs(typography(1.65).metaSize - 10.4625) < 1e-9);
+  assert.deepEqual(typography(3.5), { labelSize: 15, metaSize: 12 });
+  assert.deepEqual(typography(0.06), { labelSize: 10, metaSize: 8 });
+});
+
+test("graph keeps raw fact payload while using the short canvas label", () => {
+  loadGraph();
+  const g = global.window.Graph2D;
+  g.init(makeContainer(), {});
+  const raw = "2026-08-24晚，Alice讨论知识图谱字体优化";
+  const payload = {
+    enabled: true,
+    mode: "query",
+    snapshot: { nodes: [{ id: 1, type: "fact", label: raw }], edges: [] },
+  };
+
+  g.loadData(payload);
+
+  assert.equal(g._nodes[0].label, "讨论知识图谱字体…");
+  assert.equal(payload.snapshot.nodes[0].label, raw);
+});
+
 test("large graph layout completes via progressive stepping", async () => {
   const rafQueue = loadGraph();
   const g = global.window.Graph2D;

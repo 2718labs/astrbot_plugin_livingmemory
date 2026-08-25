@@ -16,6 +16,7 @@
   var hexToRgba = global.GraphShared.hexToRgba;
   var easeInOutCubic = global.GraphShared.easeInOutCubic;
   var pointToSegmentDistance = global.GraphShared.pointToSegmentDistance;
+  var nodeTypography = global.GraphShared.nodeTypography;
 
   /* ═══════════════════════════════════════════════════════════════
      Renderer — Canvas 2D drawing
@@ -675,13 +676,18 @@
       return;
     }
 
-    var fontSize = Math.max(10, CFG.NODE_FONT_SIZE * scale);
+    var typography = nodeTypography(scale);
+    var fontSize = typography.labelSize;
     ctx.fillStyle = dark ? "#e9ecef" : "#2f343a";
     ctx.font = (dn.isSelected || dn.isCenter ? "650 " : "520 ") + fontSize + "px Arial, sans-serif";
     ctx.textAlign = "left";
     ctx.textBaseline = "middle";
     var maxChars = dn.isCenter ? 28 : 24;
-    var label = dn.label.length > maxChars ? dn.label.substring(0, maxChars - 1) + "…" : dn.label;
+    var label = dn.type === "fact"
+      ? dn.label
+      : dn.label.length > maxChars
+        ? dn.label.substring(0, maxChars - 1) + "…"
+        : dn.label;
     var labelX = x + r + 7 * scale;
     /* measureText 缓存：按（标签, 字号桶）复用宽度，避免每帧重复测量。 */
     var fontBucket = Math.round(fontSize);
@@ -709,11 +715,11 @@
     ctx.fillText(label, labelX, y);
 
     if (dn.isHovered || dn.isSelected) {
-      var metaFs = Math.max(8, CFG.NODE_META_SIZE * scale);
+      var metaFs = typography.metaSize;
       ctx.fillStyle = dark ? "#a6abb4" : "#6b7280";
       ctx.font = metaFs + "px 'SFMono-Regular', Consolas, monospace";
       ctx.textBaseline = "top";
-      ctx.fillText(dn.memoryCount + "M / " + dn.degree + " links", labelX, y + 8 * scale);
+      ctx.fillText(dn.memoryCount + "M / " + dn.degree + " links", labelX, y + 8);
     }
 
     ctx.restore();

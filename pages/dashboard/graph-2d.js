@@ -507,7 +507,7 @@
       seenIds[id] = true;
       nodes.push({
         id: id, type: node.type || "other",
-        label: node.label || node.canonical_value || "Node",
+        label: GraphShared.displayGraphLabel(node),
         canonicalValue: node.canonical_value || "",
         x: 0, y: 0, _prevX: null, _prevY: null, fixed: false,
         weight: Number(node.weight || 0),

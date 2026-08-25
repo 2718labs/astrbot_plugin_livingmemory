@@ -12,6 +12,11 @@
     NODE_RADIUS_BASE: 4,
     NODE_FONT_SIZE: 11,
     NODE_META_SIZE: 9,
+    NODE_FONT_ZOOM_WEIGHT: 0.25,
+    NODE_FONT_SIZE_MIN: 10,
+    NODE_FONT_SIZE_MAX: 15,
+    NODE_META_SIZE_MIN: 8,
+    NODE_META_SIZE_MAX: 12,
     EDGE_WIDTH_DEFAULT: 0.7,
     EDGE_WIDTH_ACTIVE: 1.1,
     EDGE_WIDTH_HIGHLIGHT: 1.7,
@@ -101,6 +106,104 @@
     return Math.sqrt((px - x) ** 2 + (py - y) ** 2);
   }
 
+  function codePointLength(value) {
+    return Array.from(String(value || "")).length;
+  }
+
+  function cleanFactLabel(value) {
+    var text = String(value || "")
+      .replace(/\*\*/g, "")
+      .replace(/\s+/g, " ")
+      .trim();
+    text = text.replace(
+      /^(?:\d{4}(?:[-/.]\d{1,2}){2}|\d{4}年\d{1,2}月\d{1,2}日?)[^，,：:]{0,20}[，,：:]\s*/,
+      ""
+    );
+    var reportingVerb = "(?:告诉|询问|提到|谈到|讨论|表示|回应|答应|确认|提醒|解释|允许|拒绝|认为|回忆|承认|建议|要求|明确|说)";
+    text = text.replace(
+      new RegExp("^(?:[A-Za-z][A-Za-z0-9_.-]{0,31}|我)(?=" + reportingVerb + ")"),
+      ""
+    );
+    text = text.replace(
+      new RegExp("^(" + reportingVerb + ")[A-Za-z][A-Za-z0-9_.-]{0,31}(?=[\\u3400-\\u9fff])"),
+      "$1"
+    );
+    return text
+      .replace(/([我你她他])(?:[（(][^）)]{1,8}[）)])/g, "$1")
+      .replace(/[“”‘’'\"]/g, "")
+      .replace(/^[，,。；;：:\s]+/, "")
+      .trim();
+  }
+
+  function factDisplayLabel(value) {
+    var text = cleanFactLabel(value);
+    if (codePointLength(text) <= 8) return text;
+
+    var pieces;
+    if (typeof Intl !== "undefined" && typeof Intl.Segmenter === "function") {
+      var segmenter = new Intl.Segmenter("zh-CN", { granularity: "word" });
+      pieces = Array.from(segmenter.segment(text), function(item) {
+        return { text: item.segment, word: Boolean(item.isWordLike) };
+      });
+    } else {
+      pieces = Array.from(text, function(character) {
+        return {
+          text: character,
+          word: !/[，,。；;：:！？!?、（）()\s]/.test(character),
+        };
+      });
+    }
+
+    var label = "";
+    var length = 0;
+    for (var index = 0; index < pieces.length; index++) {
+      var piece = pieces[index];
+      if (!piece.word) {
+        if (length >= 6) break;
+        continue;
+      }
+      if (length >= 6 && /^(?:并|但|而|随后|然后|让|被)$/.test(piece.text)) {
+        break;
+      }
+      var pieceLength = codePointLength(piece.text);
+      if (length + pieceLength > 8) {
+        if (length >= 6) break;
+        var remaining = 8 - length;
+        label += Array.from(piece.text).slice(0, remaining).join("");
+        length = 8;
+        break;
+      }
+      label += piece.text;
+      length += pieceLength;
+      if (length === 8) break;
+    }
+    var shortened = label || Array.from(text).slice(0, 8).join("");
+    return shortened + "…";
+  }
+
+  function displayGraphLabel(node) {
+    var rawLabel = node && (node.label || node.canonical_value) || "Node";
+    return node && node.type === "fact" ? factDisplayLabel(rawLabel) : rawLabel;
+  }
+
+  function nodeTypography(scale) {
+    var viewportScale = Number(scale);
+    if (!isFinite(viewportScale) || viewportScale <= 0) viewportScale = 1;
+    var fontScale = 1 + (viewportScale - 1) * CFG.NODE_FONT_ZOOM_WEIGHT;
+    return {
+      labelSize: clamp(
+        CFG.NODE_FONT_SIZE * fontScale,
+        CFG.NODE_FONT_SIZE_MIN,
+        CFG.NODE_FONT_SIZE_MAX
+      ),
+      metaSize: clamp(
+        CFG.NODE_META_SIZE * fontScale,
+        CFG.NODE_META_SIZE_MIN,
+        CFG.NODE_META_SIZE_MAX
+      ),
+    };
+  }
+
   global.GraphShared = {
     CFG: CFG,
     TYPE_COLORS: TYPE_COLORS,
@@ -113,5 +216,8 @@
     getPos: getPos,
     easeInOutCubic: easeInOutCubic,
     pointToSegmentDistance: pointToSegmentDistance,
+    factDisplayLabel: factDisplayLabel,
+    displayGraphLabel: displayGraphLabel,
+    nodeTypography: nodeTypography,
   };
 })(typeof self !== "undefined" ? self : window);
