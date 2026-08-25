@@ -210,6 +210,66 @@ async def test_get_recent_parent_returns_newest_inside_window(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_get_recent_parents_returns_newest_n_within_window(tmp_path):
+    """get_recent_parents 按时间倒序返回最近 N 条 active 父记忆。"""
+    store = CanonicalMemoryStore(str(tmp_path / "recent_n.db"), None, object())
+    await store.initialize()
+    try:
+        now = time.time()
+        for index, (pid, age_hours) in enumerate(
+            [
+                ("p-newest", 1.0),
+                ("p-mid", 6.0),
+                ("p-oldest", 30.0),
+                ("p-out", 200.0),
+            ],
+            start=1,
+        ):
+            created = now - age_hours * 3600
+            await store.db.execute(
+                """
+                INSERT INTO memory_parents(
+                    parent_id, document_id, idempotency_key, scope, persona_id,
+                    source_json, overview, generation_version, fact_ids_json,
+                    status, created_at, updated_at
+                ) VALUES (?, ?, ?, 's1', 'persona', ?, ?, 'v1', ?,
+                          'active', ?, ?)
+                """,
+                (
+                    pid,
+                    index,
+                    f"i-{pid}",
+                    json.dumps({"fingerprint": "src"}),
+                    f"overview-{pid}",
+                    json.dumps([f"f-{pid}"]),
+                    created,
+                    now,
+                ),
+            )
+        await store.db.commit()
+
+        parents = await store.get_recent_parents(
+            scope="s1",
+            persona_id="persona",
+            window_hours=48,
+            parent_count=2,
+        )
+        # 窗口(48h)内最新 2 条，倒序：p-newest, p-mid（p-out 超出窗口被过滤）
+        assert [p["parent_id"] for p in parents] == ["p-newest", "p-mid"]
+
+        # parent_count=1 等价于旧的 get_recent_parent
+        single = await store.get_recent_parents(
+            scope="s1",
+            persona_id="persona",
+            window_hours=48,
+            parent_count=1,
+        )
+        assert [p["parent_id"] for p in single] == ["p-newest"]
+    finally:
+        await store.close()
+
+
+@pytest.mark.asyncio
 async def test_get_facts_by_parent_returns_only_active_facts(tmp_path):
     """按父记忆取 active facts，archived 不返回。"""
     store = CanonicalMemoryStore(str(tmp_path / "facts.db"), None, object())

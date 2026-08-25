@@ -2,6 +2,11 @@
 
 本文件只记录 [2718labs fork](https://github.com/2718labs/astrbot_plugin_livingmemory) 相对[原版 LivingMemory](https://github.com/lxfight-s-Astrbot-Plugins/astrbot_plugin_livingmemory)产生的变更。原项目自身的版本历史见 [CHANGELOG.md](CHANGELOG.md)。
 
+## [Unreleased] - 2026-08-25
+
+- recent block 支持覆盖最近 N 条父记忆（新配置 `recall_engine.recent_block_parents`，默认 1，范围 1–5）：按时间倒序取 N 条父记忆，每条都无条件带摘要，各自父记忆下的沾边事实仍按 `recent_block_max_facts` 词面门槛挑选；fact 去重跨 parent 与主召回共用。设 2 可让"昨晚深夜"与"今天中午"等多段近期对话同时进入连续性窗口，避免更早但关键（如高重要性情感事实）的父记忆被最新一条挤掉。
+- 生产条件召回实证（真实 qwen embedding + 实机 FAISS 索引 + 完整融合检索）：质疑轮（"昨天有说这个？"）对高重要性事实（08-24深夜思念）的 vector 相似度 0.39，打开上下文扩展拼接后升到 0.50、无门槛相关度从第 14 升到第 1，但仍低于 `fact_min_vector_similarity` 0.62 的准入硬门槛，两个场景均未召回。结论：该场景靠检索门槛救不回，需 recent block 无条件摘要注入兜底。
+
 ## [2.6.0-a4] - 2026-08-24
 
 - 将 `persona_reaction` 明确为与单个 fact 配对的人格层：完整输出示例直接展示嵌套位置，另以纯技术事实示范何时省略；当反应具有独立的长期态度、感受或关系意义时优先生成，只有复述或需要勉强揣测时不写。

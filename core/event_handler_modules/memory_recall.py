@@ -468,12 +468,13 @@ class MemoryRecall:
         session_id: str,
         persona_id: str | None,
     ) -> list[HybridResult]:
-        """Build the recent-memory block: newest parent summary + 1-2 facts.
+        """Build the recent-memory block: newest parent summaries + their facts.
 
         The recent block is a short-term continuity window (default 48h),
         independent of the top_k relevance slots:
-        - the newest active parent's overview (summary) is always included;
-        - up to ``recent_block_max_facts`` of its facts are appended when
+        - the newest ``recent_block_parents`` active parents' overviews
+          (summaries) are always included (newest first);
+        - up to ``recent_block_max_facts`` facts per parent are appended when
           they are lexically close to the current topic (relaxed threshold);
         - facts already selected by the main recall are not duplicated.
 
@@ -495,158 +496,188 @@ class MemoryRecall:
                     "recall_engine.recent_block_max_facts", 2
                 )
             )
+            parent_count = max(
+                1,
+                int(
+                    self.config_manager.get(
+                        "recall_engine.recent_block_parents", 1
+                    )
+                ),
+            )
             if window_hours <= 0:
                 return []
 
             canonical_store = getattr(self.memory_engine, "canonical_store", None)
-            get_recent_parent = getattr(
-                canonical_store, "get_recent_parent", None
+            get_recent_parents = getattr(
+                canonical_store, "get_recent_parents", None
             )
-            if not callable(get_recent_parent):
+            if not callable(get_recent_parents):
                 return []
 
-            parent = await get_recent_parent(
+            parents = await get_recent_parents(
                 scope=session_id,
                 persona_id=persona_id,
                 window_hours=window_hours,
+                parent_count=parent_count,
             )
-            if not parent:
+            if not parents:
                 return []
-            overview = str(parent.get("overview") or "").strip()
-            parent_id = str(parent.get("parent_id") or "")
-            document_id = int(parent.get("document_id") or 0)
-            if not overview or not parent_id:
-                return []
-
-            entries: list[HybridResult] = [
-                HybridResult(
-                    doc_id=document_id,
-                    final_score=1.0,
-                    rrf_score=0.0,
-                    bm25_score=None,
-                    vector_score=None,
-                    content=overview,
-                    metadata={
-                        "memory_schema_version": "v3",
-                        "fact_id": "",
-                        "parent_id": parent_id,
-                        "session_id": session_id,
-                        "persona_id": persona_id,
-                        "importance": 1.0,
-                        "status": "active",
-                        "recent_summary": True,
-                        "selection_reason": "recent_block_summary",
-                    },
-                    score_breakdown=None,
-                )
-            ]
-
-            if max_facts <= 0:
-                self._log_recent_block(
-                    session_id,
-                    document_id,
-                    parent_id,
-                    overview,
-                    0,
-                    0,
-                    "配置为仅摘要",
-                    query,
-                )
-                return entries
 
             get_facts_by_parent = getattr(
                 canonical_store, "get_facts_by_parent", None
             )
             retriever = getattr(self.memory_engine, "fact_retriever", None)
             score_facts = getattr(retriever, "score_facts_lexically", None)
-            if not callable(get_facts_by_parent) or not callable(score_facts):
-                self._log_recent_block(
-                    session_id, document_id, parent_id, overview, 0, 0, "事实检索器不可用", query
-                )
-                return entries
-
-            facts = await get_facts_by_parent(parent_id)
-            if not facts:
-                self._log_recent_block(
-                    session_id, document_id, parent_id, overview, 0, 0, "父记忆无事实", query
-                )
-                return entries
+            facts_available = callable(get_facts_by_parent) and callable(
+                score_facts
+            )
 
             # 已在主召回中的 fact 不再重复入选（fact_id 精确去重，可靠）
+            # 同一 set 跨多个 parent 累积，防止跨 parent 重复。
             recalled_ids = {
                 str(mem.metadata.get("fact_id") or "")
                 for mem in recalled_memories
                 if isinstance(getattr(mem, "metadata", None), dict)
                 and mem.metadata.get("fact_id")
             }
-            candidates = [
-                fact
-                for fact in facts
-                if str(fact.get("fact_id") or "") not in recalled_ids
-            ]
-            if not candidates:
-                self._log_recent_block(
-                    session_id, document_id, parent_id, overview, 0, 0, "事实均已入选主召回", query
-                )
-                return entries
 
-            texts = [str(fact.get("fact") or "").strip() for fact in candidates]
-            scores = await score_facts(query, texts)
-
-            # 放宽一档的词面门槛（默认 0.34 → 0.204）：连续性优先，
-            # 但完全无关的 fact 仍不入选。
-            relaxed_lexical = float(
-                self.config_manager.get(
-                    "recall_engine.fact_min_lexical_score", 0.34
-                )
-            ) * 0.6
-            ranked = sorted(
-                zip(candidates, scores), key=lambda item: item[1], reverse=True
-            )
-            picked = 0
-            reason = "词面命中"
-            for fact, lexical in ranked:
-                if picked >= max_facts:
-                    break
-                if lexical < relaxed_lexical:
-                    reason = f"词面不达标 (门槛 {relaxed_lexical:.2f})"
-                    break
-                text = str(fact.get("fact") or "").strip()
-                if not text:
+            entries: list[HybridResult] = []
+            for parent in parents:
+                overview = str(parent.get("overview") or "").strip()
+                parent_id = str(parent.get("parent_id") or "")
+                document_id = int(parent.get("document_id") or 0)
+                if not overview or not parent_id:
                     continue
+
                 entries.append(
                     HybridResult(
                         doc_id=document_id,
-                        final_score=0.5 + 0.5 * lexical,
+                        final_score=1.0,
                         rrf_score=0.0,
                         bm25_score=None,
                         vector_score=None,
-                        content=text,
+                        content=overview,
                         metadata={
                             "memory_schema_version": "v3",
-                            "fact_id": str(fact.get("fact_id") or ""),
+                            "fact_id": "",
                             "parent_id": parent_id,
                             "session_id": session_id,
                             "persona_id": persona_id,
-                            "importance": float(fact.get("importance") or 0.5),
+                            "importance": 1.0,
                             "status": "active",
-                            "selection_reason": "recent_block_fact",
+                            "recent_summary": True,
+                            "selection_reason": "recent_block_summary",
                         },
                         score_breakdown=None,
                     )
                 )
-                picked += 1
 
-            self._log_recent_block(
-                session_id,
-                document_id,
-                parent_id,
-                overview,
-                len(candidates),
-                picked,
-                reason,
-                query,
-            )
+                if max_facts <= 0 or not facts_available:
+                    self._log_recent_block(
+                        session_id,
+                        document_id,
+                        parent_id,
+                        overview,
+                        0,
+                        0,
+                        "配置为仅摘要" if max_facts <= 0 else "事实检索器不可用",
+                        query,
+                    )
+                    continue
+
+                facts = await get_facts_by_parent(parent_id)
+                if not facts:
+                    self._log_recent_block(
+                        session_id,
+                        document_id,
+                        parent_id,
+                        overview,
+                        0,
+                        0,
+                        "父记忆无事实",
+                        query,
+                    )
+                    continue
+
+                candidates = [
+                    fact
+                    for fact in facts
+                    if str(fact.get("fact_id") or "") not in recalled_ids
+                ]
+                if not candidates:
+                    self._log_recent_block(
+                        session_id,
+                        document_id,
+                        parent_id,
+                        overview,
+                        0,
+                        0,
+                        "事实均已入选主召回",
+                        query,
+                    )
+                    continue
+
+                texts = [str(fact.get("fact") or "").strip() for fact in candidates]
+                scores = await score_facts(query, texts)
+
+                # 放宽一档的词面门槛（默认 0.34 → 0.204）：连续性优先，
+                # 但完全无关的 fact 仍不入选。
+                relaxed_lexical = float(
+                    self.config_manager.get(
+                        "recall_engine.fact_min_lexical_score", 0.34
+                    )
+                ) * 0.6
+                ranked = sorted(
+                    zip(candidates, scores),
+                    key=lambda item: item[1],
+                    reverse=True,
+                )
+                picked = 0
+                reason = "词面命中"
+                for fact, lexical in ranked:
+                    if picked >= max_facts:
+                        break
+                    if lexical < relaxed_lexical:
+                        reason = f"词面不达标 (门槛 {relaxed_lexical:.2f})"
+                        break
+                    text = str(fact.get("fact") or "").strip()
+                    if not text:
+                        continue
+                    fact_id = str(fact.get("fact_id") or "")
+                    entries.append(
+                        HybridResult(
+                            doc_id=document_id,
+                            final_score=0.5 + 0.5 * lexical,
+                            rrf_score=0.0,
+                            bm25_score=None,
+                            vector_score=None,
+                            content=text,
+                            metadata={
+                                "memory_schema_version": "v3",
+                                "fact_id": fact_id,
+                                "parent_id": parent_id,
+                                "session_id": session_id,
+                                "persona_id": persona_id,
+                                "importance": float(fact.get("importance") or 0.5),
+                                "status": "active",
+                                "selection_reason": "recent_block_fact",
+                            },
+                            score_breakdown=None,
+                        )
+                    )
+                    recalled_ids.add(fact_id)
+                    picked += 1
+
+                self._log_recent_block(
+                    session_id,
+                    document_id,
+                    parent_id,
+                    overview,
+                    len(candidates),
+                    picked,
+                    reason,
+                    query,
+                )
             return entries
         except asyncio.CancelledError:
             raise

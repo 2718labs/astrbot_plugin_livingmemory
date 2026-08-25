@@ -136,7 +136,11 @@
       },
       "recent_block_window_hours": {
         "description": "Recent Block Window (hours)",
-        "hint": "Only the newest parent written inside this window qualifies as the short-term memory. Outside the window, injection falls back to pure relevance recall."
+        "hint": "Only the newest parents written inside this window qualify as the short-term memory. Outside the window, injection falls back to pure relevance recall."
+      },
+      "recent_block_parents": {
+        "description": "Recent Block Parent Memories",
+        "hint": "How many newest parents (newest first) the recent block covers, each carrying its summary. Set to 2 to keep both last night's and this noon's sessions in view instead of only the single newest one."
       },
       "recent_block_max_facts": {
         "description": "Recent Block Facts",

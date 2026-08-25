@@ -98,7 +98,7 @@ async def test_memorize_tool_persists_fact_into_real_storage(tmp_path):
             raw = await tool.call(
                 _make_run_context(),
                 memory="用户喜欢在雨天听爵士乐",
-                new_topic="音乐偏好",
+                topic="音乐偏好",
                 key_facts=["用户雨天会放爵士乐"],
                 participants=["测试用户"],
                 sentiment="positive",

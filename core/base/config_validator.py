@@ -132,6 +132,12 @@ class RecallEngineConfig(BaseModel):
         le=8760,
         description="最近记忆块的时间窗口（小时）：只取窗口内最新一条父记忆",
     )
+    recent_block_parents: int = Field(
+        default=1,
+        ge=1,
+        le=5,
+        description="最近记忆块覆盖的父记忆条数（按时间倒序取 N 条，各带摘要）",
+    )
     recent_block_max_facts: int = Field(
         default=2,
         ge=0,

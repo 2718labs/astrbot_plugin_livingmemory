@@ -575,15 +575,40 @@ class CanonicalMemoryStore:
         parent within ``window_hours`` is the "what we just talked about"
         candidate.  None when nothing qualifies.
         """
+        parents = await self.get_recent_parents(
+            scope=scope,
+            persona_id=persona_id,
+            window_hours=window_hours,
+            parent_count=1,
+        )
+        return parents[0] if parents else None
+
+    async def get_recent_parents(
+        self,
+        *,
+        scope: str,
+        persona_id: str | None = None,
+        window_hours: float = 48.0,
+        parent_count: int = 1,
+    ) -> list[dict[str, Any]]:
+        """Return the newest active parents inside the time window (newest first).
+
+        ``parent_count`` controls how many distinct parents the recent block
+        may cover, so cross-turn continuity can reach farther back than the
+        single newest parent (e.g. yesterday's late-night session while the
+        newest parent is this noon's topic).
+        """
         if self.db is None or not scope:
-            return None
+            return []
         cutoff = time.time() - max(0.0, float(window_hours)) * 3600.0
+        count = max(1, int(parent_count))
         parameters: list[Any] = [scope]
         persona_sql = ""
         if persona_id is not None:
             persona_sql = "AND persona_id = ?"
             parameters.append(persona_id)
         parameters.append(cutoff)
+        parameters.append(count)
         cursor = await self.db.execute(
             f"""
             SELECT parent_id, document_id, scope, persona_id, overview,
@@ -592,14 +617,11 @@ class CanonicalMemoryStore:
             WHERE scope = ? AND status = 'active' {persona_sql}
               AND created_at >= ?
             ORDER BY created_at DESC
-            LIMIT 1
+            LIMIT ?
             """,
             parameters,
         )
-        row = await cursor.fetchone()
-        if row is None:
-            return None
-        return dict(row)
+        return [dict(row) for row in await cursor.fetchall()]
 
     async def get_facts_by_parent(self, parent_id: str) -> list[dict[str, Any]]:
         """Return the active canonical facts of one parent memory."""

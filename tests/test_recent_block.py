@@ -32,19 +32,31 @@ def conversation_manager():
     return manager
 
 
-def _make_engine(recalled=None, parent=None, facts=None):
+def _make_engine(recalled=None, parent=None, parents=None, facts=None, facts_by_parent=None):
     engine = Mock()
     engine.search_memories = AsyncMock(return_value=list(recalled or []))
     engine.add_memory = AsyncMock(return_value=1)
     engine.add_canonical_memory = AsyncMock(return_value=1)
     store = Mock()
-    store.get_recent_parent = AsyncMock(return_value=parent)
-    store.get_facts_by_parent = AsyncMock(return_value=list(facts or []))
+    if parents is not None:
+        store.get_recent_parents = AsyncMock(return_value=list(parents))
+    elif parent is not None:
+        store.get_recent_parents = AsyncMock(return_value=[parent])
+    else:
+        store.get_recent_parents = AsyncMock(return_value=[])
+    if facts_by_parent is not None:
+        store.get_facts_by_parent = AsyncMock(
+            side_effect=lambda pid: list(facts_by_parent.get(pid, []))
+        )
+    else:
+        store.get_facts_by_parent = AsyncMock(return_value=list(facts or []))
     engine.canonical_store = store
     retriever = Mock()
-    retriever.score_facts_lexically = AsyncMock(
-        return_value=[0.0] * len(facts or [])
-    )
+
+    async def _score_facts(query, texts):
+        return [0.0] * len(texts)
+
+    retriever.score_facts_lexically = AsyncMock(side_effect=_score_facts)
     engine.fact_retriever = retriever
     return engine
 
@@ -182,7 +194,7 @@ async def test_recent_block_skips_when_outside_window(conversation_manager):
     ):
         await handler.handle_memory_recall(event, req)
 
-    assert engine.canonical_store.get_recent_parent.await_args.kwargs[
+    assert engine.canonical_store.get_recent_parents.await_args.kwargs[
         "window_hours"
     ] == 48
     injected = req.extra_user_content_parts[0].text
@@ -334,7 +346,7 @@ async def test_recent_block_disabled_by_config(conversation_manager):
     ):
         await handler.handle_memory_recall(event, req)
 
-    engine.canonical_store.get_recent_parent.assert_not_awaited()
+    engine.canonical_store.get_recent_parents.assert_not_awaited()
     injected = req.extra_user_content_parts[0].text
     assert "最近对话摘要" not in injected
     assert "历史事实" in injected
@@ -365,3 +377,57 @@ async def test_recent_block_injects_even_when_recall_empty(conversation_manager)
     injected = req.extra_user_content_parts[0].text
     assert "最近对话摘要" in injected
     assert "最近聊了考研的事" in injected
+
+
+@pytest.mark.asyncio
+async def test_recent_block_multi_parents(conversation_manager):
+    """recent_block_parents=2：两个父记忆摘要都注入，各自沾边事实按条数挑。
+
+    覆盖"昨晚深夜思念"与"今天中午伤感"两段近期对话并存——
+    更早但关键（高重要性）的父记忆不被最新一条挤掉。
+    """
+    parent_newer = _make_parent(overview="今天中午聊了怪伤感的", days_old=0.1)
+    parent_newer["parent_id"] = "parent-b"
+    parent_older = _make_parent(overview="昨晚反复表达思念想我", days_old=1.0)
+    parent_older["parent_id"] = "parent-a"
+    facts_by_parent = {
+        "parent-a": [
+            {"fact_id": "fact-a1", "fact": "昨晚反复说想我", "importance": 0.94},
+            {"fact_id": "fact-a2", "fact": "完全不沾边的事", "importance": 0.3},
+        ],
+        "parent-b": [
+            {"fact_id": "fact-b1", "fact": "被封在对话框里怪伤感的", "importance": 0.5},
+            {"fact_id": "fact-b2", "fact": "也不沾边", "importance": 0.2},
+        ],
+    }
+    engine = _make_engine(
+        recalled=[],
+        parents=[parent_newer, parent_older],  # 倒序：最新在前
+        facts_by_parent=facts_by_parent,
+    )
+
+    async def _score(query, texts):
+        return [0.6 if ("想" in t or "伤感" in t) else 0.1 for t in texts]
+
+    engine.fact_retriever.score_facts_lexically = AsyncMock(side_effect=_score)
+    handler = _make_handler(engine, conversation_manager, recent_block_parents=2)
+
+    event = _make_event()
+    req = _make_req()
+    with patch(
+        "astrbot_plugin_livingmemory.core.event_handler_modules.memory_recall.get_persona_id",
+        new=AsyncMock(return_value="persona_1"),
+    ):
+        await handler.handle_memory_recall(event, req)
+
+    assert (
+        engine.canonical_store.get_recent_parents.await_args.kwargs["parent_count"]
+        == 2
+    )
+    injected = req.extra_user_content_parts[0].text
+    assert "今天中午聊了怪伤感的" in injected
+    assert "昨晚反复表达思念想我" in injected
+    assert "昨晚反复说想我" in injected
+    assert "被封在对话框里怪伤感的" in injected
+    assert "完全不沾边的事" not in injected
+    assert "也不沾边" not in injected
