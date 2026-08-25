@@ -37,7 +37,6 @@ class MemoryEngineCrudMixin:
             "source_time_end",
             "source_time_label",
             "memory_origin",
-            "memorize_reason",
         }
         parent_metadata = {
             key: value for key, value in metadata.items() if key in allowed

@@ -363,6 +363,7 @@ class MemoryProcessorBuildMixin:
         source_reference: str | int | None = None,
         origin: str = "agent_memorize_tool",
         is_group_chat: bool = False,
+        persona_reaction: dict[str, Any] | None = None,
     ) -> MemoryWriteRecord:
         """Build an explicit remember request into the same v3 fact contract."""
         overview = str(memory or "").strip()
@@ -541,6 +542,13 @@ class MemoryProcessorBuildMixin:
                     "persona_reaction": None,
                 }
             )
+        # 显式记忆的 persona_reaction 附加到 importance 最高的一条 fact（同分取第一条）。
+        if persona_reaction and prepared_facts:
+            best_index = max(
+                range(len(prepared_facts)),
+                key=lambda i: prepared_facts[i]["importance"],
+            )
+            prepared_facts[best_index]["persona_reaction"] = persona_reaction
 
         metadata: dict[str, Any] = {
             "memory_schema_version": MEMORY_SCHEMA_VERSION,

@@ -28,6 +28,20 @@ from ..utils import get_persona_id
 
 TOPIC_CANDIDATE_LIMIT = 5
 
+NONE_TOPIC_VALUE = "__none__"
+
+# 第二步字段填写规范：只在第一步返回值中按需出现，不常驻工具描述。
+GUIDANCE = (
+    "第二步填写规范：\n"
+    "- 主题：topic 填候选 topic_id、新建可读名；不挂主题填 __none__。\n"
+    "- key_facts：2-5 条自包含事实句；时间用具体日期＋时段（2026-08-24晚），"
+    "不用\"今天/下午\"；对方用参与者称呼，Bot 只用\"我\"。\n"
+    "- importance：0.9+ 承诺/边界；0.7 计划/偏好；0.5 日常；0.4 以下不写。\n"
+    "- persona_reaction：关系/情绪/承诺类事实附 {emotion, thought}；"
+    "纯客观或勉强揣测省略。\n"
+    "- 承诺写清谁提出、是否接受。"
+)
+
 
 def _json_result(data: dict[str, Any]) -> str:
     """将工具结果稳定序列化为 JSON 文本。"""
@@ -78,9 +92,9 @@ class MemoryMemorizeTool(FunctionTool[AstrAgentContext]):
     description: str = (
         "Memorize durable long-term memory when the user explicitly asks to remember something, "
         "or when stable preferences, identity details, agreements, or project context appear. "
-        "Write concise factual memory, not the full conversation. This is a two-step tool: "
-        "first call with memory and no topic selection to receive relevant existing topics; "
-        "then call again with topic_id, new_topic, or commit_without_topic=true to save."
+        "Two-step tool: step 1 sends only memory (one neutral summary sentence); "
+        "step 2 fills the remaining fields following the guidance returned in step 1, "
+        "plus a topic choice."
     )
     parameters: dict[str, Any] = field(
         default_factory=lambda: {
@@ -88,49 +102,45 @@ class MemoryMemorizeTool(FunctionTool[AstrAgentContext]):
             "properties": {
                 "memory": {
                     "type": "string",
-                    "description": "Concise factual long-term memory to save. Do not copy the full conversation.",
+                    "description": "Step 1 required: one neutral summary sentence for the parent memory.",
                 },
-                "topic_id": {
+                "topic": {
                     "type": "string",
-                    "description": "An existing topic_id returned by the first call. Leave empty on the first call.",
+                    "description": (
+                        "Step 2: a topic_id from step 1 candidates, a new readable name, "
+                        f"or {NONE_TOPIC_VALUE} to save without a topic."
+                    ),
                     "default": "",
-                },
-                "new_topic": {
-                    "type": "string",
-                    "description": "A new human-readable topic name. Use only on the second call when no returned topic fits.",
-                    "default": "",
-                },
-                "commit_without_topic": {
-                    "type": "boolean",
-                    "description": "On the second call, explicitly save without a topic when no topic is appropriate.",
-                    "default": False,
                 },
                 "key_facts": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "Optional key facts supporting the memory, up to 5.",
+                    "description": "Step 2: 2-5 self-contained fact sentences, see the guidance from step 1.",
                     "default": [],
                 },
                 "participants": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "Optional people directly involved in these facts, up to 8.",
+                    "description": "Step 2: people directly involved in these facts, up to 8.",
                     "default": [],
                 },
                 "sentiment": {
                     "type": "string",
-                    "description": "Sentiment of the memory: positive, neutral, or negative.",
+                    "description": "Sentiment: positive, neutral, or negative.",
                     "default": "neutral",
                 },
                 "importance": {
                     "type": "number",
-                    "description": "Importance from 0.0 to 1.0. Use higher values for durable preferences, commitments, or identity facts.",
+                    "description": "Step 2: 0-1 scale, see the guidance from step 1.",
                     "default": 0.7,
                 },
-                "reason": {
-                    "type": "string",
-                    "description": "Optional short reason why this information should be remembered.",
-                    "default": "",
+                "persona_reaction": {
+                    "type": "object",
+                    "properties": {
+                        "emotion": {"type": "string"},
+                        "thought": {"type": "string"},
+                    },
+                    "description": "Step 2 optional: emotion and thought for relational or emotional facts, see the guidance from step 1.",
                 },
             },
             "required": ["memory"],
@@ -141,14 +151,12 @@ class MemoryMemorizeTool(FunctionTool[AstrAgentContext]):
         self,
         context: ContextWrapper[AstrAgentContext],
         memory: str,
-        topic_id: str = "",
-        new_topic: str = "",
-        commit_without_topic: bool = False,
+        topic: str = "",
         key_facts: list[str] | None = None,
         participants: list[str] | None = None,
         sentiment: str = "neutral",
         importance: float = 0.7,
-        reason: str = "",
+        persona_reaction: dict | None = None,
     ) -> ToolExecResult:
         """执行长期记忆写入。"""
         cleaned_memory = (memory or "").strip()
@@ -208,76 +216,69 @@ class MemoryMemorizeTool(FunctionTool[AstrAgentContext]):
                 if isinstance(item, dict)
                 and str(item.get("topic_id") or "").strip()
                 and normalize_concept_name(str(item.get("name") or ""))
-            ][:TOPIC_CANDIDATE_LIMIT]
+][:TOPIC_CANDIDATE_LIMIT]
 
-            selected_topic_id = str(topic_id or "").strip()
-            selected_new_topic = normalize_concept_name(str(new_topic or ""))
-            selection_count = sum(
-                (
-                    bool(selected_topic_id),
-                    bool(selected_new_topic),
-                    bool(commit_without_topic),
-                )
-            )
-            if selection_count > 1:
-                return _json_result(
-                    {
-                        "memorized": False,
-                        "error": "choose exactly one of topic_id, new_topic, or commit_without_topic",
-                    }
-                )
-            if selection_count == 0:
+            selected_topic_id = ""
+            selected_new_topic = ""
+            selected_topics: list[str] = []
+            selected_topic: dict[str, str] | None = None
+            raw_topic = str(topic or "").strip()
+            if raw_topic:
+                if raw_topic.casefold() == NONE_TOPIC_VALUE:
+                    selected_topics = []
+                else:
+                    selected_topic = next(
+                        (
+                            item
+                            for item in topic_candidates
+                            if item["topic_id"] == raw_topic
+                        ),
+                        None,
+                    )
+                    if selected_topic is not None:
+                        selected_topic_id = selected_topic["topic_id"]
+                        selected_topics = [selected_topic["name"]]
+                    elif raw_topic.startswith("topic_"):
+                        return _json_result(
+                            {
+                                "memorized": False,
+                                "error": "topic is not a current candidate for this memory",
+                                "topic_candidates": topic_candidates,
+                            }
+                        )
+                    else:
+                        existing = next(
+                            (
+                                item
+                                for item in topic_candidates
+                                if concept_key(item["name"])
+                                == concept_key(raw_topic)
+                            ),
+                            None,
+                        )
+                        if existing is not None:
+                            return _json_result(
+                                {
+                                    "memorized": False,
+                                    "error": "topic already exists; use its topic_id",
+                                    "existing_topic": existing,
+                                }
+                            )
+                        selected_new_topic = normalize_concept_name(raw_topic)
+                        selected_topics = [selected_new_topic]
+            if not selected_topic_id and not selected_new_topic and not raw_topic:
                 return _json_result(
                     {
                         "memorized": False,
                         "requires_topic_selection": True,
                         "topic_candidates": topic_candidates,
+                        "guidance": GUIDANCE,
                         "next_step": (
-                            "Call memorize_long_term_memory again with the same memory and "
-                            "exactly one of topic_id, new_topic, or commit_without_topic=true."
+                            "Call memorize_long_term_memory again with the same memory, "
+                            "the fields per the guidance, and a topic choice."
                         ),
                     }
                 )
-
-            selected_topics: list[str] = []
-            selected_topic: dict[str, str] | None = None
-            if selected_topic_id:
-                selected_topic = next(
-                    (
-                        item
-                        for item in topic_candidates
-                        if item["topic_id"] == selected_topic_id
-                    ),
-                    None,
-                )
-                if selected_topic is None:
-                    return _json_result(
-                        {
-                            "memorized": False,
-                            "error": "topic_id is not a current candidate for this memory",
-                            "topic_candidates": topic_candidates,
-                        }
-                    )
-                selected_topics = [selected_topic["name"]]
-            elif selected_new_topic:
-                existing = next(
-                    (
-                        item
-                        for item in topic_candidates
-                        if concept_key(item["name"])
-                        == concept_key(selected_new_topic)
-                    ),
-                    None,
-                )
-                if existing is not None:
-                    return _json_result(
-                        {
-                            "memorized": False,
-                            "error": "new_topic already exists; use its topic_id",
-                            "existing_topic": existing,
-                        }
-                    )
-                selected_topics = [selected_new_topic]
 
             platform = _event_value(event, "get_platform_name", "platform")
             sender_id = _event_value(event, "get_sender_id", "sender_id")
@@ -328,6 +329,15 @@ class MemoryMemorizeTool(FunctionTool[AstrAgentContext]):
 
             message_obj = getattr(event, "message_obj", None)
             source_reference = getattr(message_obj, "message_id", None)
+            normalized_reaction = (
+                persona_reaction
+                if isinstance(persona_reaction, dict)
+                and (
+                    str(persona_reaction.get("emotion") or "").strip()
+                    or str(persona_reaction.get("thought") or "").strip()
+                )
+                else None
+            )
             record = self.memory_processor.build_explicit_memory_record(
                 memory=cleaned_memory,
                 source_scope=memory_scope,
@@ -341,10 +351,8 @@ class MemoryMemorizeTool(FunctionTool[AstrAgentContext]):
                 source_reference=source_reference,
                 origin="agent_memorize_tool",
                 is_group_chat=is_group_chat,
+                persona_reaction=normalized_reaction,
             )
-            cleaned_reason = (reason or "").strip()
-            if cleaned_reason:
-                record.metadata["memorize_reason"] = cleaned_reason
 
             memory_id = await self.memory_engine.add_canonical_memory(
                 metadata=record.metadata,
