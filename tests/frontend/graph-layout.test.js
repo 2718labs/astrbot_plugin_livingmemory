@@ -260,13 +260,12 @@ assert.ok(leaf < branch);
   assert.match(rendererSource, /subduedLeaf \? CFG\.NODE_LEAF_OPACITY : 1/);
 });
 
-test("person nodes stay visually smaller than same-degree regular nodes", () => {
+test("person nodes never fall behind same-degree regular nodes", () => {
   loadGraph();
   const radius = global.window.GraphShared.nodeVisualRadius;
   const person = radius({ degree: 6, weight: 3, memory_count: 5, type: "person" }, false);
   const regular = radius({ degree: 6, weight: 3, memory_count: 5 }, false);
-  assert.ok(person < regular);
-  assert.ok(Math.abs(person - regular * 0.92) < 1e-9);
+  assert.ok(person >= regular);
   assert.ok(person <= global.window.GraphShared.CFG.NODE_RADIUS_MAX);
 });
 

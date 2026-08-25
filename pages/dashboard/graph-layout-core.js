@@ -47,9 +47,9 @@ NODE_RADIUS_BASE: 3.8,
     var mr = clamp(Number(node.memory_count || 0), 0, 15);
     var radius = CFG.NODE_RADIUS_BASE +
       Math.sqrt(degree) * CFG.NODE_DEGREE_GAIN +
-      Math.sqrt(w) * 0.28 +
+Math.sqrt(w) * 0.22 +
       Math.sqrt(mr) * 0.22;
-if (degree <= 1) radius *= CFG.NODE_LEAF_SCALE;
+    if (degree <= 1) radius *= CFG.NODE_LEAF_SCALE;
     if (node && node.type === "person") radius *= CFG.PERSON_NODE_SCALE;
     return clamp(radius, CFG.NODE_RADIUS_MIN, CFG.NODE_RADIUS_MAX);
   }

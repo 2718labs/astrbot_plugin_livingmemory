@@ -13,7 +13,7 @@ NODE_RADIUS_BASE: 3.8,
     NODE_DEGREE_GAIN: 1.25,
 NODE_LEAF_SCALE: 0.78,
     NODE_LEAF_OPACITY: 0.68,
-    PERSON_NODE_SCALE: 0.92,
+    PERSON_NODE_SCALE: 1.0,
     NODE_FONT_SIZE: 11,
     NODE_META_SIZE: 9,
     NODE_FONT_ZOOM_WEIGHT: 0.25,
@@ -214,9 +214,9 @@ NODE_LEAF_SCALE: 0.78,
     var memoryCount = clamp(Number(node && node.memory_count || 0), 0, 15);
     var radius = CFG.NODE_RADIUS_BASE +
       Math.sqrt(degree) * CFG.NODE_DEGREE_GAIN +
-      Math.sqrt(weight) * 0.28 +
+Math.sqrt(weight) * 0.22 +
       Math.sqrt(memoryCount) * 0.22;
-if (degree <= 1) radius *= CFG.NODE_LEAF_SCALE;
+    if (degree <= 1) radius *= CFG.NODE_LEAF_SCALE;
     if (node && node.type === "person") radius *= CFG.PERSON_NODE_SCALE;
     if (isCenter) {
       radius = Math.min(CFG.CENTER_MAX_RADIUS, radius * CFG.CENTER_SCALE);
