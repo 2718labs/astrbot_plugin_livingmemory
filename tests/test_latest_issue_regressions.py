@@ -2,6 +2,8 @@
 
 from pathlib import Path
 
+from astrbot_plugin_livingmemory.core.memory_source import serialize_source_messages
+from astrbot_plugin_livingmemory.core.models.conversation_models import Message
 from astrbot_plugin_livingmemory.core.processors.graph_extractor import GraphExtractor
 from astrbot_plugin_livingmemory.core.processors.memory_processor import MemoryProcessor
 
@@ -49,8 +51,6 @@ def test_person_node_key_survives_nickname_changes() -> None:
 
 
 def test_participant_identity_keeps_alias_history_and_latest_display_name() -> None:
-    from astrbot_plugin_livingmemory.core.models.conversation_models import Message
-
     messages = [
         Message(1, "s1", "user", "你好", "10001", "旧昵称", platform="aiocqhttp"),
         Message(2, "s1", "user", "改名了", "10001", "新昵称", platform="aiocqhttp"),
@@ -67,6 +67,100 @@ def test_participant_identity_keeps_alias_history_and_latest_display_name() -> N
             "aliases": ["旧昵称", "新昵称"],
             "is_bot": False,
         }
+    ]
+
+
+def test_bot_identity_uses_persona_name_and_keeps_account_as_provenance() -> None:
+    messages = [
+        Message(
+            1,
+            "s1",
+            "assistant",
+            "我记住了",
+            "bot-001",
+            "bot-001",
+            platform="aiocqhttp",
+            metadata={"is_bot_message": True},
+        )
+    ]
+
+    identities = MemoryProcessor._extract_participant_identities(
+        messages,
+        persona_id="Alice",
+        persona_display_aliases="Alice=爱丽丝",
+    )
+
+    assert identities == [
+        {
+            "identity_kind": "persona",
+            "identity_key": "persona:alice",
+            "persona_id": "Alice",
+            "sender_id": "bot-001",
+            "platform": "aiocqhttp",
+            "display_name": "爱丽丝",
+            "aliases": ["爱丽丝", "Alice"],
+            "account_identity_keys": ["aiocqhttp:bot-001"],
+            "sender_ids": ["bot-001"],
+            "platforms": ["aiocqhttp"],
+            "is_bot": True,
+        }
+    ]
+
+    conversation = MemoryProcessor(
+        config={"persona_display_aliases": "Alice=爱丽丝"}
+    )._format_conversation(messages, persona_id="Alice")
+    assert "[Bot: 爱丽丝 |" in conversation
+    assert "bot-001" not in conversation
+
+
+def test_retained_source_displays_persona_but_preserves_sender_id() -> None:
+    messages = [
+        Message(
+            1,
+            "s1",
+            "assistant",
+            "我记住了",
+            "bot-001",
+            "bot-001",
+            platform="aiocqhttp",
+            metadata={"is_bot_message": True},
+        )
+    ]
+
+    source = serialize_source_messages(
+        messages,
+        persona_id="Alice",
+        persona_display_aliases="Alice=爱丽丝",
+    )
+
+    assert source[0]["sender_name"] == "爱丽丝"
+    assert source[0]["sender_id"] == "bot-001"
+
+
+def test_existing_bot_account_node_rebuilds_as_persona_node() -> None:
+    metadata = {
+        "persona_id": "Alice",
+        "canonical_summary": "我确认了计划",
+        "key_facts": ["我确认了计划"],
+        "participant_identities": [
+            {
+                **_identity("bot-001", is_bot=True),
+                "identity_key": "aiocqhttp:bot-001",
+                "sender_id": "bot-001",
+            }
+        ],
+    }
+
+    graph = GraphExtractor(
+        {"graph_persona_display_aliases": "Alice=爱丽丝"}
+    ).extract(1, metadata["canonical_summary"], metadata)
+    people = [node for node in graph.nodes if node.node_type == "person"]
+
+    assert [(node.value, node.node_key) for node in people] == [
+        ("爱丽丝", "person:persona:alice")
+    ]
+    assert people[0].metadata["account_identity_keys"] == [
+        "aiocqhttp:bot-001"
     ]
 
 

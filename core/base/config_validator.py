@@ -304,6 +304,9 @@ class GraphMemoryConfig(BaseModel):
     max_participants_per_memory: int = Field(
         default=8, ge=1, le=30, description="单条记忆最多索引参与者数"
     )
+    persona_display_aliases: str = Field(
+        default="", description="人格 ID 到 Bot 可见显示名的映射"
+    )
     max_facts_per_memory: int = Field(
         default=8, ge=1, le=30, description="单条记忆最多索引事实数"
     )

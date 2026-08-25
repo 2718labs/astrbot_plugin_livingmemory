@@ -12,8 +12,12 @@ from typing import Any
 
 from astrbot.api import logger
 
+from ..memory_scope import resolve_persona_display_name
 from ..models.conversation_models import Message
-from ..models.memory_contract import build_participant_identity
+from ..models.memory_contract import (
+    build_participant_identity,
+    normalize_concept_name,
+)
 from ..models.memory_processing import (
     InvalidMemoryOutputError,
     MemoryAdmissionSkipped,
@@ -138,7 +142,7 @@ class MemoryProcessor(MemoryProcessorParseMixin, MemoryProcessorBuildMixin):
             "对话：\n"
             "[M1] [小林 | ID: 10001 | 2025-11-19 18:42:10] "
             "我原本说周五交项目，刚确认改成下周一了。\n"
-            "[M2] [Bot: 助手 | ID: bot-01 | 2025-11-19 18:42:25] "
+            "[M2] [Bot: 助手 | 2025-11-19 18:42:25] "
             "好，我记住最终是下周一。第一次负责这么大的项目，会紧张吗？\n"
             "[M3] [小林 | ID: 10001 | 2025-11-19 18:43:02] "
             "有一点，不过交付时间就是下周一，别再记成周五。\n"
@@ -524,7 +528,7 @@ class MemoryProcessor(MemoryProcessorParseMixin, MemoryProcessorBuildMixin):
             raise ValueError("消息列表不能为空")
 
         # 1. 格式化对话历史
-        conversation_text = self._format_conversation(messages)
+        conversation_text = self._format_conversation(messages, persona_id=persona_id)
 
         # 2. 选择合适的提示词模板（每次从 PromptManager 读取，确保 WebUI 保存后立即生效）
         # 使用 replace 而非 format，避免对话内容中的大括号导致解析错误
@@ -621,6 +625,7 @@ class MemoryProcessor(MemoryProcessorParseMixin, MemoryProcessorBuildMixin):
                     is_group_chat=is_group_chat,
                     topic_candidates=topic_candidates,
                     source_scope=source_scope,
+                    persona_id=persona_id,
                 )
             except InvalidMemoryOutputError as quality_error:
                 logger.warning(f"[MemoryProcessor] 事实来源或时间不合格: {quality_error}")
@@ -708,7 +713,11 @@ class MemoryProcessor(MemoryProcessorParseMixin, MemoryProcessorBuildMixin):
         metadata["source_time_label"] = label
         return content
 
-    def _format_conversation(self, messages: list[Message]) -> str:
+    def _format_conversation(
+        self,
+        messages: list[Message],
+        persona_id: str | None = None,
+    ) -> str:
         """
         格式化对话历史为文本
 
@@ -728,7 +737,13 @@ class MemoryProcessor(MemoryProcessorParseMixin, MemoryProcessorBuildMixin):
             )
 
             content_text = self._message_content_to_text(msg.content)
-            sender_info = self._format_sender_info(msg)
+            sender_info = self._format_sender_info(
+                msg,
+                persona_id=persona_id,
+                persona_display_aliases=self.config.get(
+                    "persona_display_aliases", ""
+                ),
+            )
             formatted_line = f"[M{i}] {sender_info} {content_text}".rstrip()
             formatted_lines.append(formatted_line)
             if msg.group_id:
@@ -744,8 +759,10 @@ class MemoryProcessor(MemoryProcessorParseMixin, MemoryProcessorBuildMixin):
     @staticmethod
     def _extract_participant_identities(
         messages: list[Message],
+        persona_id: str | None = None,
+        persona_display_aliases: Any = "",
     ) -> list[dict[str, Any]]:
-        """Build stable graph identities from message sender IDs, not LLM names."""
+        """Build stable user accounts and persona-scoped Bot identities."""
         identities: dict[str, dict[str, Any]] = {}
         for message in messages:
             if message.role == "system":
@@ -759,32 +776,79 @@ class MemoryProcessor(MemoryProcessorParseMixin, MemoryProcessorBuildMixin):
                 message.metadata.get("is_bot_message", False)
                 or message.role == "assistant"
             )
-            candidate = build_participant_identity(
+            account_identity = build_participant_identity(
                 platform=platform,
                 sender_id=sender_id,
                 display_name=display_name,
                 is_bot=is_bot,
             )
+            candidate = account_identity
+            resolved_persona_id = str(persona_id or "").strip()
+            if is_bot and resolved_persona_id:
+                persona_key = normalize_concept_name(resolved_persona_id).casefold()
+                persona_display = resolve_persona_display_name(
+                    resolved_persona_id,
+                    persona_display_aliases,
+                    sender_name=display_name,
+                    sender_id=sender_id,
+                )
+                persona_aliases = [persona_display]
+                if resolved_persona_id not in persona_aliases:
+                    persona_aliases.append(resolved_persona_id)
+                if (
+                    display_name != sender_id
+                    and not display_name.isdigit()
+                    and display_name not in persona_aliases
+                ):
+                    persona_aliases.append(display_name)
+                candidate = {
+                    "identity_kind": "persona",
+                    "identity_key": f"persona:{persona_key}",
+                    "persona_id": resolved_persona_id,
+                    "sender_id": sender_id,
+                    "platform": platform,
+                    "display_name": persona_display,
+                    "aliases": persona_aliases,
+                    "account_identity_keys": [account_identity["identity_key"]],
+                    "sender_ids": [sender_id],
+                    "platforms": [platform],
+                    "is_bot": True,
+                }
             identity_key = str(candidate["identity_key"])
 
-            identity = identities.setdefault(
-                identity_key,
-                candidate,
-            )
-            identity["display_name"] = display_name
+            identity = identities.setdefault(identity_key, candidate)
+            identity["display_name"] = str(candidate["display_name"])
             identity["is_bot"] = bool(identity["is_bot"] or is_bot)
-            if display_name not in identity["aliases"]:
-                identity["aliases"].append(display_name)
+            for alias in candidate.get("aliases", []):
+                if alias not in identity["aliases"]:
+                    identity["aliases"].append(alias)
+            for key in ("account_identity_keys", "sender_ids", "platforms"):
+                if key not in candidate:
+                    continue
+                values = identity.setdefault(key, [])
+                for value in candidate[key]:
+                    if value not in values:
+                        values.append(value)
 
         return list(identities.values())
 
     @staticmethod
-    def _format_sender_info(msg: Message) -> str:
+    def _format_sender_info(
+        msg: Message,
+        persona_id: str | None = None,
+        persona_display_aliases: Any = "",
+    ) -> str:
         time_str = datetime.fromtimestamp(msg.timestamp).strftime("%Y-%m-%d %H:%M:%S")
         display_name = msg.sender_name if msg.sender_name else msg.sender_id or "未知"
         is_bot = msg.metadata.get("is_bot_message", False) or msg.role == "assistant"
         if is_bot:
-            return f"[Bot: {display_name} | ID: {msg.sender_id} | {time_str}]"
+            display_name = resolve_persona_display_name(
+                persona_id,
+                persona_display_aliases,
+                sender_name=display_name,
+                sender_id=msg.sender_id,
+            )
+            return f"[Bot: {display_name} | {time_str}]"
         return f"[{display_name} | ID: {msg.sender_id} | {time_str}]"
 
     @classmethod

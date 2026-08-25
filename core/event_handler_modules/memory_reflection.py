@@ -479,7 +479,13 @@ class MemoryReflection:
                     )
                     for record in records:
                         source_messages = (
-                            serialize_source_messages(history_messages)
+                            serialize_source_messages(
+                                history_messages,
+                                persona_id=persona_id,
+                                persona_display_aliases=self.config_manager.get(
+                                    "graph_memory.persona_display_aliases", ""
+                                ),
+                            )
                             if record.importance >= source_threshold
                             else None
                         )

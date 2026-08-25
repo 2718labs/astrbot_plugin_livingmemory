@@ -33,7 +33,10 @@ class PluginPageApi:
         self.plugin = plugin
 
         # 初始化工具类
-        self.utils = PageApiUtils()
+        config_manager = getattr(plugin, "config_manager", None) or getattr(
+            getattr(plugin, "initializer", None), "config_manager", None
+        )
+        self.utils = PageApiUtils(config_manager)
 
         # 初始化各个处理器
         self.stats_handler = StatsHandler(self.utils)

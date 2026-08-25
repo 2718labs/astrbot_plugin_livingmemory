@@ -12,6 +12,18 @@ from ..utils.number_utils import safe_float
 class PageApiUtils:
     """Page API 工具类"""
 
+    def __init__(self, config_manager: Any = None) -> None:
+        self.config_manager = config_manager
+
+    def config_get(self, key: str, default: Any = None) -> Any:
+        getter = getattr(self.config_manager, "get", None)
+        if callable(getter):
+            try:
+                return getter(key, default)
+            except TypeError:
+                pass
+        return default
+
     @staticmethod
     def ok(data: Any = None) -> dict[str, Any]:
         """构造成功响应"""

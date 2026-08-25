@@ -275,6 +275,32 @@ async def test_provider_change_rebuilds_document_and_graph_indexes(initializer):
         "rebuilt": 3,
         "skipped": 0,
     }
+    assert initializer._graph_identity_rebuild_required() is False
+
+
+def test_graph_identity_marker_tracks_persona_mapping(
+    mock_context, tmp_path
+):
+    first = PluginInitializer(
+        mock_context,
+        ConfigManager(
+            {"graph_memory": {"persona_display_aliases": "Alice=爱丽丝"}}
+        ),
+        str(tmp_path),
+    )
+
+    assert first._graph_identity_rebuild_required() is True
+    first._write_graph_identity_marker()
+    assert first._graph_identity_rebuild_required() is False
+
+    renamed = PluginInitializer(
+        mock_context,
+        ConfigManager(
+            {"graph_memory": {"persona_display_aliases": "Alice=爱丽丝小姐"}}
+        ),
+        str(tmp_path),
+    )
+    assert renamed._graph_identity_rebuild_required() is True
 
 
 @pytest.mark.asyncio
@@ -447,6 +473,7 @@ async def test_complete_initialization_wires_graph_db_and_engine_config(
                     "expansion_limit": 12,
                     "max_topics_per_memory": 4,
                     "max_participants_per_memory": 5,
+                    "persona_display_aliases": "Alice=爱丽丝",
                     "max_facts_per_memory": 6,
                     "atom_enabled": False,
                     "atom_maintenance_interval_hours": 12.0,
@@ -478,11 +505,19 @@ async def test_complete_initialization_wires_graph_db_and_engine_config(
     assert init.memory_engine.config["graph_expansion_limit"] == 12
     assert init.memory_engine.config["graph_max_topics"] == 4
     assert init.memory_engine.config["graph_max_participants"] == 5
+    assert (
+        init.memory_engine.config["graph_persona_display_aliases"]
+        == "Alice=爱丽丝"
+    )
     assert init.memory_engine.config["graph_max_facts"] == 6
     assert init.memory_engine.config["atom_enabled"] is False
     assert init.memory_engine.config["atom_maintenance_interval_hours"] == 12.0
     assert init.memory_engine.config["atom_forget_delay_days"] == 3.0
     assert init.memory_processor.config.get("atom_enabled") is False
+    assert (
+        init.memory_processor.config["persona_display_aliases"]
+        == "Alice=爱丽丝"
+    )
 
 
 @pytest.mark.asyncio

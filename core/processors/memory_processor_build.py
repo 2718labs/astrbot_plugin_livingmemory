@@ -120,6 +120,7 @@ class MemoryProcessorBuildMixin:
         is_group_chat: bool,
         topic_candidates: list[dict[str, Any] | str] | None = None,
         source_scope: str | None = None,
+        persona_id: str | None = None,
     ) -> list[MemoryWriteRecord]:
         """Create one authoritative v3 record for each admitted centre."""
         scope = str(source_scope or messages[0].session_id or "").strip()
@@ -144,7 +145,11 @@ class MemoryProcessorBuildMixin:
         for key, item in candidate_topics.items():
             catalog.setdefault(key, item)
 
-        identities = self._extract_participant_identities(messages)
+        identities = self._extract_participant_identities(
+            messages,
+            persona_id=persona_id,
+            persona_display_aliases=self.config.get("persona_display_aliases", ""),
+        )
         identity_lookup = _build_identity_alias_lookup(identities)
 
         def _resolve_topic(raw_name: str) -> dict[str, str]:
@@ -207,6 +212,13 @@ class MemoryProcessorBuildMixin:
                     "platform": str(identity.get("platform") or "unknown"),
                     "is_bot": bool(identity.get("is_bot")),
                 }
+                for key in (
+                    "identity_kind",
+                    "persona_id",
+                    "account_identity_keys",
+                ):
+                    if key in identity:
+                        ref[key] = identity[key]
                 if ref["participant_id"] not in {
                     item["participant_id"] for item in refs
                 }:
@@ -325,6 +337,8 @@ class MemoryProcessorBuildMixin:
                 "source_session_id": scope,
                 "summary_quality": "normal",
             }
+            if persona_id:
+                metadata["persona_id"] = persona_id
             records.append(
                 MemoryWriteRecord(
                     content=content,

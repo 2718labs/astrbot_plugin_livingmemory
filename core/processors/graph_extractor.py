@@ -5,14 +5,14 @@ from __future__ import annotations
 import hashlib
 from typing import Any
 
+from ..memory_scope import resolve_persona_display_name
+from ..models.graph_models import ExtractedGraph, GraphEdge, GraphEntry, GraphNode
 from ..models.memory_contract import (
     MEMORY_SCHEMA_VERSION,
     participant_id as participant_stable_id,
     topic_id as topic_stable_id,
 )
 from ..utils.memory_facts import fact_texts_from_metadata
-
-from ..models.graph_models import ExtractedGraph, GraphEdge, GraphEntry, GraphNode
 from .entity_resolver import EntityResolver
 
 
@@ -24,6 +24,9 @@ class GraphExtractor:
         self.max_topics = int(self.config.get("graph_max_topics", 6))
         self.max_participants = int(self.config.get("graph_max_participants", 8))
         self.max_facts = int(self.config.get("graph_max_facts", 8))
+        self.persona_display_aliases = self.config.get(
+            "graph_persona_display_aliases", ""
+        )
 
     def extract(
         self,
@@ -56,42 +59,30 @@ class GraphExtractor:
         self, metadata: dict[str, Any]
     ) -> list[tuple[str, str, dict[str, Any]]]:
         """Return display name, canonical identity, and metadata for people."""
-        resolved: list[tuple[str, str, dict[str, Any]]] = []
+        resolved: dict[str, tuple[str, dict[str, Any]]] = {}
+        persona_id = str(metadata.get("persona_id") or "").strip()
         identities = metadata.get("participant_identities")
         if isinstance(identities, list):
-            seen: set[str] = set()
             for item in identities:
                 if not isinstance(item, dict):
                     continue
-                identity_key = EntityResolver.canonicalize(
-                    str(item.get("identity_key") or "")
-                )
-                display_name = str(
-                    item.get("display_name") or item.get("sender_id") or ""
-                ).strip()
-                if not identity_key or not display_name or identity_key in seen:
+                identity = self._resolve_participant_identity(item, persona_id)
+                if identity is None:
                     continue
-                seen.add(identity_key)
-                aliases = EntityResolver.dedupe_preserve_order(
-                    [str(alias) for alias in item.get("aliases", []) if alias]
-                )
-                resolved.append(
-                    (
-                        display_name,
-                        f"account:{identity_key}",
-                        {
-                            "identity_key": identity_key,
-                            "sender_id": str(item.get("sender_id") or ""),
-                            "platform": str(item.get("platform") or "unknown"),
-                            "aliases": aliases,
-                            "is_bot": bool(item.get("is_bot", False)),
-                        },
-                    )
+                canonical_value, display_value, identity_metadata = identity
+                self._merge_participant_identity(
+                    resolved,
+                    canonical_value,
+                    display_value,
+                    identity_metadata,
                 )
                 if len(resolved) >= self.max_participants:
                     break
         if resolved:
-            return resolved
+            return [
+                (display_name, canonical_value, identity_metadata)
+                for canonical_value, (display_name, identity_metadata) in resolved.items()
+            ]
 
         participants = EntityResolver.dedupe_preserve_order(
             [str(item) for item in metadata.get("participants", []) if item]
@@ -100,6 +91,135 @@ class GraphExtractor:
             (participant, EntityResolver.canonicalize(participant), {})
             for participant in participants
         ]
+
+    def _resolve_participant_identity(
+        self,
+        item: dict[str, Any],
+        document_persona_id: str,
+    ) -> tuple[str, str, dict[str, Any]] | None:
+        """Resolve one stored participant to an account or persona identity."""
+        identity_key = EntityResolver.canonicalize(
+            str(item.get("identity_key") or "")
+        )
+        display_name = str(
+            item.get("display_name") or item.get("sender_id") or ""
+        ).strip()
+        if not identity_key or not display_name:
+            return None
+
+        sender_id = str(item.get("sender_id") or "")
+        platform = str(item.get("platform") or "unknown")
+        is_bot = bool(item.get("is_bot", False))
+        identity_kind = str(item.get("identity_kind") or "").casefold()
+        stored_persona_id = str(item.get("persona_id") or "").strip()
+        persona_id = stored_persona_id or document_persona_id
+        is_persona = identity_kind == "persona" or identity_key.startswith(
+            "persona:"
+        )
+
+        aliases = EntityResolver.dedupe_preserve_order(
+            [
+                display_name,
+                *[str(alias) for alias in item.get("aliases", []) if alias],
+            ]
+        )
+        if not is_persona and (not is_bot or not persona_id):
+            canonical_account = (
+                identity_key
+                if identity_key.startswith("account:")
+                else f"account:{identity_key}"
+            )
+            return (
+                canonical_account,
+                display_name,
+                {
+                    "identity_kind": "account",
+                    "identity_key": identity_key,
+                    "sender_id": sender_id,
+                    "platform": platform,
+                    "aliases": aliases,
+                    "is_bot": is_bot,
+                },
+            )
+
+        if identity_key.startswith("persona:"):
+            canonical_value = identity_key
+        else:
+            persona_key = EntityResolver.canonicalize(persona_id)
+            if not persona_key:
+                return None
+            canonical_value = f"persona:{persona_key}"
+        display_value = resolve_persona_display_name(
+            persona_id or canonical_value.removeprefix("persona:"),
+            self.persona_display_aliases,
+            sender_name=display_name,
+            sender_id=sender_id,
+        )
+        account_identity_keys = [
+            str(value)
+            for value in item.get("account_identity_keys", [])
+            if value
+        ]
+        if not identity_key.startswith("persona:"):
+            account_identity_keys.append(identity_key)
+        account_identity_keys = EntityResolver.dedupe_preserve_order(
+            account_identity_keys
+        )
+        human_aliases = [
+            alias
+            for alias in aliases
+            if alias != sender_id and not str(alias).isdigit()
+        ]
+        return (
+            canonical_value,
+            display_value,
+            {
+                "identity_kind": "persona",
+                "identity_key": canonical_value,
+                "persona_id": persona_id,
+                "sender_id": sender_id,
+                "platform": platform,
+                "account_identity_keys": account_identity_keys,
+                "sender_ids": EntityResolver.dedupe_preserve_order(
+                    [
+                        *[str(value) for value in item.get("sender_ids", []) if value],
+                        sender_id,
+                    ]
+                ),
+                "platforms": EntityResolver.dedupe_preserve_order(
+                    [
+                        *[str(value) for value in item.get("platforms", []) if value],
+                        platform,
+                    ]
+                ),
+                "aliases": EntityResolver.dedupe_preserve_order(
+                    [display_value, persona_id, *human_aliases]
+                ),
+                "is_bot": True,
+            },
+        )
+
+    @staticmethod
+    def _merge_participant_identity(
+        resolved: dict[str, tuple[str, dict[str, Any]]],
+        canonical_value: str,
+        display_value: str,
+        identity_metadata: dict[str, Any],
+    ) -> None:
+        """Merge account provenance when several accounts share one persona."""
+        existing = resolved.get(canonical_value)
+        if existing is None:
+            resolved[canonical_value] = (display_value, identity_metadata)
+            return
+        existing_display, existing_metadata = existing
+        for key in ("account_identity_keys", "sender_ids", "platforms", "aliases"):
+            existing_metadata[key] = EntityResolver.dedupe_preserve_order(
+                [
+                    *existing_metadata.get(key, []),
+                    *identity_metadata.get(key, []),
+                ]
+            )
+        resolved[canonical_value] = (existing_display, existing_metadata)
 
     def _extract_from_canonical(
         self,
@@ -140,6 +260,16 @@ class GraphExtractor:
                 canonical_value=canonical_value,
                 metadata=extra or {},
             )
+            existing = node_map.get(node.node_key)
+            if existing is not None:
+                for key, value in node.metadata.items():
+                    if isinstance(value, list):
+                        existing.metadata[key] = EntityResolver.dedupe_preserve_order(
+                            [*existing.metadata.get(key, []), *value]
+                        )
+                    elif value not in (None, "", []):
+                        existing.metadata[key] = value
+                return existing.node_key
             node_map[node.node_key] = node
             return node.node_key
 
@@ -288,6 +418,15 @@ class GraphExtractor:
                     "sender_id": str(ref.get("sender_id") or "").strip(),
                     "platform": str(ref.get("platform") or "").strip(),
                     "is_bot": bool(ref.get("is_bot", False)),
+                    "identity_kind": str(
+                        ref.get("identity_kind") or ""
+                    ).casefold(),
+                    "persona_id": str(ref.get("persona_id") or "").strip(),
+                    "account_identity_keys": [
+                        str(value)
+                        for value in ref.get("account_identity_keys", [])
+                        if value
+                    ],
                 }
                 for ref in (fact.get("participant_refs") or [])
                 if isinstance(ref, dict)
@@ -302,17 +441,54 @@ class GraphExtractor:
                         "sender_id": "",
                         "platform": "",
                         "is_bot": False,
+                        "identity_kind": "",
+                        "persona_id": "",
+                        "account_identity_keys": [],
                     }
                     for name in (fact.get("participants") or [])
                     if str(name or "").strip()
                 ]
             for binding in participant_bindings:
-                participant_identifier = (
-                    f"account:{binding['identity_key']}"
-                    if binding["identity_key"]
-                    else binding["participant_id"]
-                )
                 participant_name = binding["name"]
+                binding_identity = binding["identity_key"]
+                binding_persona_id = binding["persona_id"] or str(
+                    persona_id or ""
+                ).strip()
+                is_persona = (
+                    binding["identity_kind"] == "persona"
+                    or binding_identity.startswith("persona:")
+                    or (binding["is_bot"] and bool(binding_persona_id))
+                )
+                if is_persona:
+                    if binding_identity.startswith("persona:"):
+                        participant_identifier = binding_identity
+                    else:
+                        persona_key = EntityResolver.canonicalize(binding_persona_id)
+                        participant_identifier = (
+                            f"persona:{persona_key}" if persona_key else ""
+                        )
+                    participant_name = resolve_persona_display_name(
+                        binding_persona_id
+                        or participant_identifier.removeprefix("persona:"),
+                        self.persona_display_aliases,
+                        sender_name=participant_name,
+                        sender_id=binding["sender_id"],
+                    )
+                    if (
+                        binding_identity
+                        and not binding_identity.startswith("persona:")
+                        and binding_identity
+                        not in binding["account_identity_keys"]
+                    ):
+                        binding["account_identity_keys"].append(binding_identity)
+                elif binding_identity:
+                    participant_identifier = (
+                        binding_identity
+                        if binding_identity.startswith("account:")
+                        else f"account:{binding_identity}"
+                    )
+                else:
+                    participant_identifier = binding["participant_id"]
                 if not participant_identifier or not participant_name:
                     continue
                 person_key = _add_node(
@@ -326,6 +502,11 @@ class GraphExtractor:
                         "sender_id": binding["sender_id"],
                         "platform": binding["platform"],
                         "is_bot": binding["is_bot"],
+                        "identity_kind": "persona" if is_persona else "account",
+                        "persona_id": binding_persona_id if is_persona else "",
+                        "account_identity_keys": binding[
+                            "account_identity_keys"
+                        ],
                     },
                 )
                 if not person_key:

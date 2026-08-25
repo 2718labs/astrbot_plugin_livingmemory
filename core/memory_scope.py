@@ -95,6 +95,36 @@ def resolve_sender_alias(
     return sender_name
 
 
+def resolve_persona_display_name(
+    persona_id: str | None,
+    aliases_value: Any = "",
+    *,
+    sender_name: str | None = None,
+    sender_id: str | None = None,
+) -> str:
+    """Resolve a human-facing Bot name while keeping account IDs as provenance."""
+    resolved_persona = str(persona_id or "").strip()
+    aliases = parse_identity_aliases(aliases_value)
+    if resolved_persona:
+        configured = aliases.get(resolved_persona.casefold())
+        if configured:
+            return configured
+
+    resolved_sender_name = str(sender_name or "").strip()
+    resolved_sender_id = str(sender_id or "").strip()
+    if (
+        resolved_sender_name
+        and resolved_sender_name != resolved_sender_id
+        and not resolved_sender_name.isdigit()
+    ):
+        return resolved_sender_name
+    if resolved_persona:
+        return resolved_persona
+    if resolved_sender_name and not resolved_sender_name.isdigit():
+        return resolved_sender_name
+    return "Bot"
+
+
 def is_event_memory_allowed(config: Any, event: Any) -> bool:
     """Apply the plugin-level allowlist consistently to every entry point."""
     if not _config_get(config, "access_control.whitelist_enabled", False):
@@ -163,5 +193,6 @@ __all__ = [
     "parse_value_list",
     "resolve_event_identity",
     "resolve_memory_scope",
+    "resolve_persona_display_name",
     "resolve_sender_alias",
 ]

@@ -1317,8 +1317,8 @@ async def test_bot_fact_reuses_first_person_persona_semantics():
             session_id="s1",
             role="assistant",
             content="我答应以后不再反复解释这个称呼",
-            sender_id="2783785959",
-            sender_name="2783785959",
+            sender_id="bot-001",
+            sender_name="bot-001",
             platform="test",
             metadata={"is_bot_message": True},
         ),
@@ -1331,10 +1331,14 @@ async def test_bot_fact_reuses_first_person_persona_semantics():
         )
     )
     llm = _DummyLLMProvider(json.dumps(payload, ensure_ascii=False))
-    processor = MemoryProcessor(llm_provider=llm, context=None)
+    processor = MemoryProcessor(
+        llm_provider=llm,
+        context=None,
+        config={"persona_display_aliases": "Alice=爱丽丝"},
+    )
 
     result = await processor.process_conversation_result(
-        messages=messages, persona_id="Angelica"
+        messages=messages, persona_id="Alice"
     )
 
     assert result.status == "store"
@@ -1342,13 +1346,16 @@ async def test_bot_fact_reuses_first_person_persona_semantics():
     assert stored_fact["fact"] == "我答应以后不再反复解释这个称呼"
     assert stored_fact["participant_refs"] == [
         {
-            "participant_id": "test:2783785959",
-            "name": "2783785959",
-            "identity_key": "test:2783785959",
+            "participant_id": "persona:alice",
+            "name": "爱丽丝",
+            "identity_key": "persona:alice",
             "source": "message_sender",
-            "sender_id": "2783785959",
+            "sender_id": "bot-001",
             "platform": "test",
             "is_bot": True,
+            "identity_kind": "persona",
+            "persona_id": "Alice",
+            "account_identity_keys": ["test:bot-001"],
         }
     ]
 

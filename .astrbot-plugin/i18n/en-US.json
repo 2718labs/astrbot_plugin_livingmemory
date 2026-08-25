@@ -312,6 +312,10 @@
         "description": "Max Participants Per Memory",
         "hint": "Maximum number of participant nodes extracted from a single memory."
       },
+      "persona_display_aliases": {
+        "description": "Persona Display Name Mapping",
+        "hint": "Enter one persona_id=display name mapping per line, for example Alice=Alice. Used for Bot graph nodes, summary prompts, and retained source display; platform account IDs remain internal provenance only."
+      },
       "max_facts_per_memory": {
         "description": "Max Facts Per Memory",
         "hint": "Maximum number of key facts extracted from a single memory to enter the graph index."

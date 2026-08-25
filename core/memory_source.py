@@ -4,10 +4,43 @@ from __future__ import annotations
 
 from typing import Any
 
+from .memory_scope import resolve_persona_display_name
 from .models.conversation_models import Message
 
 
-def serialize_source_messages(messages: list[Any]) -> list[dict[str, Any]]:
+def normalize_source_persona_names(
+    messages: list[dict[str, Any]],
+    *,
+    persona_id: str | None = None,
+    persona_display_aliases: Any = "",
+) -> list[dict[str, Any]]:
+    """Return source rows with a persona-facing Bot name and intact account IDs."""
+    normalized: list[dict[str, Any]] = []
+    for raw_message in messages:
+        message = dict(raw_message)
+        raw_metadata = message.get("metadata")
+        metadata = dict(raw_metadata) if isinstance(raw_metadata, dict) else {}
+        is_bot = bool(
+            metadata.get("is_bot_message", False)
+            or str(message.get("role") or "") == "assistant"
+        )
+        if is_bot:
+            message["sender_name"] = resolve_persona_display_name(
+                persona_id,
+                persona_display_aliases,
+                sender_name=message.get("sender_name"),
+                sender_id=message.get("sender_id"),
+            )
+        normalized.append(message)
+    return normalized
+
+
+def serialize_source_messages(
+    messages: list[Any],
+    *,
+    persona_id: str | None = None,
+    persona_display_aliases: Any = "",
+) -> list[dict[str, Any]]:
     """Store only fields required for review and deterministic re-summarization."""
     serialized: list[dict[str, Any]] = []
     for message in messages:
@@ -59,7 +92,11 @@ def serialize_source_messages(messages: list[Any]) -> list[dict[str, Any]]:
                 },
             }
         )
-    return serialized
+    return normalize_source_persona_names(
+        serialized,
+        persona_id=persona_id,
+        persona_display_aliases=persona_display_aliases,
+    )
 
 
 def restore_source_messages(source: list[dict[str, Any]]) -> list[Message]:
@@ -67,4 +104,8 @@ def restore_source_messages(source: list[dict[str, Any]]) -> list[Message]:
     return [Message.from_dict(item) for item in source]
 
 
-__all__ = ["restore_source_messages", "serialize_source_messages"]
+__all__ = [
+    "normalize_source_persona_names",
+    "restore_source_messages",
+    "serialize_source_messages",
+]

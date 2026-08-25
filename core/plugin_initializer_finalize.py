@@ -3,8 +3,10 @@ PluginInitializer 的 InitializerFinalizeMixin 拆分模块
 自动从 core/plugin_initializer.py 拆分，保持行为不变
 """
 
-from typing import Any
 import asyncio
+import hashlib
+import json
+from typing import Any
 from .managers.conversation_manager import ConversationManager
 from ..storage.conversation_store import ConversationStore
 from ..storage.db_migration import DBMigration
@@ -18,6 +20,9 @@ from .processors.memory_processor import MemoryProcessor
 from pathlib import Path
 from astrbot.core.provider.provider import Provider
 import time
+
+
+GRAPH_IDENTITY_SCHEMA_VERSION = "persona-v1"
 
 
 class InitializerFinalizeMixin:
@@ -51,8 +56,14 @@ class InitializerFinalizeMixin:
             await self._check_and_fix_dimension_mismatch(str(index_path))
             await self._check_and_fix_dimension_mismatch(str(fact_index_path))
             if graph_memory_enabled:
-                self._graph_index_requires_rebuild = (
-                    await self._check_and_fix_dimension_mismatch(str(graph_index_path))
+                dimension_rebuild_required = (
+                    await self._check_and_fix_dimension_mismatch(
+                        str(graph_index_path)
+                    )
+                )
+                self._graph_index_requires_rebuild = bool(
+                    dimension_rebuild_required
+                    or self._graph_identity_rebuild_required()
                 )
 
             self.db = faiss_vec_db_cls(
@@ -191,6 +202,9 @@ class InitializerFinalizeMixin:
                 "graph_max_participants": self.config_manager.get(
                     "graph_memory.max_participants_per_memory", 8
                 ),
+                "graph_persona_display_aliases": self.config_manager.get(
+                    "graph_memory.persona_display_aliases", ""
+                ),
                 "graph_max_facts": self.config_manager.get(
                     "graph_memory.max_facts_per_memory", 8
                 ),
@@ -276,6 +290,9 @@ class InitializerFinalizeMixin:
                     "atom_enabled": memory_engine_config["atom_enabled"],
                     "include_source_time_tags": self.config_manager.get(
                         "reflection_engine.include_source_time_tags", True
+                    ),
+                    "persona_display_aliases": self.config_manager.get(
+                        "graph_memory.persona_display_aliases", ""
                     ),
                 },
             )
@@ -590,8 +607,47 @@ class InitializerFinalizeMixin:
             return {"rebuilt": 0, "skipped": 0}
         self._set_index_maintenance_status(message="正在重建图谱索引")
         result = await self.memory_engine.rebuild_graph_index()
+        self._write_graph_identity_marker()
         self._graph_index_requires_rebuild = False
         return result
+
+    def _graph_identity_fingerprint(self) -> str:
+        payload = {
+            "schema": GRAPH_IDENTITY_SCHEMA_VERSION,
+            "persona_display_aliases": str(
+                self.config_manager.get(
+                    "graph_memory.persona_display_aliases", ""
+                )
+                or ""
+            ).strip(),
+        }
+        encoded = json.dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        return hashlib.sha256(encoded).hexdigest()
+
+    def _graph_identity_marker_path(self) -> Path:
+        return Path(self.data_dir) / "graph_identity_fingerprint.txt"
+
+    def _graph_identity_rebuild_required(self) -> bool:
+        try:
+            stored = self._graph_identity_marker_path().read_text(
+                encoding="utf-8"
+            ).strip()
+        except (FileNotFoundError, OSError):
+            return True
+        return stored != self._graph_identity_fingerprint()
+
+    def _write_graph_identity_marker(self) -> None:
+        marker_path = self._graph_identity_marker_path()
+        marker_path.parent.mkdir(parents=True, exist_ok=True)
+        marker_path.write_text(
+            self._graph_identity_fingerprint(),
+            encoding="utf-8",
+        )
 
     async def _repair_message_counts(self, conversation_store: ConversationStore):
         """修复会话表中 message_count 与实际消息数量不一致的问题"""

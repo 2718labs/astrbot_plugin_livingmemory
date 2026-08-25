@@ -107,6 +107,14 @@ def test_validate_config_accepts_recent_context_max_age() -> None:
     assert config.recall_engine.recent_context_max_age_seconds == 3600
 
 
+def test_validate_config_accepts_persona_display_aliases() -> None:
+    config = validate_config(
+        {"graph_memory": {"persona_display_aliases": "Alice=爱丽丝"}}
+    )
+
+    assert config.graph_memory.persona_display_aliases == "Alice=爱丽丝"
+
+
 def test_config_manager_graph_memory_property() -> None:
     manager = ConfigManager(
         {

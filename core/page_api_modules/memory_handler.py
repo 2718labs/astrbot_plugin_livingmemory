@@ -11,7 +11,7 @@ from quart import request
 
 from astrbot.api import logger
 
-from ..memory_source import restore_source_messages
+from ..memory_source import normalize_source_persona_names, restore_source_messages
 from .memory_handler_update import MemoryHandlerUpdateMixin
 from .memory_handler_io import MemoryHandlerIoMixin
 
@@ -367,6 +367,14 @@ class MemoryHandler(MemoryHandlerUpdateMixin, MemoryHandlerIoMixin):
         source_messages = (
             await source_result if inspect.isawaitable(source_result) else []
         )
+        if isinstance(source_messages, list):
+            source_messages = normalize_source_persona_names(
+                [item for item in source_messages if isinstance(item, dict)],
+                persona_id=metadata.get("persona_id"),
+                persona_display_aliases=self.utils.config_get(
+                    "graph_memory.persona_display_aliases", ""
+                ),
+            )
         detail = {
             "memory_id": memory.get("id"),
             "doc_id": memory.get("doc_id"),

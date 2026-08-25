@@ -447,6 +447,12 @@
                 "type": "int",
                 "default": 8
             },
+            "persona_display_aliases": {
+                "description": "人格显示名映射",
+                "hint": "每行填写 persona_id=显示名，例如 Alice=爱丽丝。用于 Bot 图谱节点、总结提示词和保留原文的展示；平台账号只保留作内部溯源。",
+                "type": "text",
+                "default": ""
+            },
             "max_facts_per_memory": {
                 "description": "单记忆最大事实数",
                 "hint": "从一条记忆中最多提取多少条 key_facts 进入图索引。",

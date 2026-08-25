@@ -83,12 +83,13 @@ class FakeInitializer:
 
 
 class FakePlugin:
-    def __init__(self, *, ready=True, memory_engine=None):
+    def __init__(self, *, ready=True, memory_engine=None, config_manager=None):
         self._ready = ready
         self._fail_message = "" if ready else "插件尚未就绪"
         self.initializer = FakeInitializer()
         if memory_engine:
             self.initializer.memory_engine = memory_engine
+        self.config_manager = config_manager
         self._api_routes = []
 
     async def _ensure_plugin_ready(self):
@@ -1492,6 +1493,49 @@ async def test_memory_detail_includes_retained_source():
         {"role": "user", "content": "exact detail"}
     ]
     engine.get_memory_source.assert_awaited_once_with(7)
+
+
+@pytest.mark.asyncio
+async def test_memory_detail_hides_legacy_bot_account_behind_persona_name():
+    engine = FakeMemoryEngine()
+    engine.get_memory_source = AsyncMock(
+        return_value=[
+            {
+                "role": "assistant",
+                "content": "我记住了",
+                "sender_id": "bot-001",
+                "sender_name": "bot-001",
+            }
+        ]
+    )
+    config_manager = SimpleNamespace(
+        get=lambda key, default=None: (
+            "Alice=爱丽丝"
+            if key == "graph_memory.persona_display_aliases"
+            else default
+        )
+    )
+    api = PluginPageApi(
+        FakePlugin(memory_engine=engine, config_manager=config_manager)
+    )
+    api.memory_handler._get_memory_record = AsyncMock(
+        return_value={
+            "id": 7,
+            "doc_id": "memory-7",
+            "text": "summary",
+            "metadata": {"persona_id": "Alice", "importance": 0.9},
+            "created_at": "2026-01-01",
+            "updated_at": "2026-01-01",
+        }
+    )
+    req = _mock_page_request(args={"memory_id": "7"})
+
+    with _patch_page_request(req):
+        result = await api.get_memory_detail()
+
+    source = result["data"]["source_messages"][0]
+    assert source["sender_name"] == "爱丽丝"
+    assert source["sender_id"] == "bot-001"
 
 
 @pytest.mark.asyncio
