@@ -266,8 +266,16 @@ test("person nodes stay visually smaller than same-degree regular nodes", () => 
   const person = radius({ degree: 6, weight: 3, memory_count: 5, type: "person" }, false);
   const regular = radius({ degree: 6, weight: 3, memory_count: 5 }, false);
   assert.ok(person < regular);
-  assert.ok(Math.abs(person - regular * 0.85) < 1e-9);
+  assert.ok(Math.abs(person - regular * 0.92) < 1e-9);
   assert.ok(person <= global.window.GraphShared.CFG.NODE_RADIUS_MAX);
+});
+
+test("person nodes still dominate low-degree regular nodes", () => {
+  loadGraph();
+  const radius = global.window.GraphShared.nodeVisualRadius;
+  const person = radius({ degree: 6, weight: 3, memory_count: 5, type: "person" }, false);
+  const regular = radius({ degree: 4, weight: 3, memory_count: 1 }, false);
+  assert.ok(person > regular, "person must stay the visual anchor of the graph");
 });
 
 test("label width cache populates when labels render", async () => {
