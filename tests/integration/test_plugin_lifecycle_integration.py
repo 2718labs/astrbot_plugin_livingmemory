@@ -41,6 +41,8 @@ class _FakeInitializer:
 
 
 class _TestEvent:
+    unified_msg_origin = "test:private:reset"
+
     def plain_result(self, message):
         return message
 
@@ -106,6 +108,30 @@ async def test_status_command_returns_not_ready_message_without_handler(
     assert len(outputs) == 1
     assert "命令处理器尚未就绪" in outputs[0]
 
+    await plugin.terminate()
+
+
+@pytest.mark.asyncio
+async def test_lmem_reset_clears_recall_continuity(monkeypatch, tmp_path):
+    plugin = await _build_plugin(monkeypatch, tmp_path)
+    plugin._ensure_plugin_ready = AsyncMock(return_value=(True, ""))
+    plugin.event_handler = SimpleNamespace(
+        clear_recall_continuity=AsyncMock(),
+        shutdown=AsyncMock(),
+    )
+
+    async def _handle_reset(_event):
+        yield "已重置"
+
+    plugin.command_handler = SimpleNamespace(handle_reset=_handle_reset)
+    event = _TestEvent()
+
+    outputs = [message async for message in plugin.reset(event)]
+
+    assert outputs == ["已重置"]
+    plugin.event_handler.clear_recall_continuity.assert_awaited_once_with(
+        event.unified_msg_origin
+    )
     await plugin.terminate()
 
 

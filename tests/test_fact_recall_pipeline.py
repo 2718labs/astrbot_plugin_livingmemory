@@ -95,6 +95,21 @@ def test_open_ended_question_is_not_hardcoded_as_lightweight() -> None:
     assert CanonicalFactRetriever.query_gate_reason("吃什么") is None
 
 
+@pytest.mark.parametrize(
+    "query", ["这个呢", "那个？", "怎么了", "什么事", "你还记得吗"]
+)
+def test_weak_standalone_reference_skips_new_long_term_search(query) -> None:
+    assert (
+        CanonicalFactRetriever.query_gate_reason(query)
+        == "weak_standalone_reference_without_history"
+    )
+
+
+@pytest.mark.parametrize("query", ["这个版本呢", "那个蓝雨伞", "哪里见面"])
+def test_content_bearing_reference_still_allows_search(query) -> None:
+    assert CanonicalFactRetriever.query_gate_reason(query) is None
+
+
 @pytest.mark.asyncio
 async def test_fact_hit_never_expands_to_parent_siblings():
     store = SimpleNamespace(
@@ -138,6 +153,108 @@ async def test_weak_vector_candidate_is_rejected_instead_of_filling_top_k():
     assert bundle.hits == []
     assert bundle.explanation == "all_candidates_rejected_by_relevance_policy"
     assert bundle.rejected[0]["reason"] == "insufficient_relevance_evidence"
+
+
+@pytest.mark.asyncio
+async def test_short_chinese_phrase_outranks_generic_token_overlap():
+    """A short phrase must match its contiguous wording, not nearby generic words."""
+    store = SimpleNamespace(
+        search_candidates=AsyncMock(
+            return_value={
+                "phrase": [
+                    {
+                        "fact_id": "fact_direct",
+                        "parent_id": "parent_direct",
+                        "score": 1.0,
+                    }
+                ],
+                "bm25": [
+                    {
+                        "fact_id": "fact_neighbor",
+                        "parent_id": "parent_neighbor",
+                        "score": -2.0,
+                    }
+                ],
+                "vector": [
+                    {
+                        "fact_id": "fact_direct",
+                        "parent_id": "parent_direct",
+                        "score": 0.45,
+                    },
+                    {
+                        "fact_id": "fact_neighbor",
+                        "parent_id": "parent_neighbor",
+                        "score": 0.33,
+                    },
+                ],
+            }
+        ),
+        get_fact_records=AsyncMock(
+            return_value={
+                "fact_direct": _record(
+                    "fact_direct", "昨晚明确说过好想见你。", importance=0.9
+                ),
+                "fact_neighbor": _record(
+                    "fact_neighbor", "你把照片整理好了。", importance=0.9
+                ),
+            }
+        ),
+    )
+    retriever = CanonicalFactRetriever(store, _TextProcessor())
+
+    bundle = await retriever.search("想见你了", limit=5)
+
+    assert [hit.metadata["fact_id"] for hit in bundle.hits][:1] == [
+        "fact_direct"
+    ]
+    breakdown = bundle.hits[0].score_breakdown or {}
+    assert breakdown["fact_short_phrase_raw"] >= 0.8
+    assert breakdown["fact_lexical_raw"] > breakdown["fact_vector_raw"]
+
+
+@pytest.mark.asyncio
+async def test_weak_coreference_phrase_does_not_bypass_relevance_gate():
+    store = SimpleNamespace(
+        search_candidates=AsyncMock(
+            return_value={
+                "phrase": [],
+                "bm25": [],
+                "vector": [
+                    {
+                        "fact_id": "fact_weak",
+                        "parent_id": "parent_shared",
+                        "score": 0.2,
+                    }
+                ],
+            }
+        ),
+        get_fact_records=AsyncMock(
+            return_value={
+                "fact_weak": _record("fact_weak", "这个版本已经归档。")
+            }
+        ),
+    )
+    retriever = CanonicalFactRetriever(store, _TextProcessor())
+
+    bundle = await retriever.search("这个？", limit=5)
+
+    assert bundle.hits == []
+    assert bundle.explanation == "weak_standalone_reference_without_history"
+    assert bundle.rejected == []
+    store.search_candidates.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_recent_closed_set_uses_the_same_short_phrase_signal():
+    retriever = CanonicalFactRetriever(SimpleNamespace(), _TextProcessor())
+
+    scores = await retriever.score_facts_lexically(
+        "想见你了",
+        ["昨晚明确说过好想见你。", "你把照片整理好了。"],
+    )
+
+    assert scores[0] >= 0.8
+    assert scores[1] == 0.0
 
 
 @pytest.mark.asyncio

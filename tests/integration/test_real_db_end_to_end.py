@@ -614,6 +614,128 @@ async def real_db_stack(tmp_path: Path):
 
 
 @pytest.mark.asyncio
+async def test_daily_short_phrase_generalization_keeps_evidence_for_three_turns(
+    real_db_stack,
+):
+    """Synthetic daily memories traverse real canonical DB, FAISS and injection."""
+    engine = real_db_stack["memory_engine"]
+    handler = real_db_stack["event_handler"]
+    scenarios = [
+        ("homesick", "想回家了", "用户晚上明确说过想回家。", "用户把合照整理进了相册。", "你怎么知道的", "我真说过？"),
+        ("food", "不吃香菜啦", "用户吃面时明确表示不吃香菜。", "用户喜欢番茄鸡蛋面。", "为什么这么说", "有证据吗"),
+        ("drink", "我的咖啡呢", "用户的咖啡习惯是喝冰美式。", "用户最近买了一个玻璃杯。", "你记得这么清楚？", "是哪次提到的"),
+        ("meal", "我又想吃火锅了", "用户周末想吃火锅。", "用户把炒锅放进了橱柜。", "别乱讲", "我真这么说了？"),
+        ("outing", "还去爬山吗", "用户周日打算去爬山。", "用户昨天在公园散步。", "你从哪知道的", "我提过这事？"),
+        ("pet", "团子呢", "用户家的猫叫团子。", "用户给阳台的花浇了水。", "怎么得出的", "你确定？"),
+        ("location", "充电器呢", "备用充电器放在书桌右边抽屉。", "用户准备更换手机壁纸。", "你没记错？", "当时怎么说的"),
+        ("schedule", "周三体检吗", "用户预约了周三体检。", "用户周五准备整理房间。", "我什么时候说的", "有原话吗"),
+        ("habit", "睡前听歌", "用户习惯睡前听歌。", "用户早上会打开窗帘。", "依据是什么", "我真提过？"),
+        ("boundary", "别放香菜啊", "用户要求做饭时别放香菜。", "用户喜欢清淡的汤。", "别瞎编", "拿证据来"),
+        ("promise", "看电影吗", "双方约好周六一起看电影。", "用户收藏了一张演出海报。", "我答应过？", "什么时候的事"),
+        ("transport", "坐地铁去", "用户上班通常坐地铁去公司。", "用户的自行车需要打气。", "你为什么这么想", "我讲过吗"),
+        ("nickname", "叫我阿团", "用户希望助手以后叫我阿团。", "用户给游戏角色起了名字。", "你没编吧", "再确认一下"),
+        ("reminder", "还记得蓝雨伞吗", "用户把蓝雨伞放在玄关柜里。", "用户买了一双蓝色拖鞋。", "你记得来源？", "真有这回事？"),
+        ("preference", "不喝奶茶了", "用户最近决定不喝奶茶。", "用户买了新的保温杯。", "怎么证明", "我说过不喝？"),
+        ("alarm", "七点叫我", "用户希望每天早上七点叫我起床。", "用户昨晚睡得比较晚。", "你凭什么这么说", "我定过这个？"),
+    ]
+
+    for label, query, direct_fact, distractor_fact, follow_up_1, follow_up_2 in scenarios:
+        session_id = f"test:private:daily-{label}"
+        for fact, importance in ((direct_fact, 0.9), (distractor_fact, 0.85)):
+            await _add_explicit_fact(
+                engine,
+                fact=fact,
+                session_id=session_id,
+                persona_id="persona-real",
+                importance=importance,
+            )
+
+        bundle = await engine.fact_retriever.search(
+            query,
+            limit=5,
+            scope=session_id,
+            persona_id="persona-real",
+        )
+        assert bundle.hits, label
+        assert bundle.hits[0].content == direct_fact, label
+        assert (bundle.hits[0].score_breakdown or {})["fact_short_phrase_raw"] >= 0.82
+
+        injected_by_turn = []
+        for message in (query, follow_up_1, follow_up_2):
+            request = SimpleNamespace(
+                prompt=message,
+                system_prompt="",
+                contexts=[],
+                extra_user_content_parts=[],
+            )
+            await handler.handle_memory_recall(
+                _TestEvent(session_id, message),
+                request,
+            )
+            injected_by_turn.append(
+                "\n".join(part.text for part in request.extra_user_content_parts)
+            )
+
+        assert all(direct_fact in text for text in injected_by_turn), label
+
+
+@pytest.mark.asyncio
+async def test_weak_short_reference_uses_continuity_without_new_search(real_db_stack):
+    engine = real_db_stack["memory_engine"]
+    handler = real_db_stack["event_handler"]
+    session_id = "test:private:weak-reference"
+    direct_fact = "用户明确说过想去海边看日落。"
+    await _add_explicit_fact(
+        engine,
+        fact=direct_fact,
+        session_id=session_id,
+        persona_id="persona-real",
+        importance=0.9,
+    )
+
+    first = SimpleNamespace(
+        prompt="想去海边了",
+        system_prompt="",
+        contexts=[],
+        extra_user_content_parts=[],
+    )
+    await handler.handle_memory_recall(
+        _TestEvent(session_id, "想去海边了"),
+        first,
+    )
+    original_search = engine.search_memories
+    engine.search_memories = AsyncMock(wraps=original_search)
+    try:
+        second = SimpleNamespace(
+            prompt="这个呢",
+            system_prompt="",
+            contexts=[],
+            extra_user_content_parts=[],
+        )
+        await handler.handle_memory_recall(_TestEvent(session_id, "这个呢"), second)
+    finally:
+        wrapped_search = engine.search_memories
+        engine.search_memories = original_search
+
+    wrapped_search.assert_not_awaited()
+    payload = "\n".join(part.text for part in second.extra_user_content_parts)
+    assert direct_fact in payload
+
+    empty_session = "test:private:weak-reference-empty"
+    empty_request = SimpleNamespace(
+        prompt="那个呢",
+        system_prompt="",
+        contexts=[],
+        extra_user_content_parts=[],
+    )
+    await handler.handle_memory_recall(
+        _TestEvent(empty_session, "那个呢"),
+        empty_request,
+    )
+    assert empty_request.extra_user_content_parts == []
+
+
+@pytest.mark.asyncio
 async def test_command_handlers_with_real_database(real_db_stack):
     memory_engine = real_db_stack["memory_engine"]
     command_handler = real_db_stack["command_handler"]

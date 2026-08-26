@@ -111,6 +111,7 @@ def _make_handler(memory_engine, conversation_manager, **recall_overrides):
         "injection_method": "extra_user_content",
         "injection_token_budget": 1200,
         "single_fact_token_budget": 320,
+        "recent_block_enabled": True,
     }
     recall.update(recall_overrides)
     return EventHandler(
@@ -157,6 +158,9 @@ async def test_recent_block_injects_summary_and_topic_facts(
 
     # 主召回仍请求 top_k=4（recent 不压缩召回名额）
     assert engine.search_memories.await_args.kwargs["k"] == 4
+    assert engine.canonical_store.get_recent_parents.await_args.kwargs[
+        "parent_offset"
+    ] == 0
     injected = req.extra_user_content_parts[0].text
     # 摘要以"最近对话摘要"形式注入
     assert "最近对话摘要" in injected
@@ -262,7 +266,7 @@ async def test_recent_summary_duplicate_keeps_canonical_fact_metadata(
     assert injected.count(content) == 1
     assert "最近对话摘要" not in injected
     assert "当时反应：期待；想看看成品" in injected
-    assert "装配候选=2，最终注入=1，丢弃=1" in caplog.text
+    assert "装配候选=2，预算装配保留=1，丢弃=1" in caplog.text
     assert "recent 摘要与正式 fact 重复=1" in caplog.text
 
 
@@ -383,20 +387,20 @@ async def test_recent_block_injects_even_when_recall_empty(conversation_manager)
 async def test_recent_block_multi_parents(conversation_manager):
     """recent_block_parents=2：两个父记忆摘要都注入，各自沾边事实按条数挑。
 
-    覆盖"昨晚深夜思念"与"今天中午伤感"两段近期对话并存——
+    覆盖"昨晚蓝雨伞"与"今天中午整理书架"两段近期对话并存——
     更早但关键（高重要性）的父记忆不被最新一条挤掉。
     """
-    parent_newer = _make_parent(overview="今天中午聊了怪伤感的", days_old=0.1)
+    parent_newer = _make_parent(overview="今天中午整理了书架", days_old=0.1)
     parent_newer["parent_id"] = "parent-b"
-    parent_older = _make_parent(overview="昨晚反复表达思念想我", days_old=1.0)
+    parent_older = _make_parent(overview="昨晚确认了蓝雨伞的位置", days_old=1.0)
     parent_older["parent_id"] = "parent-a"
     facts_by_parent = {
         "parent-a": [
-            {"fact_id": "fact-a1", "fact": "昨晚反复说想我", "importance": 0.94},
+            {"fact_id": "fact-a1", "fact": "蓝雨伞放在玄关柜里", "importance": 0.94},
             {"fact_id": "fact-a2", "fact": "完全不沾边的事", "importance": 0.3},
         ],
         "parent-b": [
-            {"fact_id": "fact-b1", "fact": "被封在对话框里怪伤感的", "importance": 0.5},
+            {"fact_id": "fact-b1", "fact": "书架最上层需要重新整理", "importance": 0.5},
             {"fact_id": "fact-b2", "fact": "也不沾边", "importance": 0.2},
         ],
     }
@@ -407,7 +411,7 @@ async def test_recent_block_multi_parents(conversation_manager):
     )
 
     async def _score(query, texts):
-        return [0.6 if ("想" in t or "伤感" in t) else 0.1 for t in texts]
+        return [0.6 if ("雨伞" in t or "书架" in t) else 0.1 for t in texts]
 
     engine.fact_retriever.score_facts_lexically = AsyncMock(side_effect=_score)
     handler = _make_handler(engine, conversation_manager, recent_block_parents=2)
@@ -425,9 +429,71 @@ async def test_recent_block_multi_parents(conversation_manager):
         == 2
     )
     injected = req.extra_user_content_parts[0].text
-    assert "今天中午聊了怪伤感的" in injected
-    assert "昨晚反复表达思念想我" in injected
-    assert "昨晚反复说想我" in injected
-    assert "被封在对话框里怪伤感的" in injected
+    assert "今天中午整理了书架" in injected
+    assert "昨晚确认了蓝雨伞的位置" in injected
+    assert "蓝雨伞放在玄关柜里" in injected
+    assert "书架最上层需要重新整理" in injected
     assert "完全不沾边的事" not in injected
     assert "也不沾边" not in injected
+
+
+@pytest.mark.asyncio
+async def test_recent_block_starts_from_configured_parent_rank(
+    conversation_manager,
+):
+    """起点 3、数量 2：查询跳过最新两条并连续选择第 3、4 条。"""
+    parent_third = _make_parent(overview="第三条父记忆", days_old=1.0)
+    parent_third["parent_id"] = "parent-third"
+    parent_fourth = _make_parent(overview="第四条父记忆", days_old=1.5)
+    parent_fourth["parent_id"] = "parent-fourth"
+    engine = _make_engine(parents=[parent_third, parent_fourth])
+    handler = _make_handler(
+        engine,
+        conversation_manager,
+        recent_block_start_parent_rank=3,
+        recent_block_parents=2,
+        recent_block_max_facts=0,
+    )
+
+    req = _make_req()
+    with patch(
+        "astrbot_plugin_livingmemory.core.event_handler_modules.memory_recall.get_persona_id",
+        new=AsyncMock(return_value="persona_1"),
+    ):
+        await handler.handle_memory_recall(_make_event(), req)
+
+    query_args = engine.canonical_store.get_recent_parents.await_args.kwargs
+    assert query_args["parent_offset"] == 2
+    assert query_args["parent_count"] == 2
+    injected = req.extra_user_content_parts[0].text
+    assert "第三条父记忆" in injected
+    assert "第四条父记忆" in injected
+
+
+@pytest.mark.asyncio
+async def test_recent_block_max_start_rank_returns_empty_without_fallback(
+    conversation_manager,
+):
+    engine = _make_engine(
+        recalled=[_make_recalled("当前相关事实", "fact-current")],
+        parents=[],
+    )
+    handler = _make_handler(
+        engine,
+        conversation_manager,
+        recent_block_start_parent_rank=100,
+    )
+
+    req = _make_req()
+    with patch(
+        "astrbot_plugin_livingmemory.core.event_handler_modules.memory_recall.get_persona_id",
+        new=AsyncMock(return_value="persona_1"),
+    ):
+        await handler.handle_memory_recall(_make_event(), req)
+
+    assert engine.canonical_store.get_recent_parents.await_args.kwargs[
+        "parent_offset"
+    ] == 99
+    injected = req.extra_user_content_parts[0].text
+    assert "当前相关事实" in injected
+    assert "最近对话摘要" not in injected

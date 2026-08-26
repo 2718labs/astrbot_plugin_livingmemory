@@ -9,6 +9,10 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
+from ..utils.short_query_match import (
+    is_weak_short_cjk_query,
+    short_cjk_phrase_score,
+)
 from .hybrid_retriever import HybridResult
 
 
@@ -112,6 +116,8 @@ class CanonicalFactRetriever:
             return "empty_or_non_text"
         if normalized in cls._LIGHTWEIGHT_MESSAGES:
             return "lightweight_message_without_history_reference"
+        if is_weak_short_cjk_query(query):
+            return "weak_standalone_reference_without_history"
         return None
 
     @classmethod
@@ -159,7 +165,9 @@ class CanonicalFactRetriever:
             fact_tokens = await self.text_processor.tokenize_async(
                 str(text or ""), remove_stopwords=False
             )
-            scores.append(self._lexical_score(query_tokens, fact_tokens))
+            token_score = self._lexical_score(query_tokens, fact_tokens)
+            phrase_score = short_cjk_phrase_score(cleaned, str(text or ""))
+            scores.append(max(token_score, phrase_score))
         return scores
 
     async def search(
@@ -210,6 +218,11 @@ class CanonicalFactRetriever:
             for item in routes.get("vector", [])
             if item.get("fact_id")
         }
+        phrase_map = {
+            str(item.get("fact_id")): self._clamp_score(item.get("score"))
+            for item in routes.get("phrase", [])
+            if item.get("fact_id")
+        }
         graph_map: dict[str, dict[str, float]] = {}
         for result in graph_results:
             metadata = getattr(result, "metadata", {}) or {}
@@ -227,7 +240,9 @@ class CanonicalFactRetriever:
                 "vector": vector,
             }
 
-        fact_ids = list(dict.fromkeys([*bm25_map, *vector_map, *graph_map]))
+        fact_ids = list(
+            dict.fromkeys([*phrase_map, *bm25_map, *vector_map, *graph_map])
+        )
         records = await self.store.get_fact_records(fact_ids)
         if not records:
             return FactSearchBundle(
@@ -262,7 +277,15 @@ class CanonicalFactRetriever:
         for fact_id, record in records.items():
             fact = record["fact"]
             content = str(fact.get("fact") or "").strip()
-            lexical = self._lexical_score(query_tokens, fact_tokens[fact_id])
+            token_lexical = self._lexical_score(
+                query_tokens, fact_tokens[fact_id]
+            )
+            phrase_lexical = (
+                short_cjk_phrase_score(cleaned_query, content)
+                if fact_id in phrase_map
+                else 0.0
+            )
+            lexical = max(token_lexical, phrase_lexical)
             vector = vector_map.get(fact_id, 0.0)
             graph_values = graph_map.get(fact_id, {})
             graph = self._clamp_score(graph_values.get("signal", 0.0))
@@ -307,6 +330,8 @@ class CanonicalFactRetriever:
                         "parent_id": record["parent_id"],
                         "reason": "insufficient_relevance_evidence",
                         "lexical": round(lexical, 4),
+                        "token_lexical": round(token_lexical, 4),
+                        "short_phrase": round(phrase_lexical, 4),
                         "vector": round(vector, 4),
                         "graph": round(graph, 4),
                     }
@@ -377,6 +402,8 @@ class CanonicalFactRetriever:
                     metadata=metadata,
                     score_breakdown={
                         "fact_lexical_raw": round(lexical, 4),
+                        "fact_token_lexical_raw": round(token_lexical, 4),
+                        "fact_short_phrase_raw": round(phrase_lexical, 4),
                         "fact_vector_raw": round(vector, 4),
                         "graph_keyword_raw": round(
                             float(graph_values.get("keyword", 0.0)), 4

@@ -11,6 +11,16 @@ from astrbot_plugin_livingmemory.storage.canonical_memory_store import (
 )
 
 
+class _EmptyVectorDB:
+    async def retrieve(self, **_kwargs):
+        return []
+
+
+class _WhitespaceTextProcessor:
+    async def tokenize_async(self, text, remove_stopwords=True):
+        return [part for part in str(text).split() if part]
+
+
 def test_explicit_memory_uses_same_v3_fact_contract_and_stable_ids():
     processor = MemoryProcessor(llm_provider=object())
 
@@ -97,6 +107,88 @@ def test_fact_search_projection_excludes_persona_reaction():
     assert "驾考" in search_text
     assert "担心" not in search_text
     assert "希望她不要紧张" not in search_text
+
+
+@pytest.mark.asyncio
+async def test_short_phrase_candidates_obey_lifecycle_scope_and_persona(tmp_path):
+    store = CanonicalMemoryStore(
+        str(tmp_path / "phrase.db"),
+        _EmptyVectorDB(),
+        _WhitespaceTextProcessor(),
+    )
+    await store.initialize()
+    try:
+        await store.db.execute(
+            "CREATE TABLE documents(id INTEGER PRIMARY KEY, metadata TEXT)"
+        )
+        now = time.time()
+        for index, (suffix, scope, persona, status) in enumerate(
+            [
+                ("good", "scope:1", "p1", "active"),
+                ("other-scope", "scope:2", "p1", "active"),
+                ("other-persona", "scope:1", "p2", "active"),
+                ("archived", "scope:1", "p1", "archived"),
+            ],
+            start=1,
+        ):
+            await store.db.execute(
+                "INSERT INTO documents(id, metadata) VALUES (?, ?)",
+                (index, json.dumps({"status": "active"})),
+            )
+            await store.db.execute(
+                """
+                INSERT INTO memory_parents(
+                    parent_id, document_id, idempotency_key, scope, persona_id,
+                    source_json, overview, generation_version, fact_ids_json,
+                    status, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, 'v1', ?, ?, ?, ?)
+                """,
+                (
+                    f"parent-{suffix}",
+                    index,
+                    f"key-{suffix}",
+                    scope,
+                    persona,
+                    json.dumps({"fingerprint": suffix}),
+                    suffix,
+                    json.dumps([f"fact-{suffix}"]),
+                    status,
+                    now,
+                    now,
+                ),
+            )
+            await store.db.execute(
+                """
+                INSERT INTO memory_facts(
+                    fact_id, parent_id, fact_json, search_text, scope,
+                    persona_id, importance, status, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, 0.8, ?, ?, ?)
+                """,
+                (
+                    f"fact-{suffix}",
+                    f"parent-{suffix}",
+                    json.dumps({"fact": "昨晚明确说过好想见你"}),
+                    "昨晚明确说过好想见你",
+                    scope,
+                    persona,
+                    status,
+                    now,
+                    now,
+                ),
+            )
+        await store.db.commit()
+
+        routes = await store.search_candidates(
+            "想见你了",
+            limit=5,
+            scope="scope:1",
+            persona_id="p1",
+        )
+
+        assert [item["fact_id"] for item in routes["phrase"]] == ["fact-good"]
+        assert routes["vector"] == []
+    finally:
+        await store.close()
 
 
 @pytest.mark.asyncio
@@ -265,6 +357,26 @@ async def test_get_recent_parents_returns_newest_n_within_window(tmp_path):
             parent_count=1,
         )
         assert [p["parent_id"] for p in single] == ["p-newest"]
+
+        # 起点 2 跳过最新一条，再向旧方向连续取两条。
+        offset_parents = await store.get_recent_parents(
+            scope="s1",
+            persona_id="persona",
+            window_hours=48,
+            parent_count=2,
+            parent_offset=1,
+        )
+        assert [p["parent_id"] for p in offset_parents] == ["p-mid", "p-oldest"]
+
+        # OFFSET 在所有过滤之后执行；超出窗口内可用数量时不回退或绕回。
+        beyond = await store.get_recent_parents(
+            scope="s1",
+            persona_id="persona",
+            window_hours=48,
+            parent_count=2,
+            parent_offset=3,
+        )
+        assert beyond == []
     finally:
         await store.close()
 

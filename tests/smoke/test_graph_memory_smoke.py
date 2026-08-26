@@ -190,6 +190,7 @@ async def test_smoke_event_recall_injects_memory_into_prompt(tmp_path: Path):
                     "recall_engine": {
                         "top_k": 3,
                         "injection_method": "extra_user_content",
+                        "recent_block_enabled": True,
                     },
                     "session_manager": {"max_messages_per_session": 100},
                 }

@@ -524,6 +524,10 @@ class LivingMemoryPlugin(Star):
             yield event.plain_result(self._command_handler_not_ready_message())
             return
 
+        if self.event_handler:
+            await self.event_handler.clear_recall_continuity(
+                event.unified_msg_origin
+            )
         async for message in self.command_handler.handle_reset(event):
             yield message
 

@@ -16,6 +16,7 @@ from astrbot.api import logger
 from ..core.models.memory_contract import MEMORY_SCHEMA_VERSION
 from ..core.retrieval.vector_retriever import delete_faiss_documents_by_ids
 from ..core.utils.memory_facts import unique_strings
+from ..core.utils.short_query_match import short_cjk_query_core
 
 
 @dataclass(slots=True, frozen=True)
@@ -590,18 +591,19 @@ class CanonicalMemoryStore:
         persona_id: str | None = None,
         window_hours: float = 48.0,
         parent_count: int = 1,
+        parent_offset: int = 0,
     ) -> list[dict[str, Any]]:
         """Return the newest active parents inside the time window (newest first).
 
-        ``parent_count`` controls how many distinct parents the recent block
-        may cover, so cross-turn continuity can reach farther back than the
-        single newest parent (e.g. yesterday's late-night session while the
-        newest parent is this noon's topic).
+        ``parent_offset`` skips newer qualifying parents after all scope,
+        persona, active-state and time-window filters have been applied.
+        ``parent_count`` then selects consecutive parents toward the past.
         """
         if self.db is None or not scope:
             return []
         cutoff = time.time() - max(0.0, float(window_hours)) * 3600.0
         count = max(1, int(parent_count))
+        offset = max(0, int(parent_offset))
         parameters: list[Any] = [scope]
         persona_sql = ""
         if persona_id is not None:
@@ -609,6 +611,7 @@ class CanonicalMemoryStore:
             parameters.append(persona_id)
         parameters.append(cutoff)
         parameters.append(count)
+        parameters.append(offset)
         cursor = await self.db.execute(
             f"""
             SELECT parent_id, document_id, scope, persona_id, overview,
@@ -617,7 +620,7 @@ class CanonicalMemoryStore:
             WHERE scope = ? AND status = 'active' {persona_sql}
               AND created_at >= ?
             ORDER BY created_at DESC
-            LIMIT ?
+            LIMIT ? OFFSET ?
             """,
             parameters,
         )
@@ -996,7 +999,7 @@ class CanonicalMemoryStore:
     ) -> dict[str, list[dict[str, Any]]]:
         """Expose separate fact routes for evaluation without changing recall."""
         if self.db is None or self.fact_vector_db is None or not query.strip():
-            return {"bm25": [], "vector": []}
+            return {"bm25": [], "vector": [], "phrase": []}
         tokens = await self.text_processor.tokenize_async(
             query, remove_stopwords=False
         )
@@ -1040,6 +1043,44 @@ class CanonicalMemoryStore:
                     "fact_id": str(row["fact_id"]),
                     "parent_id": str(row["parent_id"]),
                     "score": float(row["score"]),
+                }
+                for row in await cursor.fetchall()
+            ]
+
+        phrase: list[dict[str, Any]] = []
+        phrase_core = short_cjk_query_core(query)
+        if phrase_core:
+            filters = [
+                "f.status = 'active'",
+                "p.status = 'active'",
+                "COALESCE(json_extract(d.metadata, '$.status'), 'active') = 'active'",
+                "instr(f.search_text, ?) > 0",
+            ]
+            parameters = [phrase_core]
+            if scope is not None:
+                filters.append("f.scope = ?")
+                parameters.append(scope)
+            if persona_id is not None:
+                filters.append("f.persona_id = ?")
+                parameters.append(persona_id)
+            parameters.append(max(1, int(limit)))
+            cursor = await self.db.execute(
+                f"""
+                SELECT f.fact_id, f.parent_id
+                FROM memory_facts f
+                JOIN memory_parents p ON p.parent_id = f.parent_id
+                JOIN documents d ON d.id = p.document_id
+                WHERE {' AND '.join(filters)}
+                ORDER BY f.importance DESC, f.created_at DESC
+                LIMIT ?
+                """,
+                parameters,
+            )
+            phrase = [
+                {
+                    "fact_id": str(row["fact_id"]),
+                    "parent_id": str(row["parent_id"]),
+                    "score": 1.0,
                 }
                 for row in await cursor.fetchall()
             ]
@@ -1113,7 +1154,7 @@ class CanonicalMemoryStore:
             for item in vector_candidates
             if item["fact_id"] in active_fact_ids
         ][: max(1, int(limit))]
-        return {"bm25": bm25, "vector": vector}
+        return {"bm25": bm25, "vector": vector, "phrase": phrase}
 
     async def rebuild_indexes(self) -> dict[str, int | bool]:
         """Rebuild both projections only from active canonical fact rows."""

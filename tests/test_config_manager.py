@@ -16,12 +16,15 @@ def test_config_manager_loads_defaults() -> None:
     assert "sparse_retriever" not in config
     assert "dense_retriever" not in config
     assert manager.get("recall_engine.top_k") == 5
+    assert manager.get("recall_engine.recall_continuity_enabled") is True
     assert manager.get("recall_engine.min_importance_for_retrieval") == 0.0
     assert manager.get("recall_engine.min_similarity_for_retrieval") == 0.0
     assert manager.get("recall_engine.fact_candidate_k") == 20
     assert manager.get("recall_engine.injection_token_budget") == 1600
     assert manager.get("recall_engine.single_fact_token_budget") == 300
     assert manager.get("recall_engine.recent_context_max_age_seconds") == 7200
+    assert manager.get("recall_engine.recent_block_enabled") is False
+    assert manager.get("recall_engine.recent_block_start_parent_rank") == 1
     assert manager.get("fusion_strategy.rrf_k") == 60
     assert manager.get("graph_memory.dynamic_route_weighting") is False
     assert manager.get("graph_memory.graph_route_weight") == 0.0
@@ -105,6 +108,14 @@ def test_validate_config_accepts_recent_context_max_age() -> None:
     )
 
     assert config.recall_engine.recent_context_max_age_seconds == 3600
+
+
+def test_validate_config_accepts_recent_parent_start_rank() -> None:
+    config = validate_config(
+        {"recall_engine": {"recent_block_start_parent_rank": 100}}
+    )
+
+    assert config.recall_engine.recent_block_start_parent_rank == 100
 
 
 def test_validate_config_accepts_persona_display_aliases() -> None:

@@ -43,7 +43,14 @@ class RecallEngineConfig(BaseModel):
     """回忆引擎配置"""
 
     top_k: int = Field(
-        default=5, ge=0, le=50, description="返回记忆数量。设为 0 则跳过自动召回和注入"
+        default=5,
+        ge=0,
+        le=50,
+        description="本轮相关召回槽数量。设为 0 则跳过自动召回、续带和注入",
+    )
+    recall_continuity_enabled: bool = Field(
+        default=True,
+        description="使用固定 1+2+X 三代槽续带实际注入的召回事实",
     )
     max_k: int = Field(
         default=10, ge=1, le=50, description="Agent 主动检索时允许的最大返回数量"
@@ -127,20 +134,26 @@ class RecallEngineConfig(BaseModel):
         default=True, description="预算允许时随命中事实附带简短人格反应"
     )
     recent_block_enabled: bool = Field(
-        default=True,
-        description="启用最近记忆块（最近父记忆摘要 + 至多 N 条沾边事实，模拟短期记忆窗口）",
+        default=False,
+        description="启用可选最近记忆块（最近父记忆摘要 + 至多 N 条沾边事实）",
     )
     recent_block_window_hours: int = Field(
         default=48,
         ge=1,
         le=8760,
-        description="最近记忆块的时间窗口（小时）：只取窗口内最新一条父记忆",
+        description="最近记忆块的时间窗口（小时）：起点和数量只在窗口内选择",
+    )
+    recent_block_start_parent_rank: int = Field(
+        default=1,
+        ge=1,
+        le=100,
+        description="最近记忆块从时间倒序的第几个有效 parent 开始（1 表示最新）",
     )
     recent_block_parents: int = Field(
         default=1,
         ge=1,
         le=5,
-        description="最近记忆块覆盖的父记忆条数（按时间倒序取 N 条，各带摘要）",
+        description="最近记忆块从起点向旧方向连续覆盖的父记忆条数",
     )
     recent_block_max_facts: int = Field(
         default=2,

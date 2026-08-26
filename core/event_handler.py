@@ -102,6 +102,10 @@ class EventHandler:
         """Query and inject long-term memory before LLM request"""
         await self._memory_recall.handle_memory_recall(event, req)
 
+    async def clear_recall_continuity(self, session_id: str | None = None) -> None:
+        """清除单会话或全部跨轮召回续带状态。"""
+        await self._memory_recall.clear_recall_continuity(session_id)
+
     async def handle_memory_reflection(
         self, event: AstrMessageEvent, resp: LLMResponse
     ):
@@ -113,6 +117,7 @@ class EventHandler:
         session_id = event.unified_msg_origin
         if not session_id:
             return
+        await self.clear_recall_continuity(session_id)
         try:
             await self.conversation_manager.clear_session(session_id)
             logger.info(f"[{session_id}] 已同步清空插件会话上下文（/reset 或 /new）")
@@ -123,6 +128,7 @@ class EventHandler:
         """关闭事件处理器，等待所有存储任务完成"""
         self._shutting_down = True
         self._memory_reflection.set_shutting_down(True)
+        await self.clear_recall_continuity()
         if self._storage_tasks:
             logger.info(f"等待 {len(self._storage_tasks)} 个存储任务完成...")
             await asyncio.gather(*self._storage_tasks, return_exceptions=True)

@@ -79,8 +79,12 @@
       "description": "Memory Recall",
       "hint": "Control memory retrieval and injection into conversations",
       "top_k": {
-        "description": "Recall Count Per Request",
-        "hint": "Number of most relevant memories returned per retrieval. Set to 0 to skip automatic recall/injection while keeping historical injection cleanup. Recommended: 3-10."
+        "description": "Current-Turn Recall Count",
+        "hint": "Number of current-turn relevance slots. The continuity window may add two facts from the previous turn and one from two turns ago. Set to 0 to skip automatic recall, carry-over, and injection while keeping historical injection cleanup. Recommended: 3-10."
+      },
+      "recall_continuity_enabled": {
+        "description": "Enable Cross-Turn Evidence",
+        "hint": "Uses the fixed 1+2+X three-generation window: X is top_k for the current turn, plus up to two facts from the previous turn and the highest one from two turns ago, provided each was actually injected. Repeated hits return to the current slot and refresh eligibility; slot counts are fixed."
       },
       "max_k": {
         "description": "Max Active Retrieval Count",
@@ -136,15 +140,19 @@
       },
       "recent_block_enabled": {
         "description": "Enable Recent Memory Block",
-        "hint": "Automatic injection additionally carries the newest parent summary (short-term continuity window). It does not consume recall slots and shares the same token budget."
+        "hint": "Optional compatibility feature, disabled by default. Adds selected recent parent summaries and nearby facts without consuming current recall slots, while sharing the same token budget. Usually unnecessary with long raw context."
       },
       "recent_block_window_hours": {
         "description": "Recent Block Window (hours)",
-        "hint": "Only the newest parents written inside this window qualify as the short-term memory. Outside the window, injection falls back to pure relevance recall."
+        "hint": "The start rank and count select only active parents inside this time window; older parents do not count toward the rank."
+      },
+      "recent_block_start_parent_rank": {
+        "description": "Recent Block Start Parent Rank",
+        "hint": "One-based in reverse chronological order: 1 starts at the newest parent; 3 skips the newest two. Selection then continues toward older parents. A rank beyond the eligible window returns empty. One parent is created roughly every ten turns; for raw context measured in messages, a 20-message window can start at 1 and a 60-message window at 3. Set manually; AstrBot configuration is not read automatically. Range: 1-100."
       },
       "recent_block_parents": {
         "description": "Recent Block Parent Memories",
-        "hint": "How many newest parents (newest first) the recent block covers, each carrying its summary. Set to 2 to keep both last night's and this noon's sessions in view instead of only the single newest one."
+        "hint": "How many consecutive parents to select toward the past from the configured start rank, each carrying its summary."
       },
       "recent_block_max_facts": {
         "description": "Recent Block Facts",
