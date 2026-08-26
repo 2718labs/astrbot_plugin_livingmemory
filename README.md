@@ -1,7 +1,5 @@
 > [!IMPORTANT]
-> **这是 LivingMemory 的增强 fork。** 本项目由 [2718labs](https://github.com/2718labs) 基于[原版 LivingMemory](https://github.com/lxfight-s-Astrbot-Plugins/astrbot_plugin_livingmemory)继续开发，目标是重建“总结 → 处理与存储 → 事实与图谱 → 召回与注入”整条记忆链路。当前优先修复记忆质量、数据结构和真实召回问题；聚合、矛盾消解、rerank 与动态路线选择等新增能力暂不进入主线。项目仍处于改造阶段，具体实施顺序见 [S0–S6 执行路线图](docs/livingmemory-roadmap/README.md)；fork 自身的实际变更请查看 [CHANGELOG_FORK.md](CHANGELOG_FORK.md)，原项目更新请查看 [CHANGELOG.md](CHANGELOG.md)。
->
-> **当前进度：** S0–S6 与 Stest 均已完成（核心通过，可选路线保持关闭）：新记忆经逐事实准入进入唯一 canonical fact 层，图谱按事实证据构建，生产召回与注入已切到有空结果和硬预算的 fact route；生命周期只记录真实检索/注入并作用于事实层。2026-08-23 追加 recent 短期连续性窗口（48h 摘要 + 相近 facts，不占 top_k）、注入预算默认 1600/260、topic_id 泄漏修复与逐条注入前缀；聚合、矛盾消解、rerank 与动态调权仍在 `Sfuture`。
+> **这是 LivingMemory 的增强 fork。** 本项目由 [2718labs](https://github.com/2718labs) 基于[原版 LivingMemory](https://github.com/lxfight-s-Astrbot-Plugins/astrbot_plugin_livingmemory)继续开发，重点改进记忆的拆分、事实召回、跨轮连续性与真实注入边界。原版已有能力仍保留；fork 的实际变更见 [CHANGELOG_FORK.md](CHANGELOG_FORK.md)，后续设想见 [S0–Sfuture 路线图](docs/livingmemory-roadmap/README.md)。
 
 <div align="center">
 
@@ -23,6 +21,23 @@
 <img src="docs/public/images/retrieval-flow.svg" width="100%" alt="LivingMemory 双路检索流程">
 
 </div>
+
+## 这个 fork 额外做了什么
+
+<table>
+<tr>
+<td width="33%"><strong>按事实召回</strong><br><br>父记忆保存一段对话的整体概览，具体事实各自参与检索、排序与注入。命中一条事实时，不再把同一父记忆中的无关内容一起带回。</td>
+<td width="33%"><strong>一窗口一父记忆</strong><br><br>每个总结窗口只产生 0 或 1 条父记忆，最多容纳 5 条事实。父层按连续对话组织，事实层再承担语义拆分，避免同一窗口被重复切成多个语义岛。</td>
+<td width="33%"><strong>跨轮证据连续性</strong><br><br>采用固定 <code>1+2+X</code> 滑窗：本轮最多召回 <code>X=top_k</code> 条，上轮续带 2 条，上上轮续带 1 条；事实再次命中时会刷新生命周期。</td>
+</tr>
+<tr>
+<td width="33%"><strong>近期记忆补位</strong><br><br>RecentBlock 可从指定的第几个父记忆开始，补充刚滑出原始上下文的概览与相关事实，并与主召回共用同一 token 硬预算。该功能默认关闭，适合按实际上下文长度手动启用。</td>
+<td width="33%"><strong>摘要与事实分工</strong><br><br>总结模型顺手生成覆盖整条父记忆的中性概览，WebUI 与 RecentBlock 读取这份概览；可核验、可召回的证据仍以 canonical facts 为准。</td>
+<td width="33%"><strong>可诊断的注入链路</strong><br><br>对话召回日志按查询、本轮召回、候选装配和注入结果分阶段展示，能够看见 <code>top_k</code> 占用、滑窗来源、去重、预算和最终注入方式。</td>
+</tr>
+</table>
+
+Topic 会优先复用同一作用域内的已有名称，减少近义标签反复新增。图谱数据结构继续保留，但图路召回、RecentBlock 与重要性宽容准入默认关闭；事实召回与跨轮滑窗是当前生产主线。
 
 ## 让记忆形成结构
 
