@@ -37,7 +37,8 @@ LivingMemory 的默认配置已经适合大多数场景。真正需要调整的�
 
 | 配置项 | 默认 | 说明 |
 | --- | --- | --- |
-| `recall_engine.top_k` | `5` | 每轮自动召回的记忆数量 |
+| `recall_engine.top_k` | `5` | 本轮相关召回槽数量；三代滑窗可额外续带上一轮 2 条、上上轮 1 条 |
+| `recall_engine.recall_continuity_enabled` | `true` | 启用固定 `1+2+X` 三代滑窗；槽位数不开放配置 |
 | `recall_engine.max_k` | `10` | Agent 主动检索工具允许返回的最大数量 |
 | `recall_engine.importance_weight` | `1.0` | 重要性在最终排序中的权重 |
 | `recall_engine.min_importance_for_retrieval` | `0.0` | 最低重要性阈值，`0` 表示不过滤 |
@@ -45,9 +46,16 @@ LivingMemory 的默认配置已经适合大多数场景。真正需要调整的�
 | `recall_engine.fallback_to_vector` | `true` | 混合检索失败时降级到向量检索 |
 | `recall_engine.injection_method` | `extra_user_content` | 记忆注入到 LLM 请求的位置或形式 |
 | `recall_engine.inject_with_recent_context` | `false` | 是否拼接最近对话扩展查询 |
+| `recall_engine.recent_block_enabled` | `false` | 可选注入最近父记忆摘要与沾边事实；长上下文场景通常无需开启 |
+| `recall_engine.recent_block_window_hours` | `48` | recent parent 必须位于此时间窗口内 |
+| `recall_engine.recent_block_start_parent_rank` | `1` | 从时间倒序第几个有效 parent 开始，范围 `1–100` |
+| `recall_engine.recent_block_parents` | `1` | 从起点向旧方向连续选择的 parent 数量 |
+| `recall_engine.recent_block_max_facts` | `2` | 每个 recent parent 最多附带的沾边 fact 数量 |
 | `recall_engine.search_cache_enabled` | `true` | 是否启用短期检索缓存 |
 
 `extra_user_content` 是最稳妥的默认注入方式。Gemini Provider 下选择 `fake_tool_call` 会自动降级到 `extra_user_content`；DeepSeek V4 thinking 模式现在可以直接使用普通 `fake_tool_call`，旧的 `fake_tool_call_deepseek_v4` 仅作为兼容别名保留，并会自动回退到 `fake_tool_call`。
+
+recent 起始序号从 1 计数：`1` 是最新 parent，`3` 会跳过最新两条，再由 `recent_block_parents` 决定连续取第 3、4……条；超出时间窗口内的可用数量时返回空，不回退。每 10 轮约形成一个 parent；若模型原始上下文按消息条数计算，20 条窗口可从第 1 条开始，60 条窗口可从第 3 条开始。该值需按实际上下文手动设置，不会自动读取 AstrBot 配置。
 
 ## 记忆隔离
 

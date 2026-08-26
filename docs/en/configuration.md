@@ -37,7 +37,8 @@ For very busy group chats, lower `context_window_size` or disable full group cap
 
 | Key | Default | Description |
 | --- | --- | --- |
-| `recall_engine.top_k` | `5` | Number of memories automatically recalled each turn |
+| `recall_engine.top_k` | `5` | Current-turn relevance slots; the two-generation window may carry two additional previous-turn facts |
+| `recall_engine.recall_continuity_enabled` | `true` | Enables the fixed `1+2+X` three-generation window; slot counts are not configurable |
 | `recall_engine.max_k` | `10` | Maximum results returned by active agent recall |
 | `recall_engine.importance_weight` | `1.0` | Importance weight in final ranking |
 | `recall_engine.min_importance_for_retrieval` | `0.0` | Minimum importance; `0` disables the filter |
@@ -45,9 +46,16 @@ For very busy group chats, lower `context_window_size` or disable full group cap
 | `recall_engine.fallback_to_vector` | `true` | Falls back to vector search if hybrid retrieval fails |
 | `recall_engine.injection_method` | `extra_user_content` | Where or how recalled memories are injected |
 | `recall_engine.inject_with_recent_context` | `false` | Expands the query with recent conversation |
+| `recall_engine.recent_block_enabled` | `false` | Optionally injects recent parent summaries and nearby facts; usually unnecessary with long raw context |
+| `recall_engine.recent_block_window_hours` | `48` | Requires recent parents to fall inside this time window |
+| `recall_engine.recent_block_start_parent_rank` | `1` | Starts at this 1-based parent rank in reverse chronological order; range `1–100` |
+| `recall_engine.recent_block_parents` | `1` | Number of consecutive parents selected toward the past from the start rank |
+| `recall_engine.recent_block_max_facts` | `2` | Maximum nearby facts attached per recent parent |
 | `recall_engine.search_cache_enabled` | `true` | Enables short-term retrieval caching |
 
 `extra_user_content` is the safest default. Gemini providers automatically fall back from `fake_tool_call` to `extra_user_content`. DeepSeek V4 thinking mode can now use normal `fake_tool_call` on recent AstrBot versions; the legacy `fake_tool_call_deepseek_v4` option is kept only as a compatibility alias and automatically falls back to `fake_tool_call`.
+
+The recent start rank is 1-based: `1` is the newest parent, while `3` skips the newest two before `recent_block_parents` selects ranks 3, 4, and so on. A rank beyond the eligible parents inside the time window returns no recent block and never falls back. One parent is created roughly every ten turns. If the model's raw context is measured in message count, a 20-message window can start at rank 1 and a 60-message window can start at rank 3. Set this manually for the actual context; the plugin does not read the AstrBot setting automatically.
 
 ## Memory isolation
 

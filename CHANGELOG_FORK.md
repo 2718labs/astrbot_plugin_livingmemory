@@ -2,8 +2,13 @@
 
 本文件只记录 [2718labs fork](https://github.com/2718labs/astrbot_plugin_livingmemory) 相对[原版 LivingMemory](https://github.com/lxfight-s-Astrbot-Plugins/astrbot_plugin_livingmemory)产生的变更。原项目自身的版本历史见 [CHANGELOG.md](CHANGELOG.md)。
 
-## [Unreleased] - 2026-08-25
+## [Unreleased] - 2026-08-26
 
+- 实验分支将自动召回升级为固定三代 `1+2+X` 证据滑窗（默认开启，`X=top_k`）：上一轮最多续带 2 条，上上轮保留其中最高 1 条；只推进实际进入模型请求的 canonical facts，重复命中会回到本轮并刷新资格。
+- 短中文查询新增连续短语候选和保守词面评分：安全剥离句尾语气、第一人称/所有格、回忆框架和部分口语前缀，最终核心固定为 2–5 个汉字并保护“不了”等正常补语；纯指代、纯时间报点和寒暄只接收滑窗续带、不发起新搜索，不降低全局向量或图路准入门槛。
+- recent block 改为默认关闭并保留为可选兼容功能，避免长上下文场景重复注入仍在原始对话中的摘要与事实；已有显式配置保持用户选择，不自动覆盖。
+- recent block 新增 `recent_block_start_parent_rank`（默认 1，范围 1–100），可跳过仍被原始上下文覆盖的最新 parent，再由 `recent_block_parents` 向旧方向连续选择；超出时间窗口内可用数量时返回空，不回退。
+- `Sfuture` 中的固定三代 `1+2+X` 愿景已在实验分支落地验证；槽位仍不开放配置。
 - 新增"重要性宽容准入"（`recall_engine.importance_grace_threshold` 默认 0.8 + `importance_grace_factor` 默认 0.8）：importance 达 0.8 的记忆（写侧打了高分的关系/情感/信任级）在检索准入时按系数放宽向量/词面门槛（0.62→0.50），普通记忆门槛不变。把写侧已打的 importance 信号接回读侧——此前该值除衰减/展示外几乎不参与召回。
 - recent block 支持覆盖最近 N 条父记忆（新配置 `recall_engine.recent_block_parents`，默认 1，范围 1–5）：按时间倒序取 N 条父记忆，每条都无条件带摘要，各自父记忆下的沾边事实仍按 `recent_block_max_facts` 词面门槛挑选；fact 去重跨 parent 与主召回共用。设 2 可让"昨晚深夜"与"今天中午"等多段近期对话同时进入连续性窗口，避免更早但关键（如高重要性情感事实）的父记忆被最新一条挤掉。
 - 生产条件召回实证（真实 qwen embedding + 实机 FAISS 索引 + 完整融合检索）：质疑轮（"昨天有说这个？"）对高重要性事实（08-24深夜思念）的 vector 相似度 0.39，打开上下文扩展拼接后升到 0.50、无门槛相关度从第 14 升到第 1，但仍低于 `fact_min_vector_similarity` 0.62 的准入硬门槛，两个场景均未召回。结论：该场景靠检索门槛救不回，需 recent block 无条件摘要注入 + 重要性宽容准入双路兜底。
