@@ -971,7 +971,9 @@ async def test_fake_tool_call_uses_persona_summary_for_injection():
 
 
 @pytest.mark.asyncio
-async def test_handle_memory_recall_injection_fake_tool_call(handler, memory_engine):
+async def test_handle_memory_recall_injection_fake_tool_call(
+    handler, memory_engine, caplog
+):
     """injection_method=fake_tool_call 时，记忆应以伪造工具调用的形式注入到 contexts。"""
     from astrbot_plugin_livingmemory.core.base.config_manager import ConfigManager
     from astrbot_plugin_livingmemory.core.event_handler import EventHandler
@@ -1038,6 +1040,9 @@ async def test_handle_memory_recall_injection_fake_tool_call(handler, memory_eng
     # prompt 和 system_prompt 不应被修改
     assert req.prompt == "今天吃什么"
     assert req.system_prompt == ""
+    assert "[记忆召回·注入] 通过 fake_tool_call 注入 1 条" in caplog.text
+    assert "预算使用" in caplog.text
+    assert "[format_memories_for_fake_tool_call]" not in caplog.text
 
 
 @pytest.mark.asyncio
@@ -1589,7 +1594,7 @@ def _make_handler_with_top_k_0(memory_engine, memory_processor, conversation_man
 
 @pytest.mark.asyncio
 async def test_top_k_0_skips_search_memories(
-    memory_engine, memory_processor, conversation_manager
+    memory_engine, memory_processor, conversation_manager, caplog
 ):
     """top_k=0 时不应调用 memory_engine.search_memories()。"""
     handler = _make_handler_with_top_k_0(
@@ -1607,6 +1612,14 @@ async def test_top_k_0_skips_search_memories(
 
     memory_engine.search_memories.assert_not_awaited()
     assert req.prompt == "hello world"
+    recall_logs = [
+        record.getMessage()
+        for record in caplog.records
+        if "[记忆召回·" in record.getMessage()
+    ]
+    assert recall_logs == [
+        f"[{event.unified_msg_origin}] [记忆召回·查询] 自动召回已关闭（top_k=0）。"
+    ]
 
 
 @pytest.mark.asyncio
@@ -1809,7 +1822,7 @@ async def test_system_prompt_auto_falls_back_to_extra_user_content(
 
 @pytest.mark.asyncio
 async def test_context_expansion_enriches_query(
-    memory_engine, memory_processor, conversation_manager
+    memory_engine, memory_processor, conversation_manager, caplog
 ):
     """启用 inject_with_recent_context 时，查询应拼接历史消息上下文。"""
     from astrbot_plugin_livingmemory.core.base.config_manager import ConfigManager
@@ -1872,6 +1885,8 @@ async def test_context_expansion_enriches_query(
     assert "用户之前说的事情" in call_kwargs["query"]
     assert "Bot 的上一条回复" in call_kwargs["query"]
     assert call_kwargs["query"].count("当前用户消息") == 1
+    assert '[记忆召回·查询] 原消息="当前用户消息"' in caplog.text
+    assert "扩展历史 2 条" in caplog.text
     cm_mock.get_context.assert_awaited_once_with(
         event.unified_msg_origin,
         max_messages=5,

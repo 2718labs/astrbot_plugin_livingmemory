@@ -125,7 +125,7 @@ def _make_handler(memory_engine, conversation_manager, **recall_overrides):
 
 @pytest.mark.asyncio
 async def test_recent_block_injects_summary_and_topic_facts(
-    conversation_manager,
+    conversation_manager, caplog
 ):
     """窗口内：摘要 + 沾边事实进入注入，且不占 top_k 名额。"""
     facts = [
@@ -174,6 +174,10 @@ async def test_recent_block_injects_summary_and_topic_facts(
     assert "某个历史事实一" in injected
     assert "某个历史事实二" in injected
     assert "某个历史事实三" in injected
+    assert "recent=从第 1 个 parent 起取 1 个（48 小时内）" in caplog.text
+    assert "recent 选中 1 个 parent，提供 1 条摘要、1 条事实" in caplog.text
+    assert "recent 摘要 1、recent 事实 1" in caplog.text
+    assert "recent 块: 父记忆" not in caplog.text
 
 
 @pytest.mark.asyncio
@@ -266,8 +270,8 @@ async def test_recent_summary_duplicate_keeps_canonical_fact_metadata(
     assert injected.count(content) == 1
     assert "最近对话摘要" not in injected
     assert "当时反应：期待；想看看成品" in injected
-    assert "装配候选=2，预算装配保留=1，丢弃=1" in caplog.text
-    assert "recent 摘要与正式 fact 重复=1" in caplog.text
+    assert "合并候选 2 条，预算保留 1 条，丢弃 1 条" in caplog.text
+    assert "recent 摘要重复 1 条" in caplog.text
 
 
 @pytest.mark.asyncio
@@ -298,6 +302,31 @@ async def test_recent_block_respects_max_facts(conversation_manager):
     # 只带词面分最高的一条
     assert "考研安排在2026年12月" in injected
     assert "考研复习计划是三轮" not in injected
+
+
+@pytest.mark.asyncio
+async def test_recent_block_failure_is_aggregated_and_main_recall_continues(
+    conversation_manager, caplog
+):
+    engine = _make_engine(
+        recalled=[_make_recalled("仍应注入的本轮事实", "fact-current")]
+    )
+    engine.canonical_store.get_recent_parents = AsyncMock(
+        side_effect=RuntimeError("recent unavailable")
+    )
+    handler = _make_handler(engine, conversation_manager)
+
+    event = _make_event()
+    req = _make_req()
+    with patch(
+        "astrbot_plugin_livingmemory.core.event_handler_modules.memory_recall.get_persona_id",
+        new=AsyncMock(return_value="persona_1"),
+    ):
+        await handler.handle_memory_recall(event, req)
+
+    assert "仍应注入的本轮事实" in req.extra_user_content_parts[0].text
+    assert "recent 块构建失败，主召回继续: RuntimeError" in caplog.text
+    assert "recent 构建失败" in caplog.text
 
 
 @pytest.mark.asyncio

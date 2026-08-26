@@ -30,6 +30,17 @@ from ..utils.fact_packing import (
     token_upper_bound,
 )
 from ..utils.recall_continuity import RecallContinuityCache
+from ..utils.recall_logging import (
+    RecallAssemblyStage,
+    RecallInjectionStage,
+    RecallQueryStage,
+    RecallSearchStage,
+    RecentBlockStats,
+    format_assembly_stage,
+    format_injection_stage,
+    format_query_stage,
+    format_recall_stage,
+)
 
 if TYPE_CHECKING:
     from ..base.config_manager import ConfigManager
@@ -91,6 +102,14 @@ class MemoryRecall:
             and not hit.metadata.get("recent_summary")
         ]
         return list(dict.fromkeys(fact_id for fact_id in fact_ids if fact_id))
+
+    @staticmethod
+    def _is_importance_grace_admitted(hit: HybridResult) -> bool:
+        breakdown = getattr(hit, "score_breakdown", None)
+        if not isinstance(breakdown, dict):
+            return False
+        value = breakdown.get("importance_grace_admitted", 0.0)
+        return isinstance(value, (int, float)) and value > 0
 
     async def _load_continuity_hits(
         self,
@@ -204,6 +223,7 @@ class MemoryRecall:
         self, event: AstrMessageEvent, req: ProviderRequest
     ):
         """Query and inject long-term memory before LLM request"""
+        recall_started = time.perf_counter()
         try:
             session_id = event.unified_msg_origin
             if not is_event_memory_allowed(self.config_manager, event):
@@ -234,7 +254,7 @@ class MemoryRecall:
 
                 normalized = self._normalize_text_only_context_parts(req, session_id)
                 if normalized > 0:
-                    logger.info(f"[{session_id}] 已归一化 {normalized} 条纯文本历史消息")
+                    logger.debug(f"[{session_id}] 已归一化 {normalized} 条纯文本历史消息")
 
                 # 自动删除旧的注入记忆
                 if self.config_manager.get("recall_engine.auto_remove_injected", True):
@@ -243,7 +263,7 @@ class MemoryRecall:
                     )
                     removed += self._remove_fake_tool_call_from_context(req, session_id)
                     if removed > 0:
-                        logger.info(
+                        logger.debug(
                             f"[{session_id}] 已清理 {removed} 处历史记忆注入片段"
                         )
 
@@ -276,7 +296,8 @@ class MemoryRecall:
                 if top_k <= 0:
                     await self.clear_recall_continuity(session_id)
                     logger.info(
-                        f"[{session_id}] top_k={top_k} <= 0，跳过记忆检索和注入"
+                        f"[{session_id}] [记忆召回·查询] "
+                        f"自动召回已关闭（top_k={top_k}）。"
                     )
                     return
 
@@ -302,6 +323,33 @@ class MemoryRecall:
                 recall_session_id = resolve_memory_scope(self.config_manager, event)
                 recall_persona_id = persona_id if use_persona_filtering else None
 
+                importance_grace_enabled = bool(
+                    self.config_manager.get(
+                        "recall_engine.importance_grace_enabled", False
+                    )
+                )
+                min_importance = float(
+                    self.config_manager.get(
+                        "recall_engine.min_importance_for_retrieval", 0.0
+                    )
+                )
+                recent_enabled = bool(
+                    self.config_manager.get("recall_engine.recent_block_enabled", False)
+                )
+                recent_start_rank = int(
+                    self.config_manager.get(
+                        "recall_engine.recent_block_start_parent_rank", 1
+                    )
+                )
+                recent_parent_count = int(
+                    self.config_manager.get("recall_engine.recent_block_parents", 1)
+                )
+                recent_window_hours = float(
+                    self.config_manager.get(
+                        "recall_engine.recent_block_window_hours", 48
+                    )
+                )
+
                 continuity_enabled = bool(
                     self.config_manager.get(
                         "recall_engine.recall_continuity_enabled", True
@@ -324,16 +372,16 @@ class MemoryRecall:
                 query_gate = getattr(fact_retriever, "query_gate_reason", None)
                 gate_reason = query_gate(actual_query) if callable(query_gate) else None
                 skip_current_recall = isinstance(gate_reason, str) and bool(gate_reason)
-                if skip_current_recall:
-                    logger.info(
-                        f"[{session_id}] 当前消息无需新增长期记忆召回: {gate_reason}；"
-                        "仍检查上一轮续带"
-                    )
 
                 # 使用原始用户输入作为召回关键字
                 query_for_search = actual_query
+                expanded_history_count = 0
                 current_memories: list[HybridResult] = []
                 recent_entries: list[HybridResult] = []
+                recent_stats = RecentBlockStats(
+                    enabled=recent_enabled,
+                    status="skipped" if skip_current_recall else "disabled",
+                )
 
                 # 上下文扩展：拼接最近2轮对话作为查询，提升检索精准度
                 if not skip_current_recall and self.config_manager.get(
@@ -373,19 +421,37 @@ class MemoryRecall:
                             if context_parts:
                                 expanded = " | ".join(context_parts)
                                 query_for_search = expanded + " " + actual_query
-                                logger.info(
-                                    f"[{session_id}] 上下文扩展查询: "
-                                    f"{len(context_parts)}条历史消息 + 当前消息，"
-                                    f"按时间跳过={skipped_by_age}条"
+                                expanded_history_count = len(context_parts)
+                                logger.debug(
+                                    f"[{session_id}] 上下文扩展按时间跳过 "
+                                    f"{skipped_by_age} 条历史消息"
                                 )
                     except Exception as e:
                         logger.warning(f"[{session_id}] 获取上下文扩展失败: {e}")
 
-                if not skip_current_recall:
-                    logger.info(
-                        f"[{session_id}] 开始记忆召回，"
-                        f"查询='{query_for_search[:80]}...'"
+                logger.info(
+                    f"[{session_id}] "
+                    + format_query_stage(
+                        RecallQueryStage(
+                            query=actual_query,
+                            top_k=top_k,
+                            expanded_query=(
+                                query_for_search if expanded_history_count else None
+                            ),
+                            expanded_history_count=expanded_history_count,
+                            skip_reason=gate_reason if skip_current_recall else None,
+                            importance_grace_enabled=importance_grace_enabled,
+                            min_importance=min_importance,
+                            recent_enabled=recent_enabled,
+                            recent_start_rank=recent_start_rank,
+                            recent_parent_count=recent_parent_count,
+                            recent_window_hours=recent_window_hours,
+                        )
                     )
+                )
+
+                if not skip_current_recall:
+                    search_started = time.perf_counter()
                     current_memories = list(
                         await self.memory_engine.search_memories(
                             query=query_for_search,
@@ -395,10 +461,32 @@ class MemoryRecall:
                         )
                         or []
                     )[:top_k]
+                    grace_admitted_count = sum(
+                        1
+                        for hit in current_memories
+                        if self._is_importance_grace_admitted(hit)
+                    )
+                    logger.info(
+                        f"[{session_id}] "
+                        + format_recall_stage(
+                            RecallSearchStage(
+                                hit_count=len(current_memories),
+                                top_k=top_k,
+                                elapsed_ms=(
+                                    time.perf_counter() - search_started
+                                )
+                                * 1000,
+                                importance_grace_enabled=importance_grace_enabled,
+                                grace_admitted_count=grace_admitted_count,
+                            )
+                        )
+                    )
 
+                assembly_started = time.perf_counter()
+                if not skip_current_recall:
                     # recent 块不占本轮 top_k，但排在本轮相关召回和续带之后，
                     # 三者共用同一 token 硬预算。
-                    recent_entries = await self._build_recent_block(
+                    recent_entries, recent_stats = await self._build_recent_block(
                         query_for_search,
                         current_memories,
                         recall_session_id or session_id,
@@ -418,6 +506,15 @@ class MemoryRecall:
                     generation=2,
                     memory_scope=recall_session_id,
                     persona_id=recall_persona_id,
+                )
+                previous_loaded = len(previous_hits)
+                older_loaded = len(older_hits)
+                invalid_continuity_count = max(
+                    0,
+                    len(previous_fact_ids)
+                    + len(older_fact_ids)
+                    - previous_loaded
+                    - older_loaded,
                 )
                 repeated_count = sum(
                     1
@@ -448,15 +545,16 @@ class MemoryRecall:
                     *older_hits,
                     *recent_entries,
                 ]
-                logger.info(
-                    f"[{session_id}] 召回候选: 本轮={len(current_memories)}，"
-                    f"上轮续带={len(previous_hits)}，"
-                    f"上上轮续带={len(older_hits)}，重复={repeated_count}，"
-                    f"recent={len(recent_entries)}"
+                packing_candidate_count = len(recalled_memories)
+                token_budget = int(
+                    self.config_manager.get(
+                        "recall_engine.injection_token_budget", 1600
+                    )
                 )
+                dropped: list[dict[str, str]] = []
+                reason_counts: Counter[str] = Counter()
 
-                if recalled_memories:
-                    packing_candidate_count = len(recalled_memories)
+                if packing_candidate_count:
                     packer = getattr(self.memory_engine, "pack_memory_hits", None)
                     packed = packer(recalled_memories) if callable(packer) else None
                     if packed is None or not isinstance(
@@ -464,11 +562,7 @@ class MemoryRecall:
                     ):
                         packed = pack_fact_hits(
                             recalled_memories,
-                            token_budget=int(
-                                self.config_manager.get(
-                                    "recall_engine.injection_token_budget", 1600
-                                )
-                            ),
+                            token_budget=token_budget,
                             single_fact_budget=int(
                                 self.config_manager.get(
                                     "recall_engine.single_fact_token_budget", 300
@@ -480,219 +574,287 @@ class MemoryRecall:
                         )
                     recalled_memories = packed.hits
                     dropped = list(getattr(packed, "dropped", []) or [])
-                    reason_labels = {
-                        "duplicate_recent_summary": "recent 摘要与正式 fact 重复",
-                        "duplicate_or_empty": "重复或空内容",
-                        "single_fact_budget": "单条超限",
-                        "total_budget": "总预算截断",
-                    }
                     reason_counts = Counter(
                         str(item.get("reason") or "unknown") for item in dropped
                     )
-                    drop_detail = "、".join(
-                        f"{reason_labels.get(reason, reason)}={count}"
-                        for reason, count in reason_counts.items()
-                    )
-                    drop_text = f"丢弃={len(dropped)}"
-                    if drop_detail:
-                        drop_text += f"（{drop_detail}）"
-                    logger.info(
-                        f"[{session_id}] 装配候选={packing_candidate_count}，"
-                        f"预算装配保留={len(recalled_memories)}，{drop_text}，"
-                        f"预算={packed.token_count}/{packed.token_budget}"
-                    )
                     if dropped:
                         logger.debug(f"[{session_id}] 注入丢弃明细: {dropped}")
-                    if not recalled_memories:
-                        logger.info(
-                            f"[{session_id}] 相关候选均未通过注入预算，跳过长期记忆"
+                logger.info(
+                    f"[{session_id}] "
+                    + format_assembly_stage(
+                        RecallAssemblyStage(
+                            continuity_enabled=continuity_enabled,
+                            previous_loaded=previous_loaded,
+                            older_loaded=older_loaded,
+                            invalid_continuity_count=invalid_continuity_count,
+                            repeated_count=repeated_count,
+                            previous_continuation=len(previous_hits),
+                            older_continuation=len(older_hits),
+                            recent=recent_stats,
+                            candidate_count=packing_candidate_count,
+                            packed_count=len(recalled_memories),
+                            dropped_reasons=dict(reason_counts),
+                            elapsed_ms=(
+                                time.perf_counter() - assembly_started
+                            )
+                            * 1000,
                         )
-                        return
-
-                    # 格式化并注入记忆
-                    memory_list = [
-                        {
-                            "id": getattr(mem, "doc_id", None),
-                            "content": mem.content,
-                            "score": mem.final_score,
-                            "metadata": mem.metadata,
-                            "timestamp": mem.metadata.get("create_time"),
-                        }
-                        for mem in recalled_memories
-                    ]
-
-                    # 输出详细记忆信息
-                    for i, mem in enumerate(recalled_memories, 1):
-                        logger.debug(
-                            f"[{session_id}] 记忆 #{i}: 得分={mem.final_score:.3f}, "
-                            f"重要性={mem.metadata.get('importance', 0.5):.2f}, "
-                            f"内容={mem.content[:100]}..."
-                        )
-
-                    # 根据配置选择注入方式（含 Provider 兼容降级）
-                    configured_method = self.config_manager.get(
-                        "recall_engine.injection_method", "extra_user_content"
                     )
-                    provider = None
-                    if configured_method in (
-                        "fake_tool_call",
-                        "fake_tool_call_deepseek_v4",
-                    ):
-                        try:
-                            provider = self.context.get_using_provider(session_id)
-                        except Exception as e:
-                            logger.warning(
-                                f"[{session_id}] 获取当前 Provider 失败，"
-                                f"将按无 Provider 继续解析注入模式: {e}"
-                            )
-                    injection_method, fallback_reason = (
-                        self.injection_adapter.resolve(provider, configured_method)
-                    )
-                    if fallback_reason:
-                        logger.warning(
-                            f"[{session_id}] 注入模式从 {configured_method} 降级为 "
-                            f"{injection_method}: {fallback_reason}"
-                        )
+                )
 
-                    memory_str = format_fact_hits_for_injection(
-                        recalled_memories,
-                        include_reaction=self.config_manager.get(
-                            "recall_engine.include_persona_reaction", True
-                        ),
-                    )
-                    injected = False
-                    method_budget_dropped = 0
-
-                    if injection_method == "user_message_before":
-                        req.prompt = memory_str + "\n\n" + (req.prompt or "")
-                        injected = True
-                        logger.info(
-                            f"[{session_id}] 成功向用户消息前注入 {len(recalled_memories)} 条记忆"
-                        )
-                    elif injection_method == "user_message_after":
-                        req.prompt = (req.prompt or "") + "\n\n" + memory_str
-                        injected = True
-                        logger.info(
-                            f"[{session_id}] 成功向用户消息后注入 {len(recalled_memories)} 条记忆"
-                        )
-                    elif injection_method == "fake_tool_call":
-                        fake_messages = []
-                        before_method_budget = len(recalled_memories)
-                        budget = int(
-                            self.config_manager.get(
-                                "recall_engine.injection_token_budget", 1600
-                            )
-                        )
-                        while recalled_memories:
-                            memory_list = [
-                                {
-                                    "id": getattr(mem, "doc_id", None),
-                                    "content": mem.content,
-                                    "score": mem.final_score,
-                                    "metadata": mem.metadata,
-                                    "timestamp": mem.metadata.get("create_time"),
-                                }
-                                for mem in recalled_memories
-                            ]
-                            fake_messages = format_memories_for_fake_tool_call(
-                                memory_list,
-                                query=actual_query,
-                                k=len(recalled_memories),
-                                session_filtered=recall_session_id is not None,
-                                persona_filtered=use_persona_filtering,
-                            )
-                            if token_upper_bound(
-                                json.dumps(fake_messages, ensure_ascii=False)
-                            ) <= budget:
-                                break
-                            recalled_memories.pop()
-                        if not recalled_memories:
-                            fake_messages = []
-                        method_budget_dropped = (
-                            before_method_budget - len(recalled_memories)
-                        )
-                        if fake_messages:
-                            req.contexts.extend(fake_messages)
-                            injected = True
-                            logger.info(
-                                f"[{session_id}] 成功以伪造工具调用方式注入 "
-                                f"{len(recalled_memories)} 条记忆"
-                            )
-                    else:
-                        # extra_user_content（推荐）：追加到用户消息末尾，
-                        # 不影响前缀缓存且 mark_as_temp 后不污染对话历史
-                        req.extra_user_content_parts.append(
-                            TextPart(text=memory_str).mark_as_temp()
-                        )
-                        injected = True
-                        logger.info(
-                            f"[{session_id}] 成功向用户消息末尾注入 "
-                            f"{len(recalled_memories)} 条记忆"
-                        )
-                    if injected:
-                        actual_current_count = sum(
-                            1
-                            for hit in recalled_memories
-                            if str(hit.metadata.get("fact_id") or "")
-                            in current_fact_id_set
-                        )
-                        actual_previous_count = sum(
-                            1
-                            for hit in recalled_memories
-                            if hit.metadata.get("continuity_generation") == 1
-                        )
-                        actual_older_count = sum(
-                            1
-                            for hit in recalled_memories
-                            if hit.metadata.get("continuity_generation") == 2
-                        )
-                        actual_recent_count = sum(
-                            1
-                            for hit in recalled_memories
-                            if str(hit.metadata.get("selection_reason") or "").startswith(
-                                "recent_block_"
-                            )
-                        )
-                        logger.info(
-                            f"[{session_id}] 实际注入: 本轮={actual_current_count}，"
-                            f"上轮续带={actual_previous_count}，"
-                            f"上上轮续带={actual_older_count}，"
-                            f"recent={actual_recent_count}，"
-                            f"注入方式预算丢弃={method_budget_dropped}，"
-                            f"合计={len(recalled_memories)}"
-                        )
-                        if continuity_enabled:
-                            injected_fact_ids = set(
-                                self._canonical_fact_ids(recalled_memories)
-                            )
-                            next_fact_ids = [
-                                fact_id
-                                for fact_id in current_fact_ids
-                                if fact_id in injected_fact_ids
-                            ][:2]
-                            next_older_fact_ids = [
-                                fact_id
-                                for fact_id in self._canonical_fact_ids(previous_hits)
-                                if fact_id in injected_fact_ids
-                            ][:1]
-                            await self._continuity_cache.put(
-                                session_id,
-                                next_fact_ids,
-                                next_older_fact_ids,
-                                memory_scope=recall_session_id,
-                                persona_id=recall_persona_id,
-                            )
-                        marker = getattr(
-                            self.memory_engine, "mark_memories_injected", None
-                        )
-                        if callable(marker):
-                            marked = marker(recalled_memories)
-                            if inspect.isawaitable(marked):
-                                await marked
-                else:
+                configured_method = self.config_manager.get(
+                    "recall_engine.injection_method", "extra_user_content"
+                )
+                if not packing_candidate_count or not recalled_memories:
                     logger.info(
-                        f"[{session_id}] 本轮及两代续带槽均无可注入记忆"
+                        f"[{session_id}] "
+                        + format_injection_stage(
+                            RecallInjectionStage(
+                                injected=False,
+                                method=str(configured_method),
+                                outcome=(
+                                    "no_candidates"
+                                    if not packing_candidate_count
+                                    else "packing_empty"
+                                ),
+                                total_count=0,
+                                current_count=0,
+                                previous_count=0,
+                                older_count=0,
+                                recent_summary_count=0,
+                                recent_fact_count=0,
+                                token_count=0,
+                                token_budget=token_budget,
+                                next_previous_count=0,
+                                next_older_count=0,
+                                total_elapsed_ms=(
+                                    time.perf_counter() - recall_started
+                                )
+                                * 1000,
+                                continuity_enabled=continuity_enabled,
+                                importance_grace_enabled=importance_grace_enabled,
+                                recent_enabled=recent_enabled,
+                            )
+                        )
                     )
+                    return
+
+                # 输出详细记忆信息
+                for i, mem in enumerate(recalled_memories, 1):
+                    logger.debug(
+                        f"[{session_id}] 记忆 #{i}: 得分={mem.final_score:.3f}, "
+                        f"重要性={mem.metadata.get('importance', 0.5):.2f}, "
+                        f"内容={mem.content[:100]}..."
+                    )
+
+                # 根据配置选择注入方式（含 Provider 兼容降级）
+                provider = None
+                if configured_method in (
+                    "fake_tool_call",
+                    "fake_tool_call_deepseek_v4",
+                ):
+                    try:
+                        provider = self.context.get_using_provider(session_id)
+                    except Exception as e:
+                        logger.warning(
+                            f"[{session_id}] 获取当前 Provider 失败，"
+                            f"将按无 Provider 继续解析注入模式: {e}"
+                        )
+                injection_method, fallback_reason = self.injection_adapter.resolve(
+                    provider, configured_method
+                )
+                if fallback_reason:
+                    logger.warning(
+                        f"[{session_id}] 注入模式从 {configured_method} 降级为 "
+                        f"{injection_method}: {fallback_reason}"
+                    )
+
+                memory_str = format_fact_hits_for_injection(
+                    recalled_memories,
+                    include_reaction=self.config_manager.get(
+                        "recall_engine.include_persona_reaction", True
+                    ),
+                )
+                injected = False
+                method_budget_dropped = 0
+                final_token_count = token_upper_bound(memory_str)
+
+                if injection_method == "user_message_before":
+                    req.prompt = memory_str + "\n\n" + (req.prompt or "")
+                    injected = True
+                elif injection_method == "user_message_after":
+                    req.prompt = (req.prompt or "") + "\n\n" + memory_str
+                    injected = True
+                elif injection_method == "fake_tool_call":
+                    fake_messages = []
+                    before_method_budget = len(recalled_memories)
+                    while recalled_memories:
+                        memory_list = [
+                            {
+                                "id": getattr(mem, "doc_id", None),
+                                "content": mem.content,
+                                "score": mem.final_score,
+                                "metadata": mem.metadata,
+                                "timestamp": mem.metadata.get("create_time"),
+                            }
+                            for mem in recalled_memories
+                        ]
+                        fake_messages = format_memories_for_fake_tool_call(
+                            memory_list,
+                            query=actual_query,
+                            k=len(recalled_memories),
+                            session_filtered=recall_session_id is not None,
+                            persona_filtered=use_persona_filtering,
+                            log_completion=False,
+                        )
+                        final_token_count = token_upper_bound(
+                            json.dumps(fake_messages, ensure_ascii=False)
+                        )
+                        if final_token_count <= token_budget:
+                            break
+                        recalled_memories.pop()
+                    if not recalled_memories:
+                        fake_messages = []
+                        final_token_count = 0
+                    method_budget_dropped = (
+                        before_method_budget - len(recalled_memories)
+                    )
+                    if fake_messages:
+                        req.contexts.extend(fake_messages)
+                        injected = True
+                else:
+                    # extra_user_content（推荐）：追加到用户消息末尾，
+                    # 不影响前缀缓存且 mark_as_temp 后不污染对话历史
+                    req.extra_user_content_parts.append(
+                        TextPart(text=memory_str).mark_as_temp()
+                    )
+                    injected = True
+
+                if not injected:
+                    logger.info(
+                        f"[{session_id}] "
+                        + format_injection_stage(
+                            RecallInjectionStage(
+                                injected=False,
+                                method=injection_method,
+                                outcome="method_budget_empty",
+                                total_count=0,
+                                current_count=0,
+                                previous_count=0,
+                                older_count=0,
+                                recent_summary_count=0,
+                                recent_fact_count=0,
+                                token_count=0,
+                                token_budget=token_budget,
+                                next_previous_count=0,
+                                next_older_count=0,
+                                total_elapsed_ms=(
+                                    time.perf_counter() - recall_started
+                                )
+                                * 1000,
+                                continuity_enabled=continuity_enabled,
+                                importance_grace_enabled=importance_grace_enabled,
+                                recent_enabled=recent_enabled,
+                                method_budget_dropped=method_budget_dropped,
+                            )
+                        )
+                    )
+                    return
+
+                current_object_ids = {id(hit) for hit in current_memories}
+                actual_current_hits = [
+                    hit
+                    for hit in recalled_memories
+                    if id(hit) in current_object_ids
+                    or str(hit.metadata.get("fact_id") or "")
+                    in current_fact_id_set
+                ]
+                actual_current_count = len(actual_current_hits)
+                actual_current_grace_count = sum(
+                    1
+                    for hit in actual_current_hits
+                    if self._is_importance_grace_admitted(hit)
+                )
+                actual_previous_count = sum(
+                    1
+                    for hit in recalled_memories
+                    if hit.metadata.get("continuity_generation") == 1
+                )
+                actual_older_count = sum(
+                    1
+                    for hit in recalled_memories
+                    if hit.metadata.get("continuity_generation") == 2
+                )
+                actual_recent_summary_count = sum(
+                    1
+                    for hit in recalled_memories
+                    if bool(hit.metadata.get("recent_summary"))
+                )
+                actual_recent_fact_count = sum(
+                    1
+                    for hit in recalled_memories
+                    if hit.metadata.get("selection_reason") == "recent_block_fact"
+                )
+
+                next_fact_ids: list[str] = []
+                next_older_fact_ids: list[str] = []
+                if continuity_enabled:
+                    injected_fact_ids = set(
+                        self._canonical_fact_ids(recalled_memories)
+                    )
+                    next_fact_ids = [
+                        fact_id
+                        for fact_id in current_fact_ids
+                        if fact_id in injected_fact_ids
+                    ][:2]
+                    next_older_fact_ids = [
+                        fact_id
+                        for fact_id in self._canonical_fact_ids(previous_hits)
+                        if fact_id in injected_fact_ids
+                    ][:1]
+                    await self._continuity_cache.put(
+                        session_id,
+                        next_fact_ids,
+                        next_older_fact_ids,
+                        memory_scope=recall_session_id,
+                        persona_id=recall_persona_id,
+                    )
+
+                logger.info(
+                    f"[{session_id}] "
+                    + format_injection_stage(
+                        RecallInjectionStage(
+                            injected=True,
+                            method=injection_method,
+                            outcome="injected",
+                            total_count=len(recalled_memories),
+                            current_count=actual_current_count,
+                            previous_count=actual_previous_count,
+                            older_count=actual_older_count,
+                            recent_summary_count=actual_recent_summary_count,
+                            recent_fact_count=actual_recent_fact_count,
+                            token_count=final_token_count,
+                            token_budget=token_budget,
+                            next_previous_count=len(next_fact_ids),
+                            next_older_count=len(next_older_fact_ids),
+                            total_elapsed_ms=(
+                                time.perf_counter() - recall_started
+                            )
+                            * 1000,
+                            continuity_enabled=continuity_enabled,
+                            importance_grace_enabled=importance_grace_enabled,
+                            current_grace_count=actual_current_grace_count,
+                            recent_enabled=recent_enabled,
+                            method_budget_dropped=method_budget_dropped,
+                        )
+                    )
+                )
+
+                marker = getattr(self.memory_engine, "mark_memories_injected", None)
+                if callable(marker):
+                    marked = marker(recalled_memories)
+                    if inspect.isawaitable(marked):
+                        await marked
 
         except asyncio.CancelledError:
             raise
@@ -705,7 +867,7 @@ class MemoryRecall:
         recalled_memories: list[HybridResult],
         session_id: str,
         persona_id: str | None,
-    ) -> list[HybridResult]:
+    ) -> tuple[list[HybridResult], RecentBlockStats]:
         """Build the recent-memory block from a configurable parent rank.
 
         The recent block is a short-term continuity window (default 48h),
@@ -720,11 +882,13 @@ class MemoryRecall:
         Entries are plain HybridResult objects so the shared fact packer
         applies the same token budget and exact-text dedup afterwards.
         """
+        stats = RecentBlockStats(enabled=False, status="disabled")
         try:
             if not self.config_manager.get(
                 "recall_engine.recent_block_enabled", False
             ):
-                return []
+                return [], stats
+            stats.enabled = True
             window_hours = float(
                 self.config_manager.get(
                     "recall_engine.recent_block_window_hours", 48
@@ -755,14 +919,16 @@ class MemoryRecall:
                 ),
             )
             if window_hours <= 0:
-                return []
+                stats.status = "no_parents"
+                return [], stats
 
             canonical_store = getattr(self.memory_engine, "canonical_store", None)
             get_recent_parents = getattr(
                 canonical_store, "get_recent_parents", None
             )
             if not callable(get_recent_parents):
-                return []
+                stats.status = "store_unavailable"
+                return [], stats
 
             parents = await get_recent_parents(
                 scope=session_id,
@@ -772,7 +938,9 @@ class MemoryRecall:
                 parent_offset=start_parent_rank - 1,
             )
             if not parents:
-                return []
+                stats.status = "no_parents"
+                return [], stats
+            stats.parent_count = len(parents)
 
             get_facts_by_parent = getattr(
                 canonical_store, "get_facts_by_parent", None
@@ -781,6 +949,11 @@ class MemoryRecall:
             score_facts = getattr(retriever, "score_facts_lexically", None)
             facts_available = callable(get_facts_by_parent) and callable(
                 score_facts
+            )
+            stats.status = (
+                "facts_unavailable"
+                if max_facts > 0 and not facts_available
+                else "ok"
             )
 
             # 已在主召回中的 fact 不再重复入选（fact_id 精确去重，可靠）
@@ -822,6 +995,7 @@ class MemoryRecall:
                         score_breakdown=None,
                     )
                 )
+                stats.summary_count += 1
 
                 if max_facts <= 0 or not facts_available:
                     self._log_recent_block(
@@ -855,6 +1029,7 @@ class MemoryRecall:
                     for fact in facts
                     if str(fact.get("fact_id") or "") not in recalled_ids
                 ]
+                stats.fact_candidate_count += len(candidates)
                 if not candidates:
                     self._log_recent_block(
                         session_id,
@@ -918,6 +1093,7 @@ class MemoryRecall:
                     )
                     recalled_ids.add(fact_id)
                     picked += 1
+                    stats.fact_selected_count += 1
 
                 self._log_recent_block(
                     session_id,
@@ -929,12 +1105,16 @@ class MemoryRecall:
                     reason,
                     query,
                 )
-            return entries
+            return entries, stats
         except asyncio.CancelledError:
             raise
         except Exception as e:
-            logger.debug(f"[{session_id}] recent 块构建失败（不影响主召回）: {e}")
-            return []
+            stats.enabled = True
+            stats.status = "error"
+            logger.warning(
+                f"[{session_id}] recent 块构建失败，主召回继续: {type(e).__name__}"
+            )
+            return [], stats
 
     @staticmethod
     def _log_recent_block(
@@ -949,7 +1129,7 @@ class MemoryRecall:
     ) -> None:
         """Log the recent block outcome with enough context for troubleshooting."""
         preview = " ".join(str(query or "").split())[:24]
-        logger.info(
+        logger.debug(
             f"[{session_id}] recent 块: 父记忆 #{document_id} "
             f"({parent_id[:12]}..., 摘要 {len(overview)} 字), "
             f"候选 {candidate_count} 条 → 带 {picked_count} 条 [{reason}], "

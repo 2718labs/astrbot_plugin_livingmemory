@@ -193,6 +193,8 @@ def format_memories_for_fake_tool_call(
     k: int = 5,
     session_filtered: bool = True,
     persona_filtered: bool = True,
+    *,
+    log_completion: bool = True,
 ) -> list[dict]:
     """将检索到的记忆列表格式化为伪造的工具调用消息对。
 
@@ -209,6 +211,8 @@ def format_memories_for_fake_tool_call(
         k: 召回数量（作为工具调用参数）。
         session_filtered: 本次检索是否启用了会话过滤。
         persona_filtered: 本次检索是否启用了人格过滤。
+        log_completion: 是否保留该共享格式化函数原有的完成日志。自动召回链
+            传 False，由分阶段召回日志统一报告；其他调用保持默认行为。
 
     Returns:
         两条 OpenAI 格式消息的列表 [assistant_msg, tool_msg]；
@@ -303,10 +307,11 @@ def format_memories_for_fake_tool_call(
         "content": tool_result_json,
     }
 
-    logger.info(
-        f"[format_memories_for_fake_tool_call] "
-        f"生成伪造工具调用: call_id={call_id}, 记忆条数={len(serialized_results)}"
-    )
+    if log_completion:
+        logger.info(
+            f"[format_memories_for_fake_tool_call] "
+            f"生成伪造工具调用: call_id={call_id}, 记忆条数={len(serialized_results)}"
+        )
 
     return [assistant_msg, tool_msg]
 

@@ -137,6 +137,14 @@ def _injected_text(req: Mock) -> str:
     return req.extra_user_content_parts[0].text
 
 
+def _staged_recall_logs(caplog) -> list[str]:
+    return [
+        record.getMessage()
+        for record in caplog.records
+        if "[记忆召回·" in record.getMessage()
+    ]
+
+
 @pytest.mark.asyncio
 async def test_three_generation_sequence_uses_current_then_two_then_one_slots():
     engine = _engine(
@@ -165,6 +173,103 @@ async def test_three_generation_sequence_uses_current_then_two_then_one_slots():
     third_text = _injected_text(third)
     assert all(f"事实-{value}" in third_text for value in "KLMNOFGA")
     assert "事实-B" not in third_text
+
+
+@pytest.mark.asyncio
+async def test_staged_logs_report_natural_two_plus_one_rollover(caplog):
+    engine = _engine(
+        [
+            [_hit("A")],
+            [_hit(value) for value in "FGHIJ"],
+        ]
+    )
+    handler = _handler(engine)
+
+    with patch(
+        "astrbot_plugin_livingmemory.core.event_handler_modules.memory_recall.get_persona_id",
+        new=AsyncMock(return_value=PERSONA_ID),
+    ):
+        await handler.handle_memory_recall(_event("第一轮"), _request("第一轮"))
+        caplog.clear()
+        await handler.handle_memory_recall(_event("第二轮"), _request("第二轮"))
+
+    logs = _staged_recall_logs(caplog)
+    assert [
+        "[记忆召回·查询]" in logs[0],
+        "[记忆召回·召回]" in logs[1],
+        "[记忆召回·装配]" in logs[2],
+        "[记忆召回·注入]" in logs[3],
+    ] == [True, True, True, True]
+    assert "本轮命中 5/5 条" in logs[1]
+    assert "旧槽读取 1/2 + 0/1 条" in logs[2]
+    assert "实际续带 1+0 条" in logs[2]
+    assert "注入 6 条" in logs[3]
+    assert "注入 6/" not in logs[3]
+    assert "下轮预存 2/2 + 1/1 条" in logs[3]
+
+
+@pytest.mark.asyncio
+async def test_staged_logs_show_rehit_returns_to_current_lifecycle(caplog):
+    engine = _engine(
+        [
+            [_hit("A")],
+            [_hit(value) for value in "ABCDE"],
+        ]
+    )
+    handler = _handler(engine)
+
+    with patch(
+        "astrbot_plugin_livingmemory.core.event_handler_modules.memory_recall.get_persona_id",
+        new=AsyncMock(return_value=PERSONA_ID),
+    ):
+        await handler.handle_memory_recall(_event("第一轮"), _request("第一轮"))
+        caplog.clear()
+        await handler.handle_memory_recall(_event("第二轮"), _request("第二轮"))
+
+    logs = _staged_recall_logs(caplog)
+    assert "其中 1 条被本轮重新命中" in logs[2]
+    assert "实际续带 0+0 条" in logs[2]
+    assert "下轮预存 2/2 + 0/1 条" in logs[3]
+
+
+@pytest.mark.asyncio
+async def test_staged_logs_report_only_true_importance_grace_admissions(caplog):
+    admitted = _hit("GRACE")
+    admitted.score_breakdown = {"importance_grace_admitted": 1.0}
+    engine = _engine([[admitted]])
+    handler = _handler(engine, importance_grace_enabled=True)
+
+    with patch(
+        "astrbot_plugin_livingmemory.core.event_handler_modules.memory_recall.get_persona_id",
+        new=AsyncMock(return_value=PERSONA_ID),
+    ):
+        await handler.handle_memory_recall(_event("重要追问"), _request("重要追问"))
+
+    logs = _staged_recall_logs(caplog)
+    assert "重要性宽容=开" in logs[0]
+    assert "其中重要性宽容准入 1 条" in logs[1]
+    assert "本轮 1（宽容准入 1）" in logs[3]
+
+
+@pytest.mark.asyncio
+async def test_staged_logs_aggregate_canonical_reread_rejections(caplog):
+    engine = _engine([[_hit("A"), _hit("B")], []])
+    handler = _handler(engine)
+
+    with patch(
+        "astrbot_plugin_livingmemory.core.event_handler_modules.memory_recall.get_persona_id",
+        new=AsyncMock(return_value=PERSONA_ID),
+    ):
+        await handler.handle_memory_recall(_event("第一轮"), _request("第一轮"))
+        engine.canonical_store.get_fact_records = AsyncMock(
+            return_value={"B": _record("B")}
+        )
+        caplog.clear()
+        await handler.handle_memory_recall(_event("第二轮"), _request("第二轮"))
+
+    logs = _staged_recall_logs(caplog)
+    assert "旧槽读取 1/2 + 0/1 条" in logs[2]
+    assert "canonical 重读剔除 1 条" in logs[2]
 
 
 @pytest.mark.asyncio
@@ -232,7 +337,7 @@ async def test_repeated_current_hit_is_deduplicated_and_refreshes_eligibility():
 
 
 @pytest.mark.asyncio
-async def test_lightweight_messages_age_through_two_fixed_carry_generations():
+async def test_lightweight_messages_age_through_two_fixed_carry_generations(caplog):
     engine = _engine([[_hit("A"), _hit("B")]])
     handler = _handler(engine)
 
@@ -241,6 +346,7 @@ async def test_lightweight_messages_age_through_two_fixed_carry_generations():
         new=AsyncMock(return_value=PERSONA_ID),
     ):
         await handler.handle_memory_recall(_event("第一轮"), _request("第一轮"))
+        caplog.clear()
         engine.fact_retriever.query_gate_reason = lambda _query: "轻量消息"
         second = _request("嗯")
         await handler.handle_memory_recall(_event("嗯"), second)
@@ -255,6 +361,9 @@ async def test_lightweight_messages_age_through_two_fixed_carry_generations():
     assert "事实-B" not in _injected_text(third)
     assert _injected_text(fourth) == ""
     assert engine.search_memories.await_count == 1
+    logs = _staged_recall_logs(caplog)
+    assert "轻量消息，跳过本轮检索，仅检查续带" in logs[0]
+    assert not any("[记忆召回·召回]" in message for message in logs)
 
 
 @pytest.mark.asyncio

@@ -513,6 +513,43 @@ async def test_high_importance_relaxes_admission_threshold():
 
     assert [hit.metadata["fact_id"] for hit in bundle.hits] == ["fact_important"]
     assert bundle.explanation == "relevant_canonical_facts_selected"
+    assert bundle.hits[0].score_breakdown["importance_grace_admitted"] == 1.0
+
+
+@pytest.mark.asyncio
+async def test_high_importance_standard_hit_is_not_reported_as_grace_admitted():
+    """高重要性 fact 本来就过普通门槛时，不虚报为宽容准入。"""
+    store = SimpleNamespace(
+        search_candidates=AsyncMock(
+            return_value={
+                "bm25": [],
+                "vector": [
+                    {
+                        "fact_id": "fact_standard",
+                        "parent_id": "parent_shared",
+                        "score": 0.7,
+                    }
+                ],
+            }
+        ),
+        get_fact_records=AsyncMock(
+            return_value={
+                "fact_standard": _record(
+                    "fact_standard", "compiler release plan", importance=0.9
+                )
+            }
+        ),
+    )
+    retriever = CanonicalFactRetriever(
+        store,
+        _TextProcessor(),
+        config={"importance_grace_enabled": True},
+    )
+
+    bundle = await retriever.search("compiler release", limit=4)
+
+    assert [hit.metadata["fact_id"] for hit in bundle.hits] == ["fact_standard"]
+    assert bundle.hits[0].score_breakdown["importance_grace_admitted"] == 0.0
 
 
 @pytest.mark.asyncio

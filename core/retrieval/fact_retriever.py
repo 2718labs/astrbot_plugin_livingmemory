@@ -314,6 +314,14 @@ class CanonicalFactRetriever:
             eff_min_vector = (
                 min_vector * self._GRACE_FACTOR if grace else min_vector
             )
+            standard_document_reliable = (
+                lexical >= min_lexical
+                or vector >= min_vector
+                or (
+                    lexical >= min_lexical * 0.6
+                    and vector >= min_vector * 0.82
+                )
+            )
             document_reliable = (
                 lexical >= eff_min_lexical
                 or vector >= eff_min_vector
@@ -323,6 +331,12 @@ class CanonicalFactRetriever:
                 )
             )
             graph_reliable = graph >= self.min_graph
+            grace_admitted = (
+                grace
+                and document_reliable
+                and not standard_document_reliable
+                and not graph_reliable
+            )
             if not document_reliable and not graph_reliable:
                 rejected.append(
                     {
@@ -414,6 +428,7 @@ class CanonicalFactRetriever:
                         "graph_calibrated": round(graph_signal, 4),
                         "document_calibrated": round(document_signal, 4),
                         "importance": round(importance, 4),
+                        "importance_grace_admitted": 1.0 if grace_admitted else 0.0,
                         "recency_tiebreaker": round(recency_tiebreaker, 4),
                         "final_score": round(final_score, 4),
                     },
