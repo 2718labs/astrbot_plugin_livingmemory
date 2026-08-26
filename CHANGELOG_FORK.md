@@ -2,6 +2,13 @@
 
 本文件只记录 [2718labs fork](https://github.com/2718labs/astrbot_plugin_livingmemory) 相对[原版 LivingMemory](https://github.com/lxfight-s-Astrbot-Plugins/astrbot_plugin_livingmemory)产生的变更。原项目自身的版本历史见 [CHANGELOG.md](CHANGELOG.md)。
 
+## [2.6.0-a6] - 2026-08-26
+
+- 自动总结收紧为“一窗口最多一条父记忆”：空结果仍合法，窗口内最多 5 条 canonical facts 统一归入同一父记忆；模型误产出多条父记忆时只允许一次无新增事实的合并修复，修复后仍超限则整窗不落库。
+- 恢复 `summary + key_facts` 两层输出：合格的 LLM summary 作为父记忆概览，缺失或质量不合格时回退首条事实并记录来源；格式修复保留既有 summary，超量压缩后根据剩余事实重新生成。
+- v3 父记忆概览以 `memory_parents.overview` 为读取权威，文档元数据保留兼容镜像；WebUI 列表、详情、搜索与导出均优先使用父概览，并在启动时汇总报告镜像漂移。
+- README 增加 fork 专属能力说明，区分事实召回、一窗口一父、`1+2+X` 连续性、可选 RecentBlock、父概览与分阶段注入日志；原版已有能力不重复归为 fork 新增。
+
 ## [2.6.0-a5] - 2026-08-26
 
 - 对话自动召回日志改为“查询、本轮召回、候选装配、注入结果”分阶段输出，保留 `top_k`、滑窗占用、token 预算、可选 recent/重要性宽容及下轮预存等诊断数据；不改动原版总结、反思、存储和维护链路的日志。
