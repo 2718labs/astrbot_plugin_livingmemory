@@ -530,9 +530,10 @@ class MemoryEngineCrudMixin:
             cursor = await self.db_connection.execute(
                 f"""
             SELECT d.id, d.text, d.metadata, d.created_at, d.updated_at,
-                   s.source_json
+                   s.source_json, mp.overview AS parent_overview
             FROM documents AS d
             LEFT JOIN memory_sources AS s ON s.memory_id = d.id
+            LEFT JOIN memory_parents AS mp ON mp.document_id = d.id
             {where_clause}
             ORDER BY d.id ASC
             """,
@@ -552,6 +553,14 @@ class MemoryEngineCrudMixin:
         records: list[dict[str, Any]] = []
         for row in rows:
             metadata = self._safe_json_dict(row["metadata"])
+            parent_overview = str(row["parent_overview"] or "").strip()
+            if (
+                metadata.get("memory_schema_version") == "v3"
+                and parent_overview
+            ):
+                metadata = dict(metadata)
+                metadata["summary"] = parent_overview
+                metadata["canonical_summary"] = parent_overview
             source_messages: list[dict[str, Any]] = []
             if row["source_json"]:
                 try:

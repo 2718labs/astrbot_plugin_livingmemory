@@ -1145,6 +1145,43 @@ async def test_memory_engine_access_count_increments_and_slows_decay(tmp_path: P
 
 
 @pytest.mark.asyncio
+async def test_v3_export_overwrites_drifted_summary_mirrors_from_parent(tmp_path: Path):
+    engine = MemoryEngine(
+        db_path=str(tmp_path / "canonical_export.db"),
+        faiss_db=_FakeFaissDB(),
+        fact_vector_db=_FakeFaissDB(),
+        config={"fallback_enabled": True},
+    )
+    await engine.initialize()
+    memory_id, _ = await _add_canonical_fact(
+        engine,
+        "父表保存的权威概览。",
+        suffix="export-overview",
+    )
+    assert await engine.canonical_store.count_parent_overview_mismatches() == 0
+    cursor = await engine.db_connection.execute(
+        "SELECT metadata FROM documents WHERE id = ?", (memory_id,)
+    )
+    metadata = json.loads((await cursor.fetchone())["metadata"])
+    metadata["summary"] = "漂移的 summary"
+    metadata["canonical_summary"] = "漂移的 canonical_summary"
+    await engine.db_connection.execute(
+        "UPDATE documents SET metadata = ? WHERE id = ?",
+        (json.dumps(metadata, ensure_ascii=False), memory_id),
+    )
+    await engine.db_connection.commit()
+    assert await engine.canonical_store.count_parent_overview_mismatches() == 1
+
+    records = await engine.get_memory_transfer_records([memory_id])
+
+    assert records[0]["metadata"]["summary"] == "父表保存的权威概览。"
+    assert records[0]["metadata"]["canonical_summary"] == (
+        "父表保存的权威概览。"
+    )
+    await engine.close()
+
+
+@pytest.mark.asyncio
 async def test_fact_retrieved_and_injected_events_are_not_conflated(tmp_path: Path):
     engine = MemoryEngine(
         db_path=str(tmp_path / "fact_events.db"),

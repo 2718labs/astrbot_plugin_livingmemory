@@ -257,6 +257,23 @@ class InitializerFinalizeMixin:
             await self.memory_engine.initialize()
             logger.info("MemoryEngine 已初始化")
 
+            canonical_store = getattr(self.memory_engine, "canonical_store", None)
+            count_overview_mismatches = getattr(
+                canonical_store, "count_parent_overview_mismatches", None
+            )
+            if callable(count_overview_mismatches):
+                try:
+                    mismatch_count = await count_overview_mismatches()
+                except Exception:
+                    logger.warning("父记忆概览一致性检查失败", exc_info=True)
+                else:
+                    if mismatch_count:
+                        logger.warning(
+                            f"检测到 {mismatch_count} 条父记忆概览与文档镜像不一致"
+                        )
+                    else:
+                        logger.debug("父记忆概览与文档镜像一致")
+
             # 初始化 ConversationManager
             conversation_db_path = data_dir_path / "conversations.db"
             conversation_store = ConversationStore(str(conversation_db_path))

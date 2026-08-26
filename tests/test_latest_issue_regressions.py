@@ -164,12 +164,15 @@ def test_existing_bot_account_node_rebuilds_as_persona_node() -> None:
     ]
 
 
-def test_dashboard_prefers_persona_summary_for_display() -> None:
+def test_dashboard_prefers_authoritative_top_level_summary_for_display() -> None:
     memory_page = (DASHBOARD / "modules" / "memory-page.js").read_text(
         encoding="utf-8"
     )
     utils = (DASHBOARD / "modules" / "utils.js").read_text(encoding="utf-8")
 
+    assert memory_page.index("item.summary ||") < memory_page.index(
+        "item.metadata.canonical_summary"
+    )
     assert "item.metadata.persona_summary" in memory_page
     assert "detail.summary || detail.text" in utils
 
@@ -193,10 +196,11 @@ def test_summary_prompts_keep_task_short_and_contract_authoritative() -> None:
 
     contract = MemoryProcessor._build_admission_output_contract(False)
     assert "persona_reaction" in contract
-    assert "一条 memory 只围绕一个中心" in contract
+    assert "只能输出 0 或 1 条 memory" in contract
+    assert "父 memory 对应整个连续窗口" in contract
     assert "描述当前 Bot 自己时只用第一人称“我”" in contract
     assert "source_indexes" not in contract
-    assert "summary" not in contract
+    assert '"summary"' in contract
 
 
 def test_persona_system_prompt_fallback_does_not_repeat_fact_rules() -> None:

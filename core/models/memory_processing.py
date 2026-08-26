@@ -11,7 +11,7 @@ MemoryProcessingStatus = Literal["store", "skip", "invalid"]
 
 @dataclass(slots=True)
 class MemoryWriteRecord:
-    """One single-centre memory ready for persistent storage."""
+    """One source-window parent ready for persistent storage."""
 
     content: str
     metadata: dict[str, Any]
@@ -22,10 +22,9 @@ class MemoryWriteRecord:
 class MemoryProcessingResult:
     """Outcome of validating and admitting one source conversation window.
 
-    A source window may now produce several independent records.  The legacy
+    A source window produces at most one parent record.  The legacy
     ``content``/``metadata``/``importance`` fields remain as a transient view
-    of the first record so older in-process callers can migrate gradually; v3
-    facts are never persisted a second time as strings.
+    of that record; v3 facts are never persisted a second time as strings.
     """
 
     status: MemoryProcessingStatus

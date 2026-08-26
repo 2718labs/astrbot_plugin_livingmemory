@@ -428,3 +428,51 @@ async def test_get_facts_by_parent_returns_only_active_facts(tmp_path):
         assert await store.get_facts_by_parent("no-such-parent") == []
     finally:
         await store.close()
+
+
+@pytest.mark.asyncio
+async def test_parent_overview_batch_read_and_mirror_drift_count(tmp_path):
+    store = CanonicalMemoryStore(str(tmp_path / "overviews.db"), None, object())
+    await store.initialize()
+    try:
+        await store.db.execute(
+            "CREATE TABLE documents(id INTEGER PRIMARY KEY, metadata TEXT)"
+        )
+        now = time.time()
+        rows = [
+            (1, "parent-1", "一致的父记忆概览。", "一致的父记忆概览。"),
+            (2, "parent-2", "父表中的权威概览。", "已经漂移的文档概览。"),
+        ]
+        for document_id, parent_id, overview, mirror in rows:
+            await store.db.execute(
+                "INSERT INTO documents(id, metadata) VALUES (?, ?)",
+                (
+                    document_id,
+                    json.dumps(
+                        {"summary": mirror, "canonical_summary": mirror},
+                        ensure_ascii=False,
+                    ),
+                ),
+            )
+            await store.db.execute(
+                """
+                INSERT INTO memory_parents(
+                    parent_id, document_id, idempotency_key, scope, persona_id,
+                    source_json, overview, generation_version, fact_ids_json,
+                    status, created_at, updated_at
+                ) VALUES (?, ?, ?, 'scope', NULL, '{}', ?, 'v1', '[]',
+                          'active', ?, ?)
+                """,
+                (parent_id, document_id, f"idem-{document_id}", overview, now, now),
+            )
+        await store.db.commit()
+
+        overviews = await store.get_parent_overviews([2, 1, 2, 999])
+
+        assert overviews == {
+            1: "一致的父记忆概览。",
+            2: "父表中的权威概览。",
+        }
+        assert await store.count_parent_overview_mismatches() == 1
+    finally:
+        await store.close()

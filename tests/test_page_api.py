@@ -661,7 +661,8 @@ class TestListMemories:
                     metadata TEXT, created_at TEXT, updated_at TEXT
                 );
                 CREATE TABLE memory_parents (
-                    parent_id TEXT PRIMARY KEY, document_id INTEGER
+                    parent_id TEXT PRIMARY KEY, document_id INTEGER,
+                    overview TEXT
                 );
                 CREATE TABLE memory_facts (
                     id INTEGER PRIMARY KEY, fact_id TEXT, parent_id TEXT,
@@ -679,7 +680,9 @@ class TestListMemories:
                 "INSERT INTO documents VALUES (1, 'doc-1', 'parent projection', ?, 'c', 'u')",
                 (json.dumps(metadata, ensure_ascii=False),),
             )
-            await db.execute("INSERT INTO memory_parents VALUES ('parent-1', 1)")
+            await db.execute(
+                "INSERT INTO memory_parents VALUES ('parent-1', 1, '权威父概览内容。')"
+            )
             await db.execute(
                 "INSERT INTO memory_facts VALUES (1, 'fact-1', 'parent-1', ?, ?, 'active')",
                 (json.dumps(fact, ensure_ascii=False), "张三 科目二 驾考"),
@@ -696,8 +699,22 @@ class TestListMemories:
         assert result["status"] == "ok"
         item = result["data"]["items"][0]
         assert item["architecture"] == "canonical_fact"
+        assert item["summary"] == "权威父概览内容。"
         assert item["fact_count"] == 1
         assert item["canonical_facts"][0]["fact_id"] == "fact-1"
+
+        overview_req = _mock_page_request(
+            args={
+                "page": "1",
+                "page_size": "20",
+                "keyword": "权威父概览",
+                "status": "all",
+            }
+        )
+        with _patch_page_request(overview_req):
+            overview_result = await api.list_memories()
+        assert overview_result["status"] == "ok"
+        assert [row["id"] for row in overview_result["data"]["items"]] == [1]
 
     @pytest.mark.asyncio
     async def test_plugin_not_ready(self, api_not_ready):
@@ -1547,7 +1564,10 @@ async def test_memory_detail_prefers_authoritative_canonical_facts():
     }
     engine = FakeMemoryEngine()
     engine.canonical_store = SimpleNamespace(
-        get_facts_by_document=AsyncMock(return_value=[lifecycle_fact])
+        get_facts_by_document=AsyncMock(return_value=[lifecycle_fact]),
+        get_parent_overviews=AsyncMock(
+            return_value={7: "父表中的权威驾考概览。"}
+        ),
     )
     api = PluginPageApi(FakePlugin(memory_engine=engine))
     api.memory_handler._get_memory_record = AsyncMock(
@@ -1571,7 +1591,7 @@ async def test_memory_detail_prefers_authoritative_canonical_facts():
         result = await api.get_memory_detail()
 
     assert result["status"] == "ok"
-    assert result["data"]["summary"] == "驾考安排"
+    assert result["data"]["summary"] == "父表中的权威驾考概览。"
     assert result["data"]["architecture"] == "canonical_fact"
     assert result["data"]["key_facts"] == [lifecycle_fact]
     assert result["data"]["fact_count"] == 1
