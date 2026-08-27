@@ -133,7 +133,11 @@ class MemoryProcessor(MemoryProcessorParseMixin, MemoryProcessorBuildMixin):
         peer = "群成员" if is_group_chat else "对方"
         return (
             "## 输出格式\n"
-            '- 只输出合法 JSON，结构必须是 {"memories":[{"key_facts":[...]}]}。\n'
+            '- 只输出合法 JSON，结构必须是 {"memories":[{"summary":"...","key_facts":[...]}]}。\n'
+            '- 整个窗口只能输出 0 或 1 条 memory；多个主题或事实分别写入同一 memory 的 '
+            "key_facts，不得拆分。\n"
+            '- memory 的 "summary" 必须是一句中性概览，覆盖全部 key_facts；'
+            "不要复述事实细节，也不要编造内容。\n"
             '- 每个 fact 必须包含 "fact"、"topics"、"importance"；符合下方条件时增加 '
             '"persona_reaction"；不要输出其他字段。\n'
             "\n"
@@ -151,6 +155,7 @@ class MemoryProcessor(MemoryProcessorParseMixin, MemoryProcessorBuildMixin):
             "{\n"
             '  "memories": [\n'
             "    {\n"
+            '      "summary": "2025-11-19傍晚，小林确认项目最终交付时间改为下周一，并提到对此有些紧张。",\n'
             '      "key_facts": [\n'
             "        {\n"
             '          "fact": "2025-11-19傍晚，小林确认项目最终于2025-11-24交付，并表示对此有些紧张。",\n'
@@ -182,13 +187,14 @@ class MemoryProcessor(MemoryProcessorParseMixin, MemoryProcessorBuildMixin):
             "}\n"
             "\n"
             "## 提取规则\n"
-            "- 整个窗口最多输出 5 个 fact，每条 memory 也不得超过 5 个。\n"
+            "- 整个窗口最多输出 5 个 fact，并且只能归入同一条 memory。\n"
             "- 只输出值得长期接续的事实；寒暄、填充、临时报错、无后果的即时状态和重复内容直接不输出。\n"
             "- 读完整窗口；同一件事只保留结尾已确认的状态或最终约定，不保存被后续否认、纠正的版本。\n"
             f"- 只提取本窗口新确认的信息；Bot 复述的旧记忆、人格设定、单方面推测及未经{peer}确认的建议或旧约定不写入。\n"
             "- 承诺或双方约定写清谁提出、是否接受；边界和偏好写清属于谁。短期定时任务不由记忆系统代办。\n"
             "- 单次玩笑、昵称或亲昵称呼不自动成为稳定偏好；单次重要冲突、修复或共同意义仍可保存。\n"
-            "- 一条 memory 只围绕一个中心；同一事件、关系变化或结论的原因、发展和结果合成一个 fact，不逐句拆分。topics 只属于该 fact。\n"
+            "- 父 memory 对应整个连续窗口，不按主题再次拆分；各主题分别写入自包含的 fact。"
+            "同一事件、关系变化或结论的原因、发展和结果合成一个 fact，不逐句拆分。topics 只属于该 fact。\n"
             f"- fact 必须中性、自包含，并使用{peer}的具体昵称。描述当前 Bot 自己时只用第一人称“我”；[Bot: ...] 不是用户。\n"
             "\n"
             "## 时间写法\n"
@@ -453,8 +459,12 @@ class MemoryProcessor(MemoryProcessorParseMixin, MemoryProcessorBuildMixin):
                 "下面是一次记忆提取的原始回答。事实被拆得太碎，请只基于原回答已有信息压缩整理；"
                 "不得新增事实，不得改变人物归属、否认、纠正或约定结果。\n"
                 "要求：\n"
-                '- 顶层只能包含数组 "memories"；最多 5 条 memory。\n'
-                '- 每条 memory 只包含 key_facts，每条最多 5 个 fact；整个窗口总 fact 最多 5 条。\n'
+                '- 顶层只能包含数组 "memories"；最终只能保留 0 或 1 条 memory。\n'
+                "- 原回答包含多条 memory 时，只能重新组织已有事实，把它们合并到同一条 "
+                "memory 的 key_facts 中；不得新增事实。\n"
+                "- memory 包含重新生成的 summary 和 key_facts；整个窗口总 fact 最多 5 条。\n"
+                "- summary 必须根据压缩后的全部 key_facts 重新生成一句中性完整概览，"
+                "不得沿用压缩前已不再覆盖全部 facts 的 summary。\n"
                 "- 合并同一事件、同一段关系变化或同一结论的过程话语，保留原因、发展和最终结果；"
                 "不要逐句摘录。\n"
                 "- 必须优先保留明确事实、重要冲突、关系变化、承诺、约定、边界、偏好、"
@@ -473,7 +483,8 @@ class MemoryProcessor(MemoryProcessorParseMixin, MemoryProcessorBuildMixin):
             "下面是一次记忆提取的原始回答。只把它整理成合法 JSON；"
             "不得新增、删除、合并、拆分或改写任何 fact，也不得改变 importance。\n"
             "要求：\n"
-            '- 顶层只能包含数组 "memories"；每条 memory 只包含 key_facts。\n'
+            '- 顶层只能包含数组 "memories"，且只能保留 0 或 1 条 memory；memory 可包含 summary 和 key_facts。\n'
+            "- 原回答已有的字符串 summary 必须逐字原样保留；缺失时不得补造。\n"
             '- 每条 key_fact 必须包含 fact、topics、importance；字段 persona_reaction 本身仍可选。\n'
             "- 已有 persona_reaction 必须原样保留，不得补造新的反应。\n"
             "- 删除其他字段；不得补造缺失内容。\n"
@@ -483,6 +494,22 @@ class MemoryProcessor(MemoryProcessorParseMixin, MemoryProcessorBuildMixin):
         )
         system_prompt = "你只负责修复 JSON 表达形式，不负责重新总结或判断记忆价值。"
         return await self._call_llm_with_retry(prompt, system_prompt)
+
+    def _extract_repairable_summaries(self, response_text: str) -> list[str | None]:
+        """Read summaries from parseable-but-invalid JSON for repair preservation."""
+        try:
+            payload = json.loads(self._strip_json_fence(response_text))
+        except (InvalidMemoryOutputError, json.JSONDecodeError, TypeError):
+            return []
+        memories = payload.get("memories") if isinstance(payload, dict) else None
+        if not isinstance(memories, list):
+            return []
+        return [
+            item.get("summary")
+            if isinstance(item, dict) and isinstance(item.get("summary"), str)
+            else None
+            for item in memories
+        ]
 
     async def _parse_response_with_single_repair(
         self, response_text: str, is_group_chat: bool
@@ -494,11 +521,19 @@ class MemoryProcessor(MemoryProcessorParseMixin, MemoryProcessorBuildMixin):
             logger.warning(
                 f"[MemoryProcessor] 原始回答格式不合格，尝试一次格式修复: {first_error}"
             )
+            fragmented = str(first_error).startswith("输出过碎：")
+            preserved_summaries = (
+                [] if fragmented else self._extract_repairable_summaries(response_text)
+            )
             repaired_text = await self._repair_llm_response_format(
                 response_text, is_group_chat, first_error
             )
             try:
-                return self._parse_llm_response(repaired_text, is_group_chat)
+                repaired = self._parse_llm_response(repaired_text, is_group_chat)
+                for index, summary in enumerate(preserved_summaries):
+                    if summary is not None and index < len(repaired["memories"]):
+                        repaired["memories"][index]["summary"] = summary
+                return repaired
             except InvalidMemoryOutputError as second_error:
                 logger.warning(
                     f"[MemoryProcessor] 格式修复后仍不合格: {second_error}"
@@ -641,7 +676,7 @@ class MemoryProcessor(MemoryProcessorParseMixin, MemoryProcessorBuildMixin):
             first = records[0]
 
             logger.info(
-                f"[MemoryProcessor] 成功生成 {len(records)} 条单中心记忆，"
+                f"[MemoryProcessor] 成功生成 {len(records)} 条父记忆，"
                 f"获准事实={stored_count}, 类型={conversation_type}"
             )
             logger.debug(

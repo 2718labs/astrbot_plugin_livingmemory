@@ -86,8 +86,9 @@ test("canonical memory rows use neutral summaries and expose fact counts", async
           architecture: "canonical_fact",
           fact_count: 2,
           canonical_facts: [{ fact_id: "f1", fact: "one" }],
+          summary: "authoritative parent overview",
           metadata: {
-            canonical_summary: "neutral overview",
+            canonical_summary: "stale document mirror",
             persona_summary: "legacy diary",
             memory_schema_version: "v3",
             status: "active",
@@ -102,7 +103,7 @@ test("canonical memory rows use neutral summaries and expose fact counts", async
 
   await page.fetch();
 
-  assert.equal(state.memory.items[0].summary, "neutral overview");
+  assert.equal(state.memory.items[0].summary, "authoritative parent overview");
   assert.equal(state.memory.items[0].architecture, "canonical_fact");
   assert.equal(state.memory.items[0].fact_count, 2);
 });

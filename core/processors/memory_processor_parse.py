@@ -13,9 +13,42 @@ from ..utils.memory_facts import unique_strings
 class MemoryProcessorParseMixin:
     """Parse automatic summaries and project admitted facts."""
 
-    MAX_MEMORY_UNITS = 5
+    MAX_MEMORY_UNITS = 1
     MAX_FACTS_PER_MEMORY = 5
     MAX_FACTS_PER_WINDOW = 5
+    MIN_PARENT_SUMMARY_LENGTH = 10
+    MAX_PARENT_SUMMARY_LENGTH = 240
+    _SUMMARY_END_PUNCTUATION = ("。", "！", "？", "!", "?", ".")
+    _SUMMARY_TRAILING_CLOSERS = "”’\"'」』）》】）)]}"
+    _SUMMARY_DANGLING_SUFFIXES = (
+        "、",
+        "，",
+        ",",
+        "；",
+        ";",
+        "：",
+        ":",
+        "并",
+        "并且",
+        "且",
+        "和",
+        "与",
+        "但",
+        "但是",
+        "因为",
+        "所以",
+        "例如",
+        "包括",
+        "表示",
+        "提到",
+        "认为",
+        "随后",
+    )
+    _INTERNAL_ID_PATTERN = re.compile(
+        r"(?<![A-Za-z0-9])(?:topic|person|memory|fact|idem|src|msg)_"
+        r"[0-9a-f]{16,}(?![A-Za-z0-9])",
+        flags=re.IGNORECASE,
+    )
 
     def _parse_llm_response(
         self, response_text: str, is_group_chat: bool
@@ -90,6 +123,9 @@ class MemoryProcessorParseMixin:
             raise InvalidMemoryOutputError(
                 f"{label} 缺少字段: {', '.join(missing)}"
             )
+        summary = item.get("summary")
+        if summary is not None and not isinstance(summary, str):
+            raise InvalidMemoryOutputError(f"{label}.summary 必须是字符串")
         raw_facts = item["key_facts"]
         if not isinstance(raw_facts, list):
             raise InvalidMemoryOutputError(f"{label}.key_facts 必须是数组")
@@ -102,7 +138,54 @@ class MemoryProcessorParseMixin:
             self._validate_candidate_fact(fact, unit_index, fact_index)
             for fact_index, fact in enumerate(raw_facts)
         ]
-        return {"key_facts": facts}
+        return {
+            "summary": summary.strip() if isinstance(summary, str) else "",
+            "key_facts": facts,
+        }
+
+    @classmethod
+    def _normalize_parent_summary(cls, value: Any) -> str:
+        """Flatten whitespace before the deterministic parent-summary gate."""
+        return re.sub(r"\s+", " ", str(value or "")).strip()
+
+    @classmethod
+    def _parent_summary_fallback_reason(cls, summary: str) -> str | None:
+        """Return a stable rejection reason, or ``None`` for a valid summary."""
+        if not summary:
+            return "missing"
+        if len(summary) < cls.MIN_PARENT_SUMMARY_LENGTH:
+            return "too_short"
+        if len(summary) > cls.MAX_PARENT_SUMMARY_LENGTH:
+            return "too_long"
+        if cls._INTERNAL_ID_PATTERN.search(summary):
+            return "internal_identifier"
+        punctuation_target = summary.rstrip(cls._SUMMARY_TRAILING_CLOSERS).rstrip()
+        if not punctuation_target.endswith(cls._SUMMARY_END_PUNCTUATION):
+            return "incomplete_sentence"
+        sentence_body = punctuation_target.rstrip("。！？!?.").rstrip()
+        if sentence_body.endswith(cls._SUMMARY_DANGLING_SUFFIXES):
+            return "dangling_ending"
+        return None
+
+    @classmethod
+    def _resolve_parent_summary(
+        cls, value: Any, fallback_fact: str
+    ) -> dict[str, str]:
+        """Choose an LLM overview or a marked first-fact compatibility fallback."""
+        summary = cls._normalize_parent_summary(value)
+        fallback_reason = cls._parent_summary_fallback_reason(summary)
+        if fallback_reason is None:
+            return {
+                "summary": summary,
+                "summary_source": "llm",
+                "summary_quality": "normal",
+            }
+        return {
+            "summary": str(fallback_fact or "").strip(),
+            "summary_source": "fact_fallback",
+            "summary_quality": "low",
+            "summary_fallback_reason": fallback_reason,
+        }
 
     def _validate_candidate_fact(
         self, item: Any, unit_index: int, fact_index: int
@@ -200,7 +283,7 @@ class MemoryProcessorParseMixin:
     def _prepare_storage_units(
         self, structured_data: dict[str, Any]
     ) -> tuple[list[tuple[int, dict[str, Any]]], int, int]:
-        """Build single-centre storage units from validated candidate facts."""
+        """Build the single window parent from validated candidate facts."""
         admitted_units: list[tuple[int, dict[str, Any]]] = []
         stored_count = 0
 
@@ -208,8 +291,11 @@ class MemoryProcessorParseMixin:
             stored_facts = list(unit["key_facts"])
             if not stored_facts:
                 continue
+            summary_projection = self._resolve_parent_summary(
+                unit.get("summary"), stored_facts[0]["fact"]
+            )
             admitted = {
-                "summary": stored_facts[0]["fact"],
+                **summary_projection,
                 "topics": unique_strings(
                     topic for candidate in stored_facts for topic in candidate["topics"]
                 ),

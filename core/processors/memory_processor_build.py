@@ -295,7 +295,7 @@ class MemoryProcessorBuildMixin:
                 fact["fact_id"] = stable_fact_id(parent_id, fact_key)
 
             texts = [fact["fact"] for fact in prepared_facts]
-            summary = texts[0]
+            summary = str(unit["summary"]).strip()
             content = "；".join(texts)
             document_topic_refs: list[dict[str, str]] = []
             document_participant_refs: list[dict[str, Any]] = []
@@ -335,8 +335,12 @@ class MemoryProcessorBuildMixin:
                 ),
                 "source_window": dict(source_window),
                 "source_session_id": scope,
-                "summary_quality": "normal",
+                "summary_source": str(unit["summary_source"]),
+                "summary_quality": str(unit["summary_quality"]),
             }
+            fallback_reason = str(unit.get("summary_fallback_reason") or "").strip()
+            if fallback_reason:
+                metadata["summary_fallback_reason"] = fallback_reason
             if persona_id:
                 metadata["persona_id"] = persona_id
             records.append(

@@ -157,9 +157,10 @@ class MemoryHandler(MemoryHandlerUpdateMixin, MemoryHandlerIoMixin):
         if keyword:
             keyword_like = f"%{keyword}%"
             if keyword.isdigit():
-                where_clauses.append(
-                    "(CAST(id AS TEXT) = ? OR text LIKE ? COLLATE NOCASE)"
-                )
+                keyword_parts = [
+                    "CAST(id AS TEXT) = ?",
+                    "text LIKE ? COLLATE NOCASE",
+                ]
                 params.extend([keyword, keyword_like])
             else:
                 keyword_parts = [
@@ -171,17 +172,24 @@ class MemoryHandler(MemoryHandlerUpdateMixin, MemoryHandlerIoMixin):
                     ") LIKE ? COLLATE NOCASE",
                 ]
                 params.extend([keyword_like, keyword_like])
-                if canonical_available:
-                    keyword_parts.append(
+            if canonical_available:
+                keyword_parts.extend(
+                    [
+                        "EXISTS ("
+                        "SELECT 1 FROM memory_parents mp "
+                        "WHERE mp.document_id = documents.id "
+                        "AND mp.overview LIKE ? COLLATE NOCASE"
+                        ")",
                         "EXISTS ("
                         "SELECT 1 FROM memory_parents mp "
                         "JOIN memory_facts mf ON mf.parent_id = mp.parent_id "
                         "WHERE mp.document_id = documents.id "
                         "AND mf.search_text LIKE ? COLLATE NOCASE"
-                        ")"
-                    )
-                    params.append(keyword_like)
-                where_clauses.append("(" + " OR ".join(keyword_parts) + ")")
+                        ")",
+                    ]
+                )
+                params.extend([keyword_like, keyword_like])
+            where_clauses.append("(" + " OR ".join(keyword_parts) + ")")
 
         where_clause = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
         created_expr = (
@@ -228,6 +236,12 @@ class MemoryHandler(MemoryHandlerUpdateMixin, MemoryHandlerIoMixin):
         if canonical_available:
             canonical_select = """
                     , COALESCE((
+                        SELECT mp.overview
+                        FROM memory_parents mp
+                        WHERE mp.document_id = documents.id
+                        LIMIT 1
+                    ), '') AS canonical_overview
+                    , COALESCE((
                         SELECT COUNT(*)
                         FROM memory_parents mp
                         JOIN memory_facts mf ON mf.parent_id = mp.parent_id
@@ -246,7 +260,10 @@ class MemoryHandler(MemoryHandlerUpdateMixin, MemoryHandlerIoMixin):
                     ), '[]') AS canonical_facts
             """
         else:
-            canonical_select = ", 0 AS fact_count, '[]' AS canonical_facts"
+            canonical_select = (
+                ", '' AS canonical_overview, 0 AS fact_count, "
+                "'[]' AS canonical_facts"
+            )
 
         try:
             async with aiosqlite.connect(db_path) as db:
@@ -278,6 +295,17 @@ class MemoryHandler(MemoryHandlerUpdateMixin, MemoryHandlerIoMixin):
         items: list[dict[str, Any]] = []
         for row in rows:
             metadata = self.utils.normalize_metadata(row["metadata"])
+            is_v3 = metadata.get("memory_schema_version") == "v3"
+            parent_overview = str(row["canonical_overview"] or "").strip()
+            summary = (
+                parent_overview if is_v3 and parent_overview else ""
+            ) or str(
+                metadata.get("canonical_summary")
+                or metadata.get("summary")
+                or metadata.get("persona_summary")
+                or row["text"]
+                or ""
+            )
             try:
                 canonical_facts = json.loads(row["canonical_facts"] or "[]")
             except (json.JSONDecodeError, TypeError):
@@ -287,12 +315,13 @@ class MemoryHandler(MemoryHandlerUpdateMixin, MemoryHandlerIoMixin):
                     "id": row["id"],
                     "doc_id": row["doc_id"],
                     "text": row["text"],
+                    "summary": summary,
                     "metadata": metadata,
                     "created_at": row["created_at"],
                     "updated_at": row["updated_at"],
                     "architecture": (
                         "canonical_fact"
-                        if metadata.get("memory_schema_version") == "v3"
+                        if is_v3
                         else "legacy_document"
                     ),
                     "fact_count": int(row["fact_count"] or 0),
@@ -343,8 +372,10 @@ class MemoryHandler(MemoryHandlerUpdateMixin, MemoryHandlerIoMixin):
 
         metadata = self.utils.normalize_metadata(memory.get("metadata"))
         canonical_facts: list[dict[str, Any]] = []
+        parent_overview = ""
         canonical_store = getattr(memory_engine, "canonical_store", None)
         get_canonical_facts = getattr(canonical_store, "get_facts_by_document", None)
+        get_parent_overviews = getattr(canonical_store, "get_parent_overviews", None)
         if callable(get_canonical_facts):
             try:
                 fact_result = get_canonical_facts(memory_id)
@@ -358,6 +389,26 @@ class MemoryHandler(MemoryHandlerUpdateMixin, MemoryHandlerIoMixin):
             except Exception:
                 logger.warning(
                     f"[PageAPI] 读取 canonical facts 失败: memory_id={memory_id}",
+                    exc_info=True,
+                )
+        if (
+            metadata.get("memory_schema_version") == "v3"
+            and callable(get_parent_overviews)
+        ):
+            try:
+                overview_result = get_parent_overviews([memory_id])
+                resolved_overviews = (
+                    await overview_result
+                    if inspect.isawaitable(overview_result)
+                    else overview_result
+                )
+                if isinstance(resolved_overviews, dict):
+                    parent_overview = str(
+                        resolved_overviews.get(memory_id) or ""
+                    ).strip()
+            except Exception:
+                logger.warning(
+                    f"[PageAPI] 读取 parent overview 失败: memory_id={memory_id}",
                     exc_info=True,
                 )
 
@@ -380,7 +431,8 @@ class MemoryHandler(MemoryHandlerUpdateMixin, MemoryHandlerIoMixin):
             "doc_id": memory.get("doc_id"),
             "text": memory.get("text"),
             "summary": (
-                metadata.get("canonical_summary")
+                parent_overview
+                or metadata.get("canonical_summary")
                 or metadata.get("summary")
                 or metadata.get("persona_summary")
                 or memory.get("text", "")

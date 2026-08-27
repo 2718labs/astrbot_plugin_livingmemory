@@ -61,9 +61,9 @@ export class MemoryPage {
         memory_id: item.id,
         doc_id: item.doc_id,
         summary:
+          item.summary ||
           (item.metadata && (item.metadata.canonical_summary || item.metadata.summary)) ||
           (item.metadata && item.metadata.persona_summary) ||
-          item.summary ||
           item.text ||
           item.content ||
           "",

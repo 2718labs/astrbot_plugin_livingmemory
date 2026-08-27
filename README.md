@@ -1,28 +1,32 @@
 > [!IMPORTANT]
-> **这是 LivingMemory 的增强 fork。** 本项目由 [2718labs](https://github.com/2718labs) 基于[原版 LivingMemory](https://github.com/lxfight-s-Astrbot-Plugins/astrbot_plugin_livingmemory)继续开发，目标是重建“总结 → 处理与存储 → 事实与图谱 → 召回与注入”整条记忆链路。当前优先修复记忆质量、数据结构和真实召回问题；聚合、矛盾消解、rerank 与动态路线选择等新增能力暂不进入主线。项目仍处于改造阶段，具体实施顺序见 [S0–S6 执行路线图](docs/livingmemory-roadmap/README.md)；fork 自身的实际变更请查看 [CHANGELOG_FORK.md](CHANGELOG_FORK.md)，原项目更新请查看 [CHANGELOG.md](CHANGELOG.md)。
->
-> **当前进度：** S0–S6 与 Stest 均已完成（核心通过，可选路线保持关闭）：新记忆经逐事实准入进入唯一 canonical fact 层，图谱按事实证据构建，生产召回与注入已切到有空结果和硬预算的 fact route；生命周期只记录真实检索/注入并作用于事实层。2026-08-23 追加 recent 短期连续性窗口（48h 摘要 + 相近 facts，不占 top_k）、注入预算默认 1600/260、topic_id 泄漏修复与逐条注入前缀；聚合、矛盾消解、rerank 与动态调权仍在 `Sfuture`。
+> **这是 LivingMemory 的增强 fork。** 本项目由 [2718labs](https://github.com/2718labs) 基于[原版 LivingMemory](https://github.com/lxfight-s-Astrbot-Plugins/astrbot_plugin_livingmemory)继续开发，核心改造是原子事实、Topic 复用与跨轮记忆滑窗。原版已有能力仍保留；fork 的实际变更见 [CHANGELOG_FORK.md](CHANGELOG_FORK.md)，后续设想见 [S0–Sfuture 路线图](docs/livingmemory-roadmap/README.md)。
 
-<div align="center">
+<h2 align="center">这个 fork 的三项核心改造</h2>
 
-<p><strong>中文</strong> &nbsp;/&nbsp; <a href="README_en.md">English</a> &nbsp;/&nbsp; <a href="README_ru.md">Русский</a></p>
+<table>
+<tr>
+<td width="33%" valign="top" align="left"><p align="center"><strong>原子事实</strong></p><p>每个总结窗口只形成 0 或 1 条父记忆，再拆出最多 5 条可独立核验的 canonical facts。父记忆保留这段对话的整体概览，具体事实各自参与检索、排序和注入；命中其中一条，不会把同一父记忆里的无关内容一起带回。</p></td>
+<td width="33%" valign="top" align="left"><p align="center"><strong>Topic 复用</strong></p><p>总结前会把同一作用域内已有的 Topic 提供给模型。能够准确归入现有主题时直接复用，确实没有合适主题时才新建；事实与 Topic 的关系保留明确证据，减少同一概念因措辞不同不断长出重复节点。</p></td>
+<td width="33%" valign="top" align="left"><p align="center"><strong>记忆滑窗</strong></p><p>召回不是用完一轮就消失。固定 <code>1+2+X</code> 结构让本轮最多 <code>X=top_k</code> 条、上轮 2 条、上上轮 1 条共同参与注入；事实若被新消息再次独立召回，就回到本轮重新计时，否则自然到期。</p></td>
+</tr>
+</table>
 
-<h1>LivingMemory</h1>
+<p align="center"><strong>中文</strong> &nbsp;/&nbsp; <a href="README_en.md">English</a> &nbsp;/&nbsp; <a href="README_ru.md">Русский</a></p>
 
-<p><strong>为 AstrBot 构建的长期记忆：精准召回，并在每次对话中持续演化。</strong></p>
+<h1 align="center">LivingMemory</h1>
 
-<p><sub>捕获 &nbsp;&nbsp; 检索 &nbsp;&nbsp; 连接 &nbsp;&nbsp; 演化</sub></p>
+<p align="center"><strong>为 AstrBot 构建的长期记忆：精准召回，并在每次对话中持续演化。</strong></p>
 
-<p>
+<p align="center"><sub>捕获 &nbsp;&nbsp; 检索 &nbsp;&nbsp; 连接 &nbsp;&nbsp; 演化</sub></p>
+
+<p align="center">
   <a href="https://github.com/lxfight-s-Astrbot-Plugins/astrbot_plugin_livingmemory/releases"><img src="https://img.shields.io/github/v/release/lxfight-s-Astrbot-Plugins/astrbot_plugin_livingmemory?style=flat-square&color=5f7f79" alt="最新版本"></a>
   <img src="https://img.shields.io/badge/Python-3.10%2B-e9f1ef?style=flat-square&labelColor=263a36" alt="Python 3.10 或更高版本">
   <img src="https://img.shields.io/badge/AstrBot-%3E%3D%204.24.2-f3eee4?style=flat-square&labelColor=544c3d" alt="AstrBot 4.24.2 或更高版本">
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-AGPL--3.0-f2e8e5?style=flat-square&labelColor=5b403a" alt="AGPL-3.0 许可证"></a>
 </p>
 
-<img src="docs/public/images/retrieval-flow.svg" width="100%" alt="LivingMemory 双路检索流程">
-
-</div>
+<p align="center"><img src="docs/public/images/retrieval-flow.svg" width="100%" alt="LivingMemory 双路检索流程"></p>
 
 ## 让记忆形成结构
 

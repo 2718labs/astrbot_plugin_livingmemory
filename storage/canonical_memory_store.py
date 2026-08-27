@@ -190,6 +190,57 @@ class CanonicalMemoryStore:
         row = await cursor.fetchone()
         return int(row["document_id"]) if row else None
 
+    async def get_parent_overviews(
+        self, document_ids: list[int]
+    ) -> dict[int, str]:
+        """Read authoritative v3 parent overviews in bounded batches."""
+        if self.db is None:
+            return {}
+        normalized_ids = list(dict.fromkeys(int(item) for item in document_ids))
+        overviews: dict[int, str] = {}
+        for offset in range(0, len(normalized_ids), 500):
+            batch = normalized_ids[offset : offset + 500]
+            if not batch:
+                continue
+            placeholders = ",".join("?" for _ in batch)
+            cursor = await self.db.execute(
+                f"""
+                SELECT document_id, overview
+                FROM memory_parents
+                WHERE document_id IN ({placeholders})
+                """,
+                batch,
+            )
+            for row in await cursor.fetchall():
+                overview = str(row["overview"] or "").strip()
+                if overview:
+                    overviews[int(row["document_id"])] = overview
+        return overviews
+
+    async def count_parent_overview_mismatches(self) -> int:
+        """Count v3 parents whose two document metadata mirrors have drifted."""
+        if self.db is None:
+            return 0
+        cursor = await self.db.execute(
+            """
+            SELECT COUNT(*) AS mismatch_count
+            FROM memory_parents AS mp
+            JOIN documents AS d ON d.id = mp.document_id
+            WHERE COALESCE(mp.overview, '') != COALESCE(
+                    CASE WHEN json_valid(d.metadata)
+                         THEN json_extract(d.metadata, '$.summary') END,
+                    ''
+                  )
+               OR COALESCE(mp.overview, '') != COALESCE(
+                    CASE WHEN json_valid(d.metadata)
+                         THEN json_extract(d.metadata, '$.canonical_summary') END,
+                    ''
+                  )
+            """
+        )
+        row = await cursor.fetchone()
+        return int(row["mismatch_count"] or 0) if row else 0
+
     async def persist(
         self,
         *,

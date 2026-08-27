@@ -7,6 +7,9 @@ ROOT = Path(__file__).resolve().parents[1]
 README_NAMES = ("README.md", "README_en.md", "README_ru.md")
 LANGUAGE_LINKS = README_NAMES
 LOCAL_IMAGE_RE = re.compile(r'<img\s+[^>]*src="([^"]+)"', re.IGNORECASE)
+PROJECT_TITLE_RE = re.compile(
+    r"<h1(?:\s+[^>]*)?>LivingMemory</h1>", re.IGNORECASE
+)
 EMOJI_RE = re.compile(
     "["
     "\U0001F1E6-\U0001F1FF"
@@ -44,7 +47,7 @@ def test_readmes_link_languages_and_project_resources() -> None:
         "astrbot_plugin_livingmemory",
     )
     for name, content in _read_readmes().items():
-        assert "<h1>LivingMemory</h1>" in content
+        assert PROJECT_TITLE_RE.search(content)
         for language_link in LANGUAGE_LINKS:
             if language_link != name:
                 assert language_link in content
