@@ -1,43 +1,32 @@
 > [!IMPORTANT]
-> **这是 LivingMemory 的增强 fork。** 本项目由 [2718labs](https://github.com/2718labs) 基于[原版 LivingMemory](https://github.com/lxfight-s-Astrbot-Plugins/astrbot_plugin_livingmemory)继续开发，重点改进记忆的拆分、事实召回、跨轮连续性与真实注入边界。原版已有能力仍保留；fork 的实际变更见 [CHANGELOG_FORK.md](CHANGELOG_FORK.md)，后续设想见 [S0–Sfuture 路线图](docs/livingmemory-roadmap/README.md)。
+> **这是 LivingMemory 的增强 fork。** 本项目由 [2718labs](https://github.com/2718labs) 基于[原版 LivingMemory](https://github.com/lxfight-s-Astrbot-Plugins/astrbot_plugin_livingmemory)继续开发，核心改造是原子事实、Topic 复用与跨轮记忆滑窗。原版已有能力仍保留；fork 的实际变更见 [CHANGELOG_FORK.md](CHANGELOG_FORK.md)，后续设想见 [S0–Sfuture 路线图](docs/livingmemory-roadmap/README.md)。
 
-<div align="center">
+<h2 align="center">这个 fork 的三项核心改造</h2>
 
-<p><strong>中文</strong> &nbsp;/&nbsp; <a href="README_en.md">English</a> &nbsp;/&nbsp; <a href="README_ru.md">Русский</a></p>
+<table>
+<tr>
+<td width="33%" valign="top" align="left"><p align="center"><strong>原子事实</strong></p><p>每个总结窗口只形成 0 或 1 条父记忆，再拆出最多 5 条可独立核验的 canonical facts。父记忆保留这段对话的整体概览，具体事实各自参与检索、排序和注入；命中其中一条，不会把同一父记忆里的无关内容一起带回。</p></td>
+<td width="33%" valign="top" align="left"><p align="center"><strong>Topic 复用</strong></p><p>总结前会把同一作用域内已有的 Topic 提供给模型。能够准确归入现有主题时直接复用，确实没有合适主题时才新建；事实与 Topic 的关系保留明确证据，减少同一概念因措辞不同不断长出重复节点。</p></td>
+<td width="33%" valign="top" align="left"><p align="center"><strong>记忆滑窗</strong></p><p>召回不是用完一轮就消失。固定 <code>1+2+X</code> 结构让本轮最多 <code>X=top_k</code> 条、上轮 2 条、上上轮 1 条共同参与注入；事实若被新消息再次独立召回，就回到本轮重新计时，否则自然到期。</p></td>
+</tr>
+</table>
 
-<h1>LivingMemory</h1>
+<p align="center"><strong>中文</strong> &nbsp;/&nbsp; <a href="README_en.md">English</a> &nbsp;/&nbsp; <a href="README_ru.md">Русский</a></p>
 
-<p><strong>为 AstrBot 构建的长期记忆：精准召回，并在每次对话中持续演化。</strong></p>
+<h1 align="center">LivingMemory</h1>
 
-<p><sub>捕获 &nbsp;&nbsp; 检索 &nbsp;&nbsp; 连接 &nbsp;&nbsp; 演化</sub></p>
+<p align="center"><strong>为 AstrBot 构建的长期记忆：精准召回，并在每次对话中持续演化。</strong></p>
 
-<p>
+<p align="center"><sub>捕获 &nbsp;&nbsp; 检索 &nbsp;&nbsp; 连接 &nbsp;&nbsp; 演化</sub></p>
+
+<p align="center">
   <a href="https://github.com/lxfight-s-Astrbot-Plugins/astrbot_plugin_livingmemory/releases"><img src="https://img.shields.io/github/v/release/lxfight-s-Astrbot-Plugins/astrbot_plugin_livingmemory?style=flat-square&color=5f7f79" alt="最新版本"></a>
   <img src="https://img.shields.io/badge/Python-3.10%2B-e9f1ef?style=flat-square&labelColor=263a36" alt="Python 3.10 或更高版本">
   <img src="https://img.shields.io/badge/AstrBot-%3E%3D%204.24.2-f3eee4?style=flat-square&labelColor=544c3d" alt="AstrBot 4.24.2 或更高版本">
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-AGPL--3.0-f2e8e5?style=flat-square&labelColor=5b403a" alt="AGPL-3.0 许可证"></a>
 </p>
 
-<img src="docs/public/images/retrieval-flow.svg" width="100%" alt="LivingMemory 双路检索流程">
-
-</div>
-
-## 这个 fork 额外做了什么
-
-<table>
-<tr>
-<td width="33%"><strong>按事实召回</strong><br><br>父记忆保存一段对话的整体概览，具体事实各自参与检索、排序与注入。命中一条事实时，不再把同一父记忆中的无关内容一起带回。</td>
-<td width="33%"><strong>一窗口一父记忆</strong><br><br>每个总结窗口只产生 0 或 1 条父记忆，最多容纳 5 条事实。父层按连续对话组织，事实层再承担语义拆分，避免同一窗口被重复切成多个语义岛。</td>
-<td width="33%"><strong>跨轮证据连续性</strong><br><br>采用固定 <code>1+2+X</code> 滑窗：本轮最多召回 <code>X=top_k</code> 条，上轮续带 2 条，上上轮续带 1 条；事实再次命中时会刷新生命周期。</td>
-</tr>
-<tr>
-<td width="33%"><strong>近期记忆补位</strong><br><br>RecentBlock 可从指定的第几个父记忆开始，补充刚滑出原始上下文的概览与相关事实，并与主召回共用同一 token 硬预算。该功能默认关闭，适合按实际上下文长度手动启用。</td>
-<td width="33%"><strong>摘要与事实分工</strong><br><br>总结模型顺手生成覆盖整条父记忆的中性概览，WebUI 与 RecentBlock 读取这份概览；可核验、可召回的证据仍以 canonical facts 为准。</td>
-<td width="33%"><strong>可诊断的注入链路</strong><br><br>对话召回日志按查询、本轮召回、候选装配和注入结果分阶段展示，能够看见 <code>top_k</code> 占用、滑窗来源、去重、预算和最终注入方式。</td>
-</tr>
-</table>
-
-Topic 会优先复用同一作用域内的已有名称，减少近义标签反复新增。图谱数据结构继续保留，但图路召回、RecentBlock 与重要性宽容准入默认关闭；事实召回与跨轮滑窗是当前生产主线。
+<p align="center"><img src="docs/public/images/retrieval-flow.svg" width="100%" alt="LivingMemory 双路检索流程"></p>
 
 ## 让记忆形成结构
 
