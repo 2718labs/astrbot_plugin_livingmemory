@@ -20,6 +20,7 @@ from .page_api_modules import (
     PromptHandler,
     RecallHandler,
     StatsHandler,
+    UserBaselineHandler,
 )
 
 PLUGIN_NAME = "astrbot_plugin_livingmemory"
@@ -45,6 +46,7 @@ class PluginPageApi:
         self.graph_handler = GraphHandler(self.utils)
         self.prompt_handler = PromptHandler(self.utils)
         self.consolidation_handler = ConsolidationHandler(self.utils)
+        self.user_baseline_handler = UserBaselineHandler(self.utils)
 
         # BackupHandler 需要 data_dir，延迟初始化
         self._backup_handler = None
@@ -182,6 +184,36 @@ class PluginPageApi:
             ["POST"],
             "LivingMemory Page run consolidation",
         )
+        register(
+            f"{PAGE_API_PREFIX}/user-baselines",
+            self.list_user_baselines,
+            ["GET"],
+            "LivingMemory Page user baselines",
+        )
+        register(
+            f"{PAGE_API_PREFIX}/user-baselines/detail",
+            self.get_user_baseline_detail,
+            ["GET"],
+            "LivingMemory Page user baseline detail",
+        )
+        register(
+            f"{PAGE_API_PREFIX}/user-baselines/entries/upsert",
+            self.upsert_user_baseline_entry,
+            ["POST"],
+            "LivingMemory Page upsert user baseline entry",
+        )
+        register(
+            f"{PAGE_API_PREFIX}/user-baselines/entries/delete",
+            self.delete_user_baseline_entry,
+            ["POST"],
+            "LivingMemory Page delete user baseline entry",
+        )
+        register(
+            f"{PAGE_API_PREFIX}/user-baselines/delete",
+            self.delete_user_baseline,
+            ["POST"],
+            "LivingMemory Page delete user baseline",
+        )
 
     # ==================== 路由处理方法 ====================
     # 所有方法都委托给相应的处理器
@@ -315,6 +347,48 @@ class PluginPageApi:
             return error
         return await self.consolidation_handler.run(ready["consolidation_manager"])
 
+    # ---- 用户底座路由 ----
+
+    async def list_user_baselines(self):
+        ready, error = await self._ensure_plugin_ready()
+        if error:
+            return error
+        return await self.user_baseline_handler.list_users(
+            ready["user_baseline_manager"]
+        )
+
+    async def get_user_baseline_detail(self):
+        ready, error = await self._ensure_plugin_ready()
+        if error:
+            return error
+        return await self.user_baseline_handler.detail(
+            ready["user_baseline_manager"]
+        )
+
+    async def upsert_user_baseline_entry(self):
+        ready, error = await self._ensure_plugin_ready()
+        if error:
+            return error
+        return await self.user_baseline_handler.upsert_entry(
+            ready["user_baseline_manager"]
+        )
+
+    async def delete_user_baseline_entry(self):
+        ready, error = await self._ensure_plugin_ready()
+        if error:
+            return error
+        return await self.user_baseline_handler.delete_entry(
+            ready["user_baseline_manager"]
+        )
+
+    async def delete_user_baseline(self):
+        ready, error = await self._ensure_plugin_ready()
+        if error:
+            return error
+        return await self.user_baseline_handler.delete_user(
+            ready["user_baseline_manager"]
+        )
+
     # ==================== 辅助方法 ====================
 
     async def _ensure_plugin_ready(self) -> tuple[dict[str, Any] | None, dict | None]:
@@ -346,4 +420,7 @@ class PluginPageApi:
             ),
             "config_manager": getattr(self.plugin, "config_manager", None)
             or getattr(self.plugin.initializer, "config_manager", None),
+            "user_baseline_manager": getattr(
+                self.plugin.initializer, "user_baseline_manager", None
+            ),
         }, None

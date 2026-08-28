@@ -707,6 +707,55 @@ async def test_storage_task_invalid_keeps_window_pending(
 
 
 @pytest.mark.asyncio
+async def test_user_baseline_counts_valid_skip_but_not_invalid(
+    memory_engine, memory_processor, conversation_manager
+):
+    baseline = Mock()
+    baseline.register_summary_window = AsyncMock()
+    local_handler = EventHandler(
+        context=Mock(),
+        config_manager=ConfigManager(),
+        memory_engine=memory_engine,
+        memory_processor=memory_processor,
+        conversation_manager=conversation_manager,
+        user_baseline_manager=baseline,
+    )
+    messages = [Mock(group_id=None)]
+    memory_processor.process_conversation_result.return_value = MemoryProcessingResult(
+        status="skip", skipped_fact_count=1
+    )
+    await local_handler._memory_reflection._storage_task(
+        session_id="s1",
+        history_messages=messages,
+        persona_id="p1",
+        start_index=0,
+        end_index=2,
+        retry_count=0,
+    )
+    baseline.register_summary_window.assert_awaited_once_with(
+        session_id="s1",
+        history_messages=messages,
+        persona_id="p1",
+        source_type="live",
+    )
+
+    baseline.register_summary_window.reset_mock()
+    conversation_manager.get_session_metadata = AsyncMock(return_value=0)
+    memory_processor.process_conversation_result.return_value = MemoryProcessingResult(
+        status="invalid", error="bad json"
+    )
+    await local_handler._memory_reflection._storage_task(
+        session_id="s1",
+        history_messages=messages,
+        persona_id="p1",
+        start_index=0,
+        end_index=2,
+        retry_count=0,
+    )
+    baseline.register_summary_window.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_storage_task_skips_when_already_summarized(
     handler, conversation_manager, memory_engine
 ):

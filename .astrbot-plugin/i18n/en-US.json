@@ -75,6 +75,14 @@
         "hint": "Minimum number of old summarized messages to delete per batch when the session history exceeds the limit. A value too small will cause only a few messages to be deleted each round after overflow."
       }
     },
+    "user_baseline": {
+      "description": "User Baseline",
+      "hint": "Maintain a small set of long-lived anchors for each stable user and inject them into every turn. Automatic generation requires both 8 new summarized windows and a 6-hour cooldown; the block is fixed at 8 entries and 800 tokens.",
+      "enabled": {
+        "description": "Enable User Baseline",
+        "hint": "Disabled by default. When enabled, first-hand conversation text is accumulated as evidence and used to maintain the baseline automatically. Startup never calls the LLM."
+      }
+    },
     "recall_engine": {
       "description": "Memory Recall",
       "hint": "Control memory retrieval and injection into conversations",

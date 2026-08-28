@@ -2,6 +2,13 @@
 
 本文件只记录 [2718labs fork](https://github.com/2718labs/astrbot_plugin_livingmemory) 相对[原版 LivingMemory](https://github.com/lxfight-s-Astrbot-Plugins/astrbot_plugin_livingmemory)产生的变更。原项目自身的版本历史见 [CHANGELOG.md](CHANGELOG.md)。
 
+## [2.6.0-a7] - 2026-08-27
+
+- 新增用户底座（默认关闭）：为每个稳定用户维护少量长期有效锚点，每轮对话常驻注入。数据源始终是一手对话原文，不参与常规相关性召回，也不改写 parent 或 canonical fact。
+- 自动生成采用双门槛：累计 8 个新总结窗口且距上次尝试满 6 小时；固定最多 12 条、800 token，超限不扩。结果作为带证据引用的独立投影保存。
+- WebUI 新增“用户底座”页面：查看、编辑、启用/停用单条锚点，手动刷新自动生成状态；Page API 增加对应读写接口。
+- 说明：功能与测试已提交在 `feature/user-baseline` 分支，未推远程；实机已同步文件，待重载插件后生效。
+
 ## [2.6.0-a6] - 2026-08-26
 
 - 自动总结收紧为“一窗口最多一条父记忆”：空结果仍合法，窗口内最多 5 条 canonical facts 统一归入同一父记忆；模型误产出多条父记忆时只允许一次无新增事实的合并修复，修复后仍超限则整窗不落库。

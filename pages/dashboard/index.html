@@ -28,6 +28,10 @@
             <i data-lucide="database" aria-hidden="true"></i>
             <span data-i18n="nav.memory">Memories</span>
           </button>
+          <button class="nav-item" data-page="baselines" data-i18n-aria="nav.baselines">
+            <i data-lucide="contact-round" aria-hidden="true"></i>
+            <span data-i18n="nav.baselines">User Baselines</span>
+          </button>
           <button class="nav-item" data-page="recall" data-i18n-aria="nav.recall">
             <i data-lucide="scan-search" aria-hidden="true"></i>
             <span data-i18n="nav.recall">Recall Test</span>
@@ -201,10 +205,40 @@
           </div>
         </section>
 
+        <!-- Page: User Baselines -->
+        <section class="page" id="page-baselines">
+          <header class="page-header">
+            <div class="page-heading"><span class="page-index">03</span><span class="page-title" data-i18n="nav.baselines">User Baselines</span></div>
+          </header>
+          <div class="page-body baseline-page-body">
+            <div class="filter-bar">
+              <input type="text" id="baseline-keyword" class="input" data-i18n-placeholder="baseline.searchPh" placeholder="Search users..." />
+              <select id="baseline-page-size" class="select input" style="width:auto">
+                <option value="20" data-i18n="common.perPage20">20 per page</option>
+                <option value="50" data-i18n="common.perPage50">50 per page</option>
+                <option value="100" data-i18n="common.perPage100">100 per page</option>
+              </select>
+              <button class="btn btn-sm btn-secondary" id="baseline-refresh">
+                <i data-lucide="refresh-cw" aria-hidden="true"></i>
+                <span data-i18n="common.refresh">Refresh</span>
+              </button>
+            </div>
+            <div id="baseline-feature-state" class="baseline-feature-state hidden"></div>
+            <div id="baseline-cards" class="baseline-card-grid"></div>
+            <div class="pagination baseline-pagination">
+              <div class="pagination-controls">
+                <button class="btn btn-sm btn-ghost" id="baseline-prev" disabled><i data-lucide="arrow-left" aria-hidden="true"></i><span data-i18n="pagination.prev">Previous</span></button>
+                <span class="pagination-info" id="baseline-pagination-info">--</span>
+                <button class="btn btn-sm btn-ghost" id="baseline-next" disabled><span data-i18n="pagination.next">Next</span><i data-lucide="arrow-right" aria-hidden="true"></i></button>
+              </div>
+            </div>
+          </div>
+        </section>
+
         <!-- Page: Recall Test -->
         <section class="page" id="page-recall">
           <header class="page-header">
-            <div class="page-heading"><span class="page-index">03</span><span class="page-title" data-i18n="nav.recall">Recall Test</span></div>
+            <div class="page-heading"><span class="page-index">04</span><span class="page-title" data-i18n="nav.recall">Recall Test</span></div>
           </header>
           <div class="page-body">
             <div class="recall-form-section">
@@ -235,7 +269,7 @@
         <!-- Page: System -->
         <section class="page" id="page-system">
           <header class="page-header">
-            <div class="page-heading"><span class="page-index">04</span><span class="page-title" data-i18n="nav.system">System Overview</span></div>
+            <div class="page-heading"><span class="page-index">05</span><span class="page-title" data-i18n="nav.system">System Overview</span></div>
           </header>
           <div class="page-body">
             <div class="stat-cards" id="system-stat-cards">
@@ -283,7 +317,7 @@
         <!-- Page: Prompts -->
         <section class="page" id="page-prompts">
           <header class="page-header">
-            <div class="page-heading"><span class="page-index">05</span><span class="page-title" data-i18n="nav.prompts">Prompt Management</span></div>
+            <div class="page-heading"><span class="page-index">06</span><span class="page-title" data-i18n="nav.prompts">Prompt Management</span></div>
           </header>
           <div class="page-body">
             <div id="prompt-content"></div>

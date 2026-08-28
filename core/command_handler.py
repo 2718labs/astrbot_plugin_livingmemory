@@ -34,6 +34,7 @@ class CommandHandler:
         index_validator: IndexValidator | None,
         memory_processor=None,
         initialization_status_callback=None,
+        user_baseline_manager=None,
     ):
         """
         初始化命令处理器
@@ -54,6 +55,29 @@ class CommandHandler:
         self.index_validator = index_validator
         self._memory_processor = memory_processor
         self.get_initialization_status = initialization_status_callback
+        self._user_baseline_manager = user_baseline_manager
+
+    async def _register_user_baseline_window(
+        self,
+        *,
+        session_id: str,
+        history_messages,
+        persona_id: str | None,
+    ) -> None:
+        if self._user_baseline_manager is None:
+            return
+        try:
+            await self._user_baseline_manager.register_summary_window(
+                session_id=session_id,
+                history_messages=history_messages,
+                persona_id=persona_id,
+                source_type="manual_summary",
+            )
+        except Exception:
+            logger.warning(
+                f"[{session_id}] 用户底座窗口登记失败；手动总结结果不受影响。",
+                exc_info=True,
+            )
 
     @staticmethod
     def _format_error_message(
@@ -503,6 +527,11 @@ class CommandHandler:
                 raise ValueError(result.error or "记忆总结结果不合格")
 
             if result.status == "skip":
+                await self._register_user_baseline_window(
+                    session_id=session_id,
+                    history_messages=history_messages,
+                    persona_id=persona_id,
+                )
                 await self.conversation_manager.update_session_metadata(
                     session_id, "last_summarized_index", actual_count
                 )
@@ -550,6 +579,12 @@ class CommandHandler:
                         else None
                     ),
                 )
+
+            await self._register_user_baseline_window(
+                session_id=session_id,
+                history_messages=history_messages,
+                persona_id=persona_id,
+            )
 
             await self.conversation_manager.update_session_metadata(
                 session_id, "last_summarized_index", actual_count
