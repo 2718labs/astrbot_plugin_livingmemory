@@ -1,7 +1,7 @@
 ---
 project: LivingMemory enhancement
 baseline: c2e733049392d1cfc27843fc083096a9103f27d1
-updated: 2026-08-23
+updated: 2026-08-27
 document_role: execution-index
 investigation_state: T0A-T0B-complete
 excel_role: snapshot-only
@@ -86,7 +86,7 @@ parent memory
 - 每条 fact 可选保存当前人格对该事实的简短 `persona_reaction`（情绪/想法）；它不参与事实搜索、建图、重要度或矛盾判断。
 - 时间沿用原版简单方案：相对时间直接改写为 fact 正文中的具体日期；消息发送时间只作为来源元数据保存。独立时间对象和按时间检索移入 `Sfuture`。
 - parent memory 负责来源窗口和必要背景；生产搜索返回 fact，不能因命中一条 fact 就恢复整篇父总结。
-- `top_k` 是本轮相关召回槽上限，不能同时充当可变长度文本的预算；实验分支固定三代滑窗可再续带上一轮实际注入的前 2 条、上上轮实际续带的最高 1 条，随后与可选 recent block 一起受整轮 token 硬预算约束。
+- `top_k` 是本轮相关召回槽上限，不能同时充当可变长度文本的预算；默认召回链采用固定三代滑窗，再续带上一轮实际注入的前 2 条、上上轮实际续带的最高 1 条，随后与可选 recent block 一起受整轮 token 硬预算约束。
 
 ## 主线
 
@@ -115,8 +115,11 @@ Sfuture（其余独立愿景不进入当前执行链）
   ├─ 非破坏性聚合 / 矛盾检测与消解
   ├─ 可选 rerank / 动态路线选择
   ├─ 结构化时间与时间检索
+  ├─ topic 候选生成
+  ├─ 用户画像（常驻事实）
+  └─ 当前有效状态视图
 
-实验分支
+已进入默认召回链
   └─ 三代召回滑窗 1+2+X + 短中文连续短语召回
 ```
 
@@ -132,7 +135,7 @@ Sfuture（其余独立愿景不进入当前执行链）
 | S5 | 让无关消息不注入，相关消息按 fact 命中并在硬预算内装配 | I10、I11、I13、I14、I16、I17、I18、I22、U02 | fact search、route fusion/calibration、filter、budget packer、formatting | S3、S4 | Done | [S5](S5.md) |
 | S6 | 校准生命周期信号并补充必要观察体验 | I08、I13、U01、U02 | lifecycle、event tracking、WebUI | S5 | Done | [S6](S6.md) |
 | Stest | 对完成范围做完整链路、长周期和盲测体验验收，判定改造净收益 | I20 | eval harness、time-controlled replay、paired blind review | S5；以及所有获准实施的 S6 项 | Done：核心通过，可选路线保持关闭 | [Stest](Stest.md) |
-| Sfuture | 记录非破坏性聚合、矛盾消解、可选 rerank、动态路线选择、结构化时间/时间检索及三代召回滑窗等独立愿景；立项前不进入任务计划 | I07、F01、F04、F05、F06 | 未定，须独立调查 | 不属于当前依赖链 | Vision | [Sfuture](Sfuture.md) |
+| Sfuture | 记录非破坏性聚合、矛盾消解、可选 rerank、动态路线选择、结构化时间/时间检索、topic 候选生成、用户画像及当前有效状态等独立愿景；用户画像已立项，其余立项前不进入任务计划 | I07、F01、F04、F05、F06 | 未定，须独立调查 | 不属于当前依赖链 | Vision | [Sfuture](Sfuture.md) |
 
 ## 问题总表
 

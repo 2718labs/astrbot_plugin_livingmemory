@@ -68,6 +68,7 @@ class PluginInitializer(InitializerFaissMixin, InitializerFinalizeMixin):
         self.index_validator: IndexValidator | None = None
         self.decay_scheduler: DecayScheduler | None = None
         self.consolidation_manager: MemoryConsolidationManager | None = None
+        self.user_baseline_manager: Any | None = None
 
         # 初始化状态
         self._initialization_complete = False

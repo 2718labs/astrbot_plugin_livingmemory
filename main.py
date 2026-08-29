@@ -206,6 +206,7 @@ class LivingMemoryPlugin(Star):
                     memory_processor=self.initializer.memory_processor,  # type: ignore[arg-type]
                     conversation_manager=self.initializer.conversation_manager,  # type: ignore[arg-type]
                     consolidation_manager=self.initializer.consolidation_manager,
+                    user_baseline_manager=self.initializer.user_baseline_manager,
                 )
 
             # 创建命令处理器（幂等）
@@ -218,6 +219,7 @@ class LivingMemoryPlugin(Star):
                     index_validator=self.initializer.index_validator,
                     memory_processor=self.initializer.memory_processor,
                     initialization_status_callback=self._get_initialization_status_message,
+                    user_baseline_manager=self.initializer.user_baseline_manager,
                 )
 
             self._register_agent_tools_if_needed()
@@ -603,6 +605,15 @@ class LivingMemoryPlugin(Star):
 
         # 停止衰减调度器
         await self.initializer.stop_scheduler()
+
+        # 关闭 UserBaselineManager
+        user_baseline_manager = getattr(
+            self.initializer, "user_baseline_manager", None
+        )
+        if user_baseline_manager:
+            await user_baseline_manager.close()
+            setattr(self.initializer, "user_baseline_manager", None)
+            logger.info("UserBaselineManager 已关闭")
 
         # 关闭 ConversationManager
         if (

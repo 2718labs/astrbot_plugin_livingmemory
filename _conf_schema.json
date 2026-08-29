@@ -98,6 +98,19 @@
             }
         }
     },
+    "user_baseline": {
+        "description": "用户画像",
+        "hint": "为每个稳定用户维护少量长期有效锚点，并在每轮对话中常驻注入。自动生成同时要求累计 8 个新总结窗口且距上次尝试满 6 小时；固定最多 12 条、800 token。",
+        "type": "object",
+        "items": {
+            "enabled": {
+                "description": "启用用户画像",
+                "hint": "默认关闭。开启后从一手对话原文累计证据并自动维护用户画像；不会在启动时调用 LLM。",
+                "type": "bool",
+                "default": false
+            }
+        }
+    },
     "recall_engine": {
         "description": "记忆召回",
         "hint": "控制记忆检索和注入到对话的行为",

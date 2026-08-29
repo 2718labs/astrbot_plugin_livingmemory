@@ -10,6 +10,7 @@ from .prompt_handler import PromptHandler
 from .recall_handler import RecallHandler
 from .stats_handler import StatsHandler
 from .utils import PageApiUtils
+from .user_baseline_handler import UserBaselineHandler
 
 __all__ = [
     "StatsHandler",
@@ -20,4 +21,5 @@ __all__ = [
     "PromptHandler",
     "ConsolidationHandler",
     "PageApiUtils",
+    "UserBaselineHandler",
 ]

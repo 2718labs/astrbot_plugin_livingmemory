@@ -398,6 +398,15 @@ class MemoryConsolidationConfig(BaseModel):
     )
 
 
+class UserBaselineConfig(BaseModel):
+    """Stable user baseline; cadence and budgets are intentionally fixed."""
+
+    enabled: bool = Field(
+        default=False,
+        description="启用用户画像的自动生成和每轮常驻注入",
+    )
+
+
 class LivingMemoryConfig(BaseModel):
     """完整插件配置"""
 
@@ -427,6 +436,7 @@ class LivingMemoryConfig(BaseModel):
     memory_consolidation: MemoryConsolidationConfig = Field(
         default_factory=MemoryConsolidationConfig, description="记忆库定期整合配置"
     )
+    user_baseline: UserBaselineConfig = Field(default_factory=UserBaselineConfig)
 
     model_config = {"extra": "allow"}  # 允许额外字段，向前兼容
 

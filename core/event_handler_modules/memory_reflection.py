@@ -43,6 +43,7 @@ class MemoryReflection:
         storage_sessions_inflight: set[str],
         storage_state_lock: asyncio.Lock,
         consolidation_manager=None,
+        user_baseline_manager=None,
     ):
         """
         初始化记忆反思模块
@@ -69,6 +70,7 @@ class MemoryReflection:
         self._storage_sessions_inflight = storage_sessions_inflight
         self._storage_state_lock = storage_state_lock
         self.consolidation_manager = consolidation_manager
+        self.user_baseline_manager = user_baseline_manager
         self._shutting_down = False
 
     def _schedule_consolidation(self) -> None:
@@ -500,6 +502,22 @@ class MemoryReflection:
                     logger.info(
                         f"[{session_id}] 成功存储 {len(records)} 条对话记忆"
                     )
+
+                # 用户画像只接收已经通过主记忆处理的原始窗口。skip 也代表
+                # 本窗口被成功判定，invalid/异常则不会走到这里。
+                if self.user_baseline_manager is not None:
+                    try:
+                        await self.user_baseline_manager.register_summary_window(
+                            session_id=session_id,
+                            history_messages=history_messages,
+                            persona_id=persona_id,
+                            source_type="live",
+                        )
+                    except Exception:
+                        logger.warning(
+                            f"[{session_id}] 用户画像窗口登记失败；主记忆结果不受影响。",
+                            exc_info=True,
+                        )
 
                 # 成功：更新已总结的位置，清除待处理记录
                 if self.conversation_manager:

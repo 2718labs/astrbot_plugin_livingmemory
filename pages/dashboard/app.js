@@ -10,6 +10,7 @@ import {
   RecallPage,
   SystemPage,
   PromptPage,
+  UserBaselinePage,
   esc,
   statusPill,
   nodeBadge,
@@ -43,6 +44,7 @@ import {
     _recallCache: null,
     _systemCache: null,
     pendingSearch: null,
+    baselineEditing: false,
   };
 
   /* ================================================================
@@ -54,6 +56,7 @@ import {
   const recallPage = new RecallPage(state, api, peekPanel);
   const systemPage = new SystemPage(state, api);
   const promptPage = new PromptPage(state, api);
+  const userBaselinePage = new UserBaselinePage(state, api, peekPanel);
 
   function hydrateIcons() {
     if (!window.lucide || typeof window.lucide.createIcons !== "function") return;
@@ -161,6 +164,7 @@ import {
       if (window.ensureGraphScene) window.ensureGraphScene();
     }
     if (name === "memory") memoryPage.fetch();
+    if (name === "baselines") userBaselinePage.fetch();
     if (name === "recall") { /* 召回页面按需加载 */ }
     if (name === "system") systemPage.fetch();
     if (name === "prompts") promptPage.fetch();
@@ -249,6 +253,7 @@ import {
       promptPage.render();
       promptPage.refreshEditorTitle();
     }
+    if (state.page === "baselines") userBaselinePage.refreshI18n();
 
     const peekPanelEl = document.getElementById("peek-panel");
     const peekVisible = peekPanelEl && peekPanelEl.classList.contains("visible");
@@ -312,6 +317,7 @@ import {
     memoryPage.initEventListeners();
     recallPage.initEventListeners();
     systemPage.initEventListeners();
+    userBaselinePage.initEventListeners();
 
     document.getElementById("peek-close").addEventListener("click", () => peekPanel.close());
     document.getElementById("peek-overlay").addEventListener("click", () => peekPanel.close());

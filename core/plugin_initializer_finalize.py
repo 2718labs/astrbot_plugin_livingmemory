@@ -17,6 +17,7 @@ from astrbot.api import logger
 from .managers.consolidation_manager import MemoryConsolidationManager
 from .managers.memory_engine import MemoryEngine
 from .processors.memory_processor import MemoryProcessor
+from .managers.user_baseline_manager import UserBaselineManager
 from pathlib import Path
 from astrbot.core.provider.provider import Provider
 import time
@@ -290,6 +291,15 @@ class InitializerFinalizeMixin:
                 ),
             )
             logger.info("ConversationManager 已初始化")
+
+            self.user_baseline_manager = UserBaselineManager(
+                db_path=str(db_path),
+                conversations_db_path=str(conversation_db_path),
+                context=self.context,
+                config_manager=self.config_manager,
+            )
+            await self.user_baseline_manager.initialize()
+            logger.debug("UserBaselineManager 已初始化")
 
             # 自动修复 message_count 不一致问题
             await self._repair_message_counts(conversation_store)
@@ -688,6 +698,13 @@ class InitializerFinalizeMixin:
             except Exception:
                 logger.warning("停止衰减调度器失败", exc_info=True)
             self.decay_scheduler = None
+
+        if self.user_baseline_manager is not None:
+            try:
+                await self.user_baseline_manager.close()
+            except Exception:
+                logger.warning("关闭 UserBaselineManager 失败", exc_info=True)
+            self.user_baseline_manager = None
 
         if self.conversation_manager is not None:
             if getattr(self.conversation_manager, "store", None) is not None:

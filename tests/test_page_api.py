@@ -79,6 +79,7 @@ class FakeInitializer:
         self.conversation_manager = None
         self.index_validator = None
         self.memory_processor = None
+        self.user_baseline_manager = None
         self.data_dir = "/tmp/test_plugin"
 
 
@@ -142,9 +143,18 @@ def _patch_page_request(req: MagicMock):
     import astrbot_plugin_livingmemory.core.page_api_modules.memory_handler_io as memory_io_mod
     import astrbot_plugin_livingmemory.core.page_api_modules.memory_handler_update as memory_upd_mod
     import astrbot_plugin_livingmemory.core.page_api_modules.recall_handler as recall_mod
+    import astrbot_plugin_livingmemory.core.page_api_modules.user_baseline_handler as baseline_mod
 
     # Patch all modules that use request
-    modules = [mod, memory_mod, memory_io_mod, memory_upd_mod, recall_mod, graph_mod]
+    modules = [
+        mod,
+        memory_mod,
+        memory_io_mod,
+        memory_upd_mod,
+        recall_mod,
+        graph_mod,
+        baseline_mod,
+    ]
     old_values = []
 
     for module in modules:
@@ -1457,11 +1467,11 @@ class TestEnsurePluginReady:
 
 
 class TestRouteRegistration:
-    def test_registers_all_ten_routes(self):
+    def test_registers_all_routes(self):
         plugin = FakePlugin()
         api = PluginPageApi(plugin)
         api.register_routes()
-        assert len(plugin._api_routes) == 20
+        assert len(plugin._api_routes) == 25
 
         paths = {route for route, _, _, _ in plugin._api_routes}
         prefix = PAGE_API_PREFIX
@@ -1904,3 +1914,60 @@ class TestConsolidationHandler:
         assert result["data"]["consolidated_count"] == 1
         assert result["data"]["archived_count"] == 1
         assert result["data"]["config"]["enabled"] is False
+
+
+class TestUserBaselineRoutes:
+    @staticmethod
+    def _api_with_manager():
+        plugin = FakePlugin()
+        manager = Mock()
+        manager.enabled = True
+        manager.list_users = AsyncMock(
+            return_value={"items": [], "page": 1, "page_size": 20, "total": 0}
+        )
+        manager.get_user_detail = AsyncMock(return_value={"user_id": 7})
+        manager.upsert_manual_entry = AsyncMock(return_value={"user_id": 7})
+        manager.delete_manual_entry = AsyncMock(return_value={"user_id": 7})
+        manager.delete_user = AsyncMock()
+        plugin.initializer.user_baseline_manager = manager
+        return PluginPageApi(plugin), manager
+
+    @pytest.mark.asyncio
+    async def test_list_and_detail_delegate_to_baseline_manager(self):
+        api, manager = self._api_with_manager()
+        with _qp(args={"keyword": "tester", "page": "1", "page_size": "20"}):
+            listed = await api.list_user_baselines()
+        assert listed["status"] == "ok"
+        manager.list_users.assert_awaited_once_with(
+            keyword="tester", page=1, page_size=20
+        )
+
+        with _qp(args={"user_id": "7"}):
+            detail = await api.get_user_baseline_detail()
+        assert detail["data"]["user_id"] == 7
+        manager.get_user_detail.assert_awaited_once_with(7)
+
+    @pytest.mark.asyncio
+    async def test_entry_writes_pass_revision_and_whole_delete_requires_confirm(self):
+        api, manager = self._api_with_manager()
+        with _qp(get_json={"user_id": 7, "entry_id": "e1", "revision": 3}):
+            saved = await api.upsert_user_baseline_entry()
+        assert saved["status"] == "ok"
+        manager.upsert_manual_entry.assert_awaited_once()
+
+        with _qp(get_json={"user_id": 7, "entry_id": "e1", "revision": 3}):
+            deleted = await api.delete_user_baseline_entry()
+        assert deleted["status"] == "ok"
+        manager.delete_manual_entry.assert_awaited_once_with(
+            user_id=7, entry_id="e1", revision=3
+        )
+
+        with _qp(get_json={"user_id": 7, "revision": 4}):
+            rejected = await api.delete_user_baseline()
+        assert rejected["status"] == "error"
+        manager.delete_user.assert_not_awaited()
+
+        with _qp(get_json={"user_id": 7, "revision": 4, "confirm": True}):
+            accepted = await api.delete_user_baseline()
+        assert accepted["status"] == "ok"
+        manager.delete_user.assert_awaited_once_with(user_id=7, revision=4)

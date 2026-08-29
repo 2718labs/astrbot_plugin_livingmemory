@@ -3,7 +3,8 @@
 import json
 import time
 from datetime import datetime
-from unittest.mock import AsyncMock
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
 
 import pytest
 import pytz
@@ -11,11 +12,34 @@ from astrbot_plugin_livingmemory.core.utils import (
     extract_json_from_response,
     format_memories_for_injection,
     get_now_datetime,
+    get_persona_id,
     retry_on_failure,
     safe_parse_metadata,
     safe_serialize_metadata,
     validate_timestamp,
 )
+
+
+@pytest.mark.asyncio
+async def test_get_persona_id_falls_back_when_session_config_is_unavailable():
+    context = SimpleNamespace(
+        conversation_manager=SimpleNamespace(
+            get_curr_conversation_id=AsyncMock(return_value="conversation-1"),
+            get_conversation=AsyncMock(
+                return_value=SimpleNamespace(persona_id="persona-real")
+            ),
+        ),
+        persona_manager=SimpleNamespace(
+            get_default_persona_v3=AsyncMock(return_value={"name": "default"})
+        ),
+    )
+    event = SimpleNamespace(unified_msg_origin="test:private:persona-fallback")
+
+    with patch(
+        "astrbot_plugin_livingmemory.core.utils.sp.get_async",
+        new=AsyncMock(side_effect=RuntimeError("session state unavailable")),
+    ):
+        assert await get_persona_id(context, event) == "persona-real"
 
 
 class TestSafeParseMetadata:

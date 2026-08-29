@@ -10,6 +10,7 @@ DROP_REASON_LABELS = {
     "duplicate_or_empty": "重复或空内容",
     "single_fact_budget": "单条超限",
     "total_budget": "总预算截断",
+    "baseline_duplicate": "与用户画像重复",
 }
 
 

@@ -61,6 +61,7 @@ class MemoryRecall:
         conversation_manager: "ConversationManager",
         message_utils: "MessageUtils",
         injection_adapter: "InjectionAdapter",
+        user_baseline_manager=None,
     ):
         """
         初始化记忆召回模块
@@ -79,6 +80,7 @@ class MemoryRecall:
         self.conversation_manager = conversation_manager
         self.message_utils = message_utils
         self.injection_adapter = injection_adapter
+        self.user_baseline_manager = user_baseline_manager
         self._continuity_cache = RecallContinuityCache(
             max_sessions=int(
                 self.config_manager.get("session_manager.max_sessions", 100)
@@ -122,6 +124,7 @@ class MemoryRecall:
         """Rehydrate active canonical facts instead of carrying stale hit snapshots."""
         if not fact_ids:
             return []
+
         canonical_store = getattr(self.memory_engine, "canonical_store", None)
         get_fact_records = getattr(canonical_store, "get_fact_records", None)
         if not callable(get_fact_records):
@@ -194,6 +197,68 @@ class MemoryRecall:
         except Exception as exc:
             logger.debug(f"续带 fact 重新读取失败，按空结果处理: {exc}")
             return []
+
+    @staticmethod
+    def _baseline_content_key(value: str) -> str:
+        return " ".join(str(value or "").split()).strip().casefold()
+
+    async def _inject_user_baseline(
+        self,
+        *,
+        event: AstrMessageEvent,
+        req: ProviderRequest,
+        persona_id: str | None,
+        session_id: str,
+    ):
+        """Inject the independent fixed block before relevance recall."""
+        manager = self.user_baseline_manager
+        if manager is None:
+            return None
+        try:
+            payload = await manager.build_injection(event=event, persona_id=persona_id)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.warning(
+                f"[{session_id}] 用户画像读取失败；正常记忆召回继续执行。",
+                exc_info=True,
+            )
+            return None
+        if not getattr(payload, "text", ""):
+            return payload
+
+        configured_method = self.config_manager.get(
+            "recall_engine.injection_method", "extra_user_content"
+        )
+        provider = None
+        if configured_method in ("fake_tool_call", "fake_tool_call_deepseek_v4"):
+            try:
+                provider = self.context.get_using_provider(session_id)
+            except Exception:
+                provider = None
+        resolved_method, _ = self.injection_adapter.resolve(provider, configured_method)
+        # The baseline is not a retrieval result, so fake-tool modes use the
+        # same provider-compatible temporary user-content path instead of
+        # fabricating a second search call.
+        actual_method = (
+            resolved_method
+            if resolved_method in {"user_message_before", "user_message_after"}
+            else "extra_user_content"
+        )
+        if actual_method == "user_message_before":
+            req.prompt = payload.text + "\n\n" + (req.prompt or "")
+        elif actual_method == "user_message_after":
+            req.prompt = (req.prompt or "") + "\n\n" + payload.text
+        else:
+            req.extra_user_content_parts.append(
+                TextPart(text=payload.text).mark_as_temp()
+            )
+        logger.info(
+            f"[{session_id}] [用户画像] 注入 {len(payload.entries)} 条；"
+            f"预算 {payload.token_count}/{int(getattr(manager, 'token_budget', 800))} "
+            f"token；方式={actual_method}。"
+        )
+        return payload
 
     @staticmethod
     def _message_timestamp_seconds(value) -> float | None:
@@ -291,6 +356,18 @@ class MemoryRecall:
                     )
                     await self.message_utils.enforce_message_limit(session_id)
 
+                # 用户画像与相关召回相互独立：它先注入，且不受 top_k=0 影响。
+                persona_id = await get_persona_id(self.context, event)
+                baseline_payload = await self._inject_user_baseline(
+                    event=event,
+                    req=req,
+                    persona_id=persona_id,
+                    session_id=session_id,
+                )
+                baseline_content_keys = set(
+                    getattr(baseline_payload, "content_keys", frozenset()) or ()
+                )
+
                 # 若 top_k <= 0，跳过记忆检索和注入，但上述清理和消息存储已执行
                 top_k = self.config_manager.get("recall_engine.top_k", 5)
                 if top_k <= 0:
@@ -318,8 +395,6 @@ class MemoryRecall:
                 # 3. 全局默认人格（最低）
                 # 注意：on_llm_request 钩子在 _ensure_persona_and_skills 之前触发，
                 # 因此不能直接依赖 req.system_prompt 已注入人格，需自行走完整优先级。
-                persona_id = await get_persona_id(self.context, event)
-
                 recall_session_id = resolve_memory_scope(self.config_manager, event)
                 recall_persona_id = persona_id if use_persona_filtering else None
 
@@ -538,6 +613,29 @@ class MemoryRecall:
                     not in occupied_fact_ids
                 ]
 
+                baseline_duplicate_count = 0
+                if baseline_content_keys:
+                    filtered_sources = []
+                    for source in (
+                        current_memories,
+                        previous_hits,
+                        older_hits,
+                        recent_entries,
+                    ):
+                        filtered = []
+                        for hit in source:
+                            if self._baseline_content_key(hit.content) in baseline_content_keys:
+                                baseline_duplicate_count += 1
+                                continue
+                            filtered.append(hit)
+                        filtered_sources.append(filtered)
+                    (
+                        current_memories,
+                        previous_hits,
+                        older_hits,
+                        recent_entries,
+                    ) = filtered_sources
+
                 # 固定装配优先级：本轮相关召回 → 上轮续带 → 上上轮续带 → recent。
                 recalled_memories = [
                     *current_memories,
@@ -545,7 +643,9 @@ class MemoryRecall:
                     *older_hits,
                     *recent_entries,
                 ]
-                packing_candidate_count = len(recalled_memories)
+                packing_candidate_count = (
+                    len(recalled_memories) + baseline_duplicate_count
+                )
                 token_budget = int(
                     self.config_manager.get(
                         "recall_engine.injection_token_budget", 1600
@@ -553,6 +653,8 @@ class MemoryRecall:
                 )
                 dropped: list[dict[str, str]] = []
                 reason_counts: Counter[str] = Counter()
+                if baseline_duplicate_count:
+                    reason_counts["baseline_duplicate"] = baseline_duplicate_count
 
                 if packing_candidate_count:
                     packer = getattr(self.memory_engine, "pack_memory_hits", None)
@@ -574,7 +676,7 @@ class MemoryRecall:
                         )
                     recalled_memories = packed.hits
                     dropped = list(getattr(packed, "dropped", []) or [])
-                    reason_counts = Counter(
+                    reason_counts.update(
                         str(item.get("reason") or "unknown") for item in dropped
                     )
                     if dropped:
