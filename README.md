@@ -8,7 +8,7 @@
 <td width="25%" valign="top" align="left"><p align="center"><strong>原子事实</strong></p><p>每个总结窗口只形成 0 或 1 条父记忆，再拆出最多 5 条可独立核验的 canonical facts。父记忆保留这段对话的整体概览，具体事实各自参与检索、排序和注入；命中其中一条，不会把同一父记忆里的无关内容一起带回。</p></td>
 <td width="25%" valign="top" align="left"><p align="center"><strong>Topic 复用</strong></p><p>总结前会把同一作用域内已有的 Topic 提供给模型。能够准确归入现有主题时直接复用，确实没有合适主题时才新建；事实与 Topic 的关系保留明确证据，减少同一概念因措辞不同不断长出重复节点。</p></td>
 <td width="25%" valign="top" align="left"><p align="center"><strong>记忆滑窗</strong></p><p>召回不是用完一轮就消失。固定 <code>1+2+X</code> 结构让本轮最多 <code>X=top_k</code> 条、上轮 2 条、上上轮 1 条共同参与注入；事实若被新消息再次独立召回，就回到本轮重新计时，否则自然到期。</p></td>
-<td width="25%" valign="top" align="left"><p align="center"><strong>用户底座</strong></p><p>为每个稳定用户维护少量长期有效锚点，每轮对话常驻注入，不等待相关性召回。数据源始终是一手对话原文，结果作为带证据引用的独立投影保存；默认关闭，可在 WebUI 中人工管理。</p></td>
+<td width="25%" valign="top" align="left"><p align="center"><strong>用户画像</strong></p><p>为每个稳定用户维护最多 12 条长期有效信息，每轮对话常驻注入，不等待相关性召回。自动结论必须引用一手对话证据，WebUI 按身份与关系、互动约定、边界与底线分组查看；默认关闭，与原子事实只在最终注入时做精确文本去重。</p></td>
 </tr>
 </table>
 

@@ -131,14 +131,23 @@ async def get_persona_id(context: Context, event: AstrMessageEvent) -> str | Non
         umo = event.unified_msg_origin
 
         # 优先级 1：session_service_config（与 _ensure_persona_and_skills 一致）
-        session_persona_id: str | None = (
-            await sp.get_async(
+        try:
+            session_config = await sp.get_async(
                 scope="umo",
                 scope_id=umo,
                 key="session_service_config",
                 default={},
             )
-        ).get("persona_id")
+        except Exception as exc:
+            logger.debug(
+                f"[get_persona_id] [{umo}] 会话人格配置读取失败，继续检查会话人格: {exc}"
+            )
+            session_config = {}
+        session_persona_id: str | None = (
+            session_config.get("persona_id")
+            if isinstance(session_config, dict)
+            else None
+        )
 
         if session_persona_id:
             logger.debug(

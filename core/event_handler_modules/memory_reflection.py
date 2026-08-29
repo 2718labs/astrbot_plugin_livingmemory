@@ -503,7 +503,7 @@ class MemoryReflection:
                         f"[{session_id}] 成功存储 {len(records)} 条对话记忆"
                     )
 
-                # 用户底座只接收已经通过主记忆处理的原始窗口。skip 也代表
+                # 用户画像只接收已经通过主记忆处理的原始窗口。skip 也代表
                 # 本窗口被成功判定，invalid/异常则不会走到这里。
                 if self.user_baseline_manager is not None:
                     try:
@@ -515,7 +515,7 @@ class MemoryReflection:
                         )
                     except Exception:
                         logger.warning(
-                            f"[{session_id}] 用户底座窗口登记失败；主记忆结果不受影响。",
+                            f"[{session_id}] 用户画像窗口登记失败；主记忆结果不受影响。",
                             exc_info=True,
                         )
 

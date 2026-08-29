@@ -18,6 +18,7 @@ from astrbot_plugin_livingmemory.core.managers.user_baseline_manager import (
     UserBaselineManager,
 )
 from astrbot_plugin_livingmemory.core.models.conversation_models import Message
+from astrbot_plugin_livingmemory.storage.conversation_store import ConversationStore
 
 
 class MutableConfig:
@@ -120,7 +121,9 @@ async def test_ten_windows_and_six_hour_cooldown_are_both_required(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_invalid_json_starts_cooldown_and_keeps_all_evidence(tmp_path):
+async def test_invalid_json_retries_immediately_then_discards_profile_copies(
+    tmp_path, caplog
+):
     manager, _, context = await _manager(tmp_path, response_text="not json")
     try:
         for index in range(1, BASELINE_BATCH_WINDOWS + 1):
@@ -132,17 +135,34 @@ async def test_invalid_json_starts_cooldown_and_keeps_all_evidence(tmp_path):
             )
         user_id = (await manager.list_users())["items"][0]["user_id"]
         await manager._maybe_generate(user_id, "persona-a")
-        await manager._maybe_generate(user_id, "persona-a")
-        assert context.provider.text_chat.await_count == 1
+        assert context.provider.text_chat.await_count == 2
         detail = await manager.get_user_detail(user_id)
-        assert detail["states"][0]["pending_count"] == BASELINE_BATCH_WINDOWS
+        assert detail["states"][0]["pending_count"] == 0
         assert detail["states"][0]["cooldown_remaining"] > 0
+        async with manager.db.execute(
+            "SELECT COUNT(*) AS n FROM user_baseline_windows"
+        ) as cur:
+            row = await cur.fetchone()
+        assert int(row["n"]) == 0
+        async with manager.db.execute(
+            "SELECT COUNT(*) AS n FROM user_baseline_evidence"
+        ) as cur:
+            evidence_row = await cur.fetchone()
+        assert int(evidence_row["n"]) == 0
+        listing = await manager.list_users()
+        assert listing["generation_warning"]["occurred_at"] > 0
+        assert listing["generation_warning"]["reasons"] == [
+            "LLM 输出不是合法 JSON",
+            "LLM 输出不是合法 JSON",
+        ]
+        assert "首次：LLM 输出不是合法 JSON" in caplog.text
+        assert "重试：LLM 输出不是合法 JSON" in caplog.text
     finally:
         await manager.close()
 
 
 @pytest.mark.asyncio
-async def test_all_invalid_batch_retries_once_then_quarantines_without_blocking(
+async def test_all_invalid_batch_retries_immediately_then_skips_without_blocking(
     tmp_path,
 ):
     response_text = json.dumps(
@@ -169,57 +189,23 @@ async def test_all_invalid_batch_retries_once_then_quarantines_without_blocking(
             )
         user_id = (await manager.list_users())["items"][0]["user_id"]
         await manager._maybe_generate(user_id, "persona-a")
-        await manager._maybe_generate(user_id, "persona-a")
-
-        detail = await manager.get_user_detail(user_id)
-        assert context.provider.text_chat.await_count == 1
-        assert detail["states"][0]["pending_count"] == BASELINE_BATCH_WINDOWS
-        assert detail["states"][0]["cooldown_remaining"] > 0
-        assert detail["entries"] == []
-
-        async with manager.db.execute(
-            """
-            SELECT status, generation_failures, COUNT(*) AS n
-            FROM user_baseline_windows GROUP BY status, generation_failures
-            """
-        ) as cur:
-            first_failure = await cur.fetchone()
-        assert dict(first_failure) == {
-            "status": "pending",
-            "generation_failures": 1,
-            "n": BASELINE_BATCH_WINDOWS,
-        }
-
-        await manager.db.execute(
-            """
-            UPDATE user_baseline_states SET last_attempt_at = 0
-            WHERE user_id = ? AND persona_id = ?
-            """,
-            (user_id, "persona-a"),
-        )
-        await manager.db.commit()
-        await manager._maybe_generate(user_id, "persona-a")
 
         detail = await manager.get_user_detail(user_id)
         assert context.provider.text_chat.await_count == 2
         assert detail["states"][0]["pending_count"] == 0
+        assert detail["states"][0]["cooldown_remaining"] > 0
+        assert detail["entries"] == []
+
         async with manager.db.execute(
-            """
-            SELECT status, generation_failures, COUNT(*) AS n
-            FROM user_baseline_windows GROUP BY status, generation_failures
-            """
+            "SELECT COUNT(*) AS n FROM user_baseline_windows"
         ) as cur:
-            quarantined = await cur.fetchone()
-        assert dict(quarantined) == {
-            "status": "quarantined",
-            "generation_failures": 2,
-            "n": BASELINE_BATCH_WINDOWS,
-        }
+            discarded = await cur.fetchone()
+        assert int(discarded["n"]) == 0
         async with manager.db.execute(
             "SELECT COUNT(*) AS n FROM user_baseline_evidence"
         ) as cur:
             evidence_row = await cur.fetchone()
-        assert int(evidence_row["n"]) == BASELINE_BATCH_WINDOWS * 2
+        assert int(evidence_row["n"]) == 0
 
         for index in range(
             BASELINE_BATCH_WINDOWS + 1, BASELINE_BATCH_WINDOWS * 2 + 1
@@ -265,10 +251,36 @@ async def test_all_invalid_batch_retries_once_then_quarantines_without_blocking(
             status_counts = {
                 str(row["status"]): int(row["n"]) for row in await cur.fetchall()
             }
-        assert status_counts == {
-            "consumed": BASELINE_BATCH_WINDOWS,
-            "quarantined": BASELINE_BATCH_WINDOWS,
-        }
+        assert status_counts == {"consumed": BASELINE_BATCH_WINDOWS}
+    finally:
+        await manager.close()
+
+
+@pytest.mark.asyncio
+async def test_provider_failure_keeps_profile_batch_and_evidence(tmp_path):
+    manager, _, context = await _manager(tmp_path)
+    context.provider.text_chat.side_effect = RuntimeError("provider unavailable")
+    try:
+        for index in range(1, BASELINE_BATCH_WINDOWS + 1):
+            await manager.register_summary_window(
+                session_id="test:session",
+                history_messages=_window(index),
+                persona_id="persona-a",
+                schedule_generation=False,
+            )
+        user_id = (await manager.list_users())["items"][0]["user_id"]
+        await manager._maybe_generate(user_id, "persona-a")
+
+        assert context.provider.text_chat.await_count == 1
+        detail = await manager.get_user_detail(user_id)
+        assert detail["states"][0]["pending_count"] == BASELINE_BATCH_WINDOWS
+        assert detail["states"][0]["cooldown_remaining"] > 0
+        async with manager.db.execute(
+            "SELECT COUNT(*) AS n FROM user_baseline_evidence"
+        ) as cur:
+            evidence_row = await cur.fetchone()
+        assert int(evidence_row["n"]) == BASELINE_BATCH_WINDOWS * 2
+        assert (await manager.list_users())["generation_warning"] is None
     finally:
         await manager.close()
 
@@ -332,7 +344,13 @@ async def test_generation_consumes_oldest_ten_and_keeps_extra_window(tmp_path):
         assert len(detail["entries"]) == 1
         assert detail["entries"][0]["locked"] is False
         assert detail["entries"][0]["evidence"] == [
-            {"id": "W1:M1", "text": "用户窗口 1"}
+            {
+                "id": "W1:M1",
+                "text": "用户窗口 1",
+                "role": "user",
+                "speaker_name": "测试用户",
+                "timestamp": 1_700_000_060,
+            }
         ]
         assert context.provider.text_chat.await_count == 1
         async with manager.db.execute(
@@ -380,7 +398,6 @@ async def test_manual_edit_locks_unlocks_and_delete_suppresses_old_evidence(tmp_
         entry = detail["entries"][0]
         assert entry["locked"] is False
 
-        before_delete = time.time()
         detail = await manager.delete_manual_entry(
             user_id=user_id,
             entry_id=entry["entry_id"],
@@ -390,23 +407,12 @@ async def test_manual_edit_locks_unlocks_and_delete_suppresses_old_evidence(tmp_
         assert await manager._is_suppressed_locked(
             user_id=user_id,
             persona_id="persona-a",
-            category="interaction_preference",
             content="用户希望我回复时直说结论。",
-            evidence_cutoff=before_delete,
         )
         assert not await manager._is_suppressed_locked(
             user_id=user_id,
             persona_id="persona-a",
-            category="interaction_preference",
-            content="用户希望我回复时直说结论。",
-            evidence_cutoff=time.time() + 60,
-        )
-        assert not await manager._is_suppressed_locked(
-            user_id=user_id,
-            persona_id="persona-a",
-            category="interaction_preference",
             content="用户希望我回复时少用列表。",
-            evidence_cutoff=before_delete,
         )
     finally:
         await manager.close()
@@ -520,7 +526,7 @@ async def test_generation_prompt_and_backend_respect_dynamic_editability(tmp_pat
             windows=prompt_windows,
         )
         prompt = context.provider.text_chat.await_args.kwargs["prompt"]
-        existing_json = prompt.split("现有底座：", 1)[1].split("\n\n本批证据：", 1)[0]
+        existing_json = prompt.split("现有画像：", 1)[1].split("\n\n适用删除记录：", 1)[0]
         prompt_entries = {item["content"]: item for item in json.loads(existing_json)}
         assert all("entry_id" not in item for item in prompt_entries.values())
         assert editable_entry["entry_id"] not in prompt
@@ -533,13 +539,13 @@ async def test_generation_prompt_and_backend_respect_dynamic_editability(tmp_pat
         assert prompt_entries[locked_entry["content"]]["editable"] is False
         assert prompt_entries[global_entry["content"]]["editable"] is False
         editable_ref = prompt_entries[editable_entry["content"]]["entry_ref"]
-        assert generation.entry_refs[editable_ref] == editable_entry["entry_id"]
+        assert generation.entry_refs[editable_ref]["entry_id"] == editable_entry["entry_id"]
         assert "必须优先 update" in prompt
         assert "不得通过 add 绕过保护" in prompt
         assert "不得 add 与任何现有条目语义重复或冲突" in prompt
         assert "update 字段再加 entry_ref" in prompt
 
-        parsed = manager._parse_generation_output(
+        parsed, rejection_reasons = manager._parse_generation_output(
             json.dumps(
                 {
                     "operations": [
@@ -556,25 +562,29 @@ async def test_generation_prompt_and_backend_respect_dynamic_editability(tmp_pat
             ),
             prompt_windows,
             entry_refs=generation.entry_refs,
+            suppression_refs=generation.suppression_refs,
         )
+        assert rejection_reasons == []
         assert parsed[0]["entry_id"] == editable_entry["entry_id"]
-        with pytest.raises(ValueError, match="全部未通过校验"):
-            manager._parse_generation_output(
-                json.dumps(
-                    {
-                        "operations": [
-                            {
-                                "op": "retire",
-                                "entry_ref": "E999",
-                                "evidence_ids": ["W1:M1"],
-                            }
-                        ]
-                    },
-                    ensure_ascii=False,
-                ),
-                prompt_windows,
-                entry_refs=generation.entry_refs,
-            )
+        invalid, rejection_reasons = manager._parse_generation_output(
+            json.dumps(
+                {
+                    "operations": [
+                        {
+                            "op": "retire",
+                            "entry_ref": "E999",
+                            "evidence_ids": ["W1:M1"],
+                        }
+                    ]
+                },
+                ensure_ascii=False,
+            ),
+            prompt_windows,
+            entry_refs=generation.entry_refs,
+            suppression_refs=generation.suppression_refs,
+        )
+        assert invalid == []
+        assert rejection_reasons == ["操作引用了无效条目"]
 
         for index in range(2, BASELINE_BATCH_WINDOWS + 1):
             await manager.register_summary_window(
@@ -586,7 +596,7 @@ async def test_generation_prompt_and_backend_respect_dynamic_editability(tmp_pat
         claim = await manager._claim_generation_batch(user_id, "persona-a")
         assert claim is not None
         windows, revision = claim
-        applied = await manager._apply_generation(
+        result = await manager._apply_generation(
             user_id=user_id,
             persona_id="persona-a",
             windows=windows,
@@ -615,7 +625,8 @@ async def test_generation_prompt_and_backend_respect_dynamic_editability(tmp_pat
                 },
             ],
         )
-        assert applied == 1
+        assert result.applied == 1
+        assert result.rejected == 2
         final_detail = await manager.get_user_detail(user_id)
         contents = {item["content"] for item in final_detail["entries"]}
         assert "用户希望回复不超过三句，并附一个例子。" in contents
@@ -645,7 +656,7 @@ def test_parse_skips_invalid_operations_keeps_valid_ones():
         }
     ]
     entry_refs = {}
-    parsed = manager._parse_generation_output(
+    parsed, rejection_reasons = manager._parse_generation_output(
         json.dumps(
             {
                 "operations": [
@@ -681,10 +692,415 @@ def test_parse_skips_invalid_operations_keeps_valid_ones():
         windows,
         entry_refs=entry_refs,
     )
+    assert len(rejection_reasons) == 3
+    assert "操作引用了本批之外的证据" in rejection_reasons
     assert [item["content"] for item in parsed] == [
         "用户希望被称呼为舰长。",
         "用户自称舰长。",
     ]
+
+
+def test_evidence_speaker_rules_allow_user_and_relationship_bot_only():
+    manager = UserBaselineManager(
+        db_path=":memory:",
+        conversations_db_path=":memory:",
+        context=FakeContext(),
+        config_manager=MutableConfig(),
+    )
+    windows = [
+        {
+            "window_id": 1,
+            "messages": [
+                {"id": 1, "role": "user", "content": "请叫我舰长", "timestamp": 10},
+                {"id": 2, "role": "assistant", "content": "我们是搭档", "timestamp": 11},
+                {"id": 3, "role": "unknown", "content": "未知来源", "timestamp": 12},
+            ],
+        }
+    ]
+    parsed, rejection_reasons = manager._parse_generation_output(
+        json.dumps(
+            {
+                "operations": [
+                    {
+                        "op": "add",
+                        "category": "address_identity",
+                        "content": "用户希望被称为舰长。",
+                        "evidence_ids": ["W1:M1"],
+                    },
+                    {
+                        "op": "add",
+                        "category": "relationship",
+                        "content": "用户与当前 persona 已确认是搭档。",
+                        "evidence_ids": ["W1:M2"],
+                    },
+                    {
+                        "op": "add",
+                        "category": "interaction_preference",
+                        "content": "用户要求简短回复。",
+                        "evidence_ids": ["W1:M2"],
+                    },
+                    {
+                        "op": "add",
+                        "category": "long_term_boundary",
+                        "content": "用户要求尊重未知边界。",
+                        "evidence_ids": ["W1:M3"],
+                    },
+                ]
+            },
+            ensure_ascii=False,
+        ),
+        windows,
+        entry_refs={},
+    )
+    assert [item["category"] for item in parsed] == [
+        "address_identity",
+        "relationship",
+    ]
+    assert rejection_reasons == [
+        "条目未引用目标用户原话",
+        "条目未引用目标用户原话",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_evidence_metadata_manual_lifecycle_and_scope_dedup(tmp_path):
+    manager, _, _ = await _manager(tmp_path)
+    try:
+        await manager.register_summary_window(
+            session_id="test:session",
+            history_messages=_window(1),
+            persona_id="persona-a",
+            schedule_generation=False,
+        )
+        user_id = (await manager.list_users())["items"][0]["user_id"]
+        async with manager.db.execute(
+            """
+            SELECT message_role, speaker_name, message_timestamp
+            FROM user_baseline_evidence WHERE evidence_id = 'W1:M1'
+            """
+        ) as cur:
+            evidence = await cur.fetchone()
+        assert dict(evidence) == {
+            "message_role": "user",
+            "speaker_name": "测试用户",
+            "message_timestamp": 1_700_000_060,
+        }
+
+        detail = await manager.upsert_manual_entry(
+            user_id=user_id,
+            payload={
+                "persona_id": "persona-a",
+                "category": "interaction_preference",
+                "content": "用户希望先说结论。",
+                "allow_auto_update": True,
+            },
+        )
+        entry = detail["entries"][0]
+        await manager.db.execute(
+            "UPDATE user_baseline_entries SET evidence_json = '[\"W1:M1\"]' WHERE entry_id = ?",
+            (entry["entry_id"],),
+        )
+        await manager.db.commit()
+        detail = await manager.upsert_manual_entry(
+            user_id=user_id,
+            payload={
+                "entry_id": entry["entry_id"],
+                "revision": entry["revision"],
+                "enabled": False,
+                "allow_auto_update": False,
+                "locked": False,
+            },
+        )
+        entry = detail["entries"][0]
+        assert entry["evidence"][0]["role"] == "user"
+        assert entry["allow_auto_update"] is False
+
+        detail = await manager.upsert_manual_entry(
+            user_id=user_id,
+            payload={
+                "entry_id": entry["entry_id"],
+                "revision": entry["revision"],
+                "persona_id": "persona-a",
+                "category": "interaction_preference",
+                "content": "用户希望先说结论，再给依据。",
+                "enabled": True,
+                "allow_auto_update": True,
+            },
+        )
+        entry = detail["entries"][0]
+        assert entry["evidence"] == []
+        assert entry["source_type"] == "manual"
+        assert entry["allow_auto_update"] is True
+
+        detail = await manager.upsert_manual_entry(
+            user_id=user_id,
+            payload={
+                "entry_id": entry["entry_id"],
+                "revision": entry["revision"],
+                "persona_id": "persona-a",
+                "category": "interaction_preference",
+                "content": "用户希望先说结论，再给简短依据。",
+                "enabled": True,
+            },
+        )
+        entry = detail["entries"][0]
+        assert entry["allow_auto_update"] is False
+
+        detail = await manager.upsert_manual_entry(
+            user_id=user_id,
+            payload={
+                "entry_id": entry["entry_id"],
+                "revision": entry["revision"],
+                "persona_id": "",
+                "category": "interaction_preference",
+                "content": entry["content"],
+                "enabled": True,
+                "allow_auto_update": True,
+            },
+        )
+        assert detail["entries"][0]["allow_auto_update"] is False
+        with pytest.raises(ValueError, match="已存在相同内容"):
+            await manager.upsert_manual_entry(
+                user_id=user_id,
+                payload={
+                    "persona_id": "persona-b",
+                    "category": "long_term_boundary",
+                    "content": entry["content"],
+                },
+            )
+    finally:
+        await manager.close()
+
+
+@pytest.mark.asyncio
+async def test_apply_result_consumes_no_change_and_keeps_all_rejected(tmp_path):
+    manager, _, _ = await _manager(tmp_path)
+    try:
+        await manager.register_summary_window(
+            session_id="test:session",
+            history_messages=_window(1),
+            persona_id="persona-a",
+            schedule_generation=False,
+        )
+        user_id = (await manager.list_users())["items"][0]["user_id"]
+        revision = (await manager.get_user_detail(user_id))["revision"]
+        result = await manager._apply_generation(
+            user_id=user_id,
+            persona_id="persona-a",
+            windows=[{"window_id": 1, "ended_at": 1_700_000_061}],
+            user_revision=revision,
+            operations=[
+                {
+                    "op": "add",
+                    "category": "interaction_preference",
+                    "content": "用户希望先说结论。",
+                    "evidence_ids": ["W1:M1"],
+                },
+                {
+                    "op": "add",
+                    "category": "long_term_boundary",
+                    "content": "用户希望先说结论。",
+                    "evidence_ids": ["W1:M1"],
+                },
+            ],
+        )
+        assert result == result.__class__(applied=1, no_change=1, rejected=0)
+        async with manager.db.execute(
+            "SELECT status FROM user_baseline_windows WHERE window_id = 1"
+        ) as cur:
+            assert (await cur.fetchone())["status"] == "consumed"
+
+        await manager.register_summary_window(
+            session_id="test:session",
+            history_messages=_window(2),
+            persona_id="persona-a",
+            schedule_generation=False,
+        )
+        revision = (await manager.get_user_detail(user_id))["revision"]
+        result = await manager._apply_generation(
+            user_id=user_id,
+            persona_id="persona-a",
+            windows=[{"window_id": 2, "ended_at": 1_700_000_121}],
+            user_revision=revision,
+            operations=[
+                {
+                    "op": "update",
+                    "entry_id": "missing",
+                    "category": "interaction_preference",
+                    "content": "用户希望简短回复。",
+                    "evidence_ids": ["W2:M3"],
+                }
+            ],
+        )
+        assert result.rejected == 1
+        async with manager.db.execute(
+            "SELECT status FROM user_baseline_windows WHERE window_id = 2"
+        ) as cur:
+            assert (await cur.fetchone())["status"] == "pending"
+    finally:
+        await manager.close()
+
+
+@pytest.mark.asyncio
+async def test_deleted_conclusion_requires_new_evidence_then_clears_suppression(tmp_path):
+    manager, _, _ = await _manager(tmp_path)
+    try:
+        await manager.register_summary_window(
+            session_id="test:session",
+            history_messages=_window(1),
+            persona_id="persona-a",
+            schedule_generation=False,
+        )
+        user_id = (await manager.list_users())["items"][0]["user_id"]
+        detail = await manager.upsert_manual_entry(
+            user_id=user_id,
+            payload={
+                "persona_id": "persona-a",
+                "category": "interaction_preference",
+                "content": "用户希望回复时直说结论。",
+            },
+        )
+        entry = detail["entries"][0]
+        await manager.delete_manual_entry(
+            user_id=user_id,
+            entry_id=entry["entry_id"],
+            revision=entry["revision"],
+        )
+        async with manager.db.execute(
+            "SELECT suppression_id, deleted_at, content FROM user_baseline_suppressions"
+        ) as cur:
+            suppression = await cur.fetchone()
+        refs = {
+            "D1": {
+                "suppression_id": int(suppression["suppression_id"]),
+                "deleted_at": float(suppression["deleted_at"]),
+                "content": str(suppression["content"]),
+                "persona_id": "persona-a",
+            }
+        }
+        old_windows = [
+            {
+                "window_id": 1,
+                "messages": [item.to_dict() for item in _window(1)],
+            }
+        ]
+        parsed, rejection_reasons = manager._parse_generation_output(
+            json.dumps(
+                {
+                    "operations": [
+                        {
+                            "op": "add",
+                            "category": "interaction_preference",
+                            "content": suppression["content"],
+                            "evidence_ids": ["W1:M1"],
+                            "suppression_ref": "D1",
+                        }
+                    ]
+                },
+                ensure_ascii=False,
+            ),
+            old_windows,
+            entry_refs={},
+            suppression_refs=refs,
+        )
+        assert parsed == []
+        assert rejection_reasons == ["恢复删除结论必须引用删除后的新证据"]
+
+        future = time.time() + 10
+        messages = _window(2)
+        for offset, message in enumerate(messages):
+            message.id = 20 + offset
+            message.timestamp = future + offset
+        await manager.register_summary_window(
+            session_id="test:session",
+            history_messages=messages,
+            persona_id="persona-a",
+            schedule_generation=False,
+        )
+        async with manager.db.execute(
+            "SELECT MAX(window_id) AS window_id FROM user_baseline_windows"
+        ) as cur:
+            window_id = int((await cur.fetchone())["window_id"])
+        new_windows = [
+            {
+                "window_id": window_id,
+                "messages": [item.to_dict() for item in messages],
+                "ended_at": future + 1,
+            }
+        ]
+        parsed, rejection_reasons = manager._parse_generation_output(
+            json.dumps(
+                {
+                    "operations": [
+                        {
+                            "op": "add",
+                            "category": "interaction_preference",
+                            "content": suppression["content"],
+                            "evidence_ids": [f"W{window_id}:M20"],
+                            "suppression_ref": "D1",
+                        }
+                    ]
+                },
+                ensure_ascii=False,
+            ),
+            new_windows,
+            entry_refs={},
+            suppression_refs=refs,
+        )
+        assert rejection_reasons == []
+        revision = (await manager.get_user_detail(user_id))["revision"]
+        result = await manager._apply_generation(
+            user_id=user_id,
+            persona_id="persona-a",
+            windows=new_windows,
+            user_revision=revision,
+            operations=parsed,
+        )
+        assert result.applied == 1
+        async with manager.db.execute(
+            "SELECT COUNT(*) AS n FROM user_baseline_suppressions"
+        ) as cur:
+            assert int((await cur.fetchone())["n"]) == 0
+    finally:
+        await manager.close()
+
+
+@pytest.mark.asyncio
+async def test_empty_persona_skips_windows_but_global_manual_entry_injects(tmp_path):
+    manager, _, _ = await _manager(tmp_path)
+    try:
+        assert await manager.register_summary_window(
+            session_id="test:session",
+            history_messages=_window(1),
+            persona_id="",
+            schedule_generation=False,
+        ) == 0
+        assert (await manager.list_users())["total"] == 0
+
+        await manager.register_summary_window(
+            session_id="test:session",
+            history_messages=_window(1),
+            persona_id="persona-a",
+            schedule_generation=False,
+        )
+        user_id = (await manager.list_users())["items"][0]["user_id"]
+        await manager.upsert_manual_entry(
+            user_id=user_id,
+            payload={
+                "persona_id": "",
+                "category": "global_constraint",
+                "content": "用户要求不要伪造事实。",
+            },
+        )
+        event = Mock()
+        event.get_platform_name.return_value = "test"
+        event.get_sender_id.return_value = "user-1"
+        event.get_sender_name.return_value = "测试用户"
+        event.unified_msg_origin = "test:session"
+        injection = await manager.build_injection(event=event, persona_id=None)
+        assert "不要伪造事实" in injection.text
+    finally:
+        await manager.close()
 
 
 @pytest.mark.asyncio
@@ -737,6 +1153,65 @@ async def test_bootstrap_uses_first_hand_sources_without_calling_llm(tmp_path):
         context.provider.text_chat.assert_not_awaited()
         assert await manager.bootstrap_existing_data() == 0
     finally:
+        await manager.close()
+
+
+@pytest.mark.asyncio
+async def test_bootstrap_does_not_join_across_already_registered_messages(tmp_path):
+    manager, _, _ = await _manager(tmp_path)
+    store = ConversationStore(str(tmp_path / "conversations.db"))
+    await store.initialize()
+    try:
+        await manager.db.execute(
+            "CREATE TABLE documents (id INTEGER PRIMARY KEY, metadata TEXT NOT NULL)"
+        )
+        await manager.db.execute(
+            "INSERT INTO documents(id, metadata) VALUES (1, ?)",
+            (
+                json.dumps(
+                    {
+                        "source_session_id": "test:bootstrap",
+                        "persona_id": "persona-a",
+                    }
+                ),
+            ),
+        )
+        await manager.db.commit()
+
+        for index in range(1, 6):
+            await store.add_message(
+                Message(
+                    id=0,
+                    session_id="test:bootstrap",
+                    role="assistant" if index in {2, 5} else "user",
+                    content=f"message-{index}",
+                    sender_id="bot" if index in {2, 5} else "user-1",
+                    sender_name="Bot" if index in {2, 5} else "测试用户",
+                    platform="test",
+                    timestamp=1_700_000_000 + index,
+                    metadata={"is_bot_message": index in {2, 5}},
+                )
+            )
+        await store.connection.execute(
+            "UPDATE sessions SET metadata = ? WHERE session_id = ?",
+            (json.dumps({"last_summarized_index": 5}), "test:bootstrap"),
+        )
+        await store.connection.commit()
+
+        seeded = await manager._bootstrap_conversation_windows(
+            {("test:bootstrap", 3)}
+        )
+        assert seeded == 2
+        async with manager.db.execute(
+            "SELECT messages_json FROM user_baseline_windows ORDER BY window_id"
+        ) as cursor:
+            windows = [json.loads(row["messages_json"]) for row in await cursor.fetchall()]
+        assert [[item["id"] for item in window] for window in windows] == [
+            [1, 2],
+            [4, 5],
+        ]
+    finally:
+        await store.close()
         await manager.close()
 
 
@@ -918,19 +1393,35 @@ async def test_initialize_repairs_missing_pending_evidence_mirrors(tmp_path):
     await repaired.initialize()
     try:
         async with repaired.db.execute(
-            "SELECT evidence_id FROM user_baseline_evidence ORDER BY evidence_id"
+            """
+            SELECT evidence_id, message_role, speaker_name, message_timestamp
+            FROM user_baseline_evidence ORDER BY evidence_id
+            """
         ) as cur:
-            evidence_ids = [str(row["evidence_id"]) for row in await cur.fetchall()]
-        assert evidence_ids == ["W1:M1", "W1:M2"]
+            evidence = [dict(row) for row in await cur.fetchall()]
+        assert evidence == [
+            {
+                "evidence_id": "W1:M1",
+                "message_role": "user",
+                "speaker_name": "测试用户",
+                "message_timestamp": 1_700_000_060,
+            },
+            {
+                "evidence_id": "W1:M2",
+                "message_role": "assistant",
+                "speaker_name": "Bot",
+                "message_timestamp": 1_700_000_061,
+            },
+        ]
     finally:
         await repaired.close()
 
 
 @pytest.mark.asyncio
-async def test_initialize_migrates_generation_failure_counter(tmp_path):
+async def test_initialize_migrates_existing_baseline_schema(tmp_path):
     db_path = tmp_path / "livingmemory.db"
     with sqlite3.connect(db_path) as db:
-        db.execute(
+        db.executescript(
             """
             CREATE TABLE user_baseline_windows (
                 window_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -947,7 +1438,23 @@ async def test_initialize_migrates_generation_failure_counter(tmp_path):
                 created_at REAL NOT NULL,
                 consumed_at REAL,
                 UNIQUE(user_id, persona_id, fingerprint)
-            )
+            );
+            CREATE TABLE user_baseline_evidence (
+                evidence_id TEXT PRIMARY KEY,
+                user_id INTEGER NOT NULL,
+                message_text TEXT NOT NULL,
+                created_at REAL NOT NULL
+            );
+            CREATE TABLE user_baseline_suppressions (
+                suppression_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                persona_id TEXT NOT NULL DEFAULT '',
+                category TEXT NOT NULL,
+                content_hash TEXT NOT NULL,
+                deleted_at REAL NOT NULL,
+                evidence_cutoff REAL NOT NULL,
+                UNIQUE(user_id, persona_id, category, content_hash)
+            );
             """
         )
 
@@ -960,10 +1467,15 @@ async def test_initialize_migrates_generation_failure_counter(tmp_path):
     await manager.initialize()
     try:
         async with manager.db.execute(
-            "PRAGMA table_info(user_baseline_windows)"
+            "PRAGMA table_info(user_baseline_evidence)"
         ) as cur:
             columns = {str(row["name"]) for row in await cur.fetchall()}
-        assert "generation_failures" in columns
+        assert {"message_role", "speaker_name", "message_timestamp"} <= columns
+        async with manager.db.execute(
+            "PRAGMA table_info(user_baseline_suppressions)"
+        ) as cur:
+            columns = {str(row["name"]) for row in await cur.fetchall()}
+        assert "content" in columns
     finally:
         await manager.close()
 
@@ -1104,7 +1616,7 @@ async def test_top_k_zero_still_injects_user_baseline():
     baseline = Mock()
     baseline.build_injection = AsyncMock(
         return_value=BaselineInjection(
-            text="[用户底座｜长期有效]\n- [称呼与身份] 用户可被称为舰长。\n[/用户底座]",
+            text="[用户画像｜长期有效]\n- [称呼与身份] 用户可被称为舰长。\n[/用户画像]",
             entries=({"content": "用户可被称为舰长。"},),
             token_count=31,
             content_keys=frozenset({"用户可被称为舰长。"}),
@@ -1141,5 +1653,5 @@ async def test_top_k_zero_still_injects_user_baseline():
         await handler.handle_memory_recall(event, request)
 
     assert len(request.extra_user_content_parts) == 1
-    assert "用户底座" in request.extra_user_content_parts[0].text
+    assert "用户画像" in request.extra_user_content_parts[0].text
     engine.search_memories.assert_not_awaited()

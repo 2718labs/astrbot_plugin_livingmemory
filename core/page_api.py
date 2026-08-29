@@ -347,7 +347,7 @@ class PluginPageApi:
             return error
         return await self.consolidation_handler.run(ready["consolidation_manager"])
 
-    # ---- 用户底座路由 ----
+    # ---- 用户画像路由 ----
 
     async def list_user_baselines(self):
         ready, error = await self._ensure_plugin_ready()

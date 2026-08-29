@@ -403,7 +403,7 @@ class UserBaselineConfig(BaseModel):
 
     enabled: bool = Field(
         default=False,
-        description="启用用户底座的自动生成和每轮常驻注入",
+        description="启用用户画像的自动生成和每轮常驻注入",
     )
 
 

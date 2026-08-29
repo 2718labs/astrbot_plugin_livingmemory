@@ -27,7 +27,7 @@ class UserBaselineHandler:
             data["enabled"] = bool(manager.enabled)
             return self.utils.ok(data)
         except Exception as exc:
-            logger.error("[PageAPI] 获取用户底座列表失败", exc_info=True)
+            logger.error("[PageAPI] 获取用户画像列表失败", exc_info=True)
             return self.utils.error(str(exc))
 
     async def detail(self, manager) -> dict[str, Any]:
@@ -40,10 +40,10 @@ class UserBaselineHandler:
         try:
             detail = await manager.get_user_detail(user_id)
             if detail is None:
-                return self.utils.error("用户底座不存在")
+                return self.utils.error("用户画像不存在")
             return self.utils.ok(detail)
         except Exception as exc:
-            logger.error("[PageAPI] 获取用户底座详情失败", exc_info=True)
+            logger.error("[PageAPI] 获取用户画像详情失败", exc_info=True)
             return self.utils.error(str(exc))
 
     async def upsert_entry(self, manager) -> dict[str, Any]:
@@ -60,7 +60,7 @@ class UserBaselineHandler:
         except (ValueError, RuntimeError) as exc:
             return self.utils.error(str(exc))
         except Exception as exc:
-            logger.error("[PageAPI] 保存用户底座条目失败", exc_info=True)
+            logger.error("[PageAPI] 保存用户画像条目失败", exc_info=True)
             return self.utils.error(str(exc))
 
     async def delete_entry(self, manager) -> dict[str, Any]:
@@ -81,13 +81,13 @@ class UserBaselineHandler:
         except (ValueError, RuntimeError) as exc:
             return self.utils.error(str(exc))
         except Exception as exc:
-            logger.error("[PageAPI] 删除用户底座条目失败", exc_info=True)
+            logger.error("[PageAPI] 删除用户画像条目失败", exc_info=True)
             return self.utils.error(str(exc))
 
     async def delete_user(self, manager) -> dict[str, Any]:
         payload = await request.get_json(silent=True) or {}
         if payload.get("confirm") is not True:
-            return self.utils.error("删除整个用户底座需要确认")
+            return self.utils.error("删除整个用户画像需要确认")
         try:
             user_id = int(payload.get("user_id", 0))
             revision = int(payload.get("revision"))
@@ -99,7 +99,7 @@ class UserBaselineHandler:
         except (ValueError, RuntimeError) as exc:
             return self.utils.error(str(exc))
         except Exception as exc:
-            logger.error("[PageAPI] 删除用户底座失败", exc_info=True)
+            logger.error("[PageAPI] 删除用户画像失败", exc_info=True)
             return self.utils.error(str(exc))
 
 

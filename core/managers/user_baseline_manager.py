@@ -8,6 +8,7 @@ import json
 import re
 import time
 import uuid
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
@@ -71,11 +72,20 @@ class BaselineInjection:
 @dataclass(slots=True, frozen=True)
 class BaselineGenerationResponse:
     text: str
-    entry_refs: dict[str, str]
+    entry_refs: dict[str, dict[str, Any]]
+    suppression_refs: dict[str, dict[str, Any]]
 
 
-class AllBaselineOperationsRejected(ValueError):
-    """A non-empty generation response contained no usable operation."""
+@dataclass(slots=True, frozen=True)
+class BaselineApplyResult:
+    applied: int = 0
+    no_change: int = 0
+    rejected: int = 0
+    rejection_reasons: tuple[str, ...] = ()
+
+
+class BaselineDeterministicFailure(ValueError):
+    """A generation result failed its deterministic output contract."""
 
 
 @dataclass(slots=True, frozen=True)
@@ -221,7 +231,6 @@ class UserBaselineManager:
                 ended_at REAL NOT NULL,
                 source_type TEXT NOT NULL,
                 status TEXT NOT NULL DEFAULT 'pending',
-                generation_failures INTEGER NOT NULL DEFAULT 0,
                 created_at REAL NOT NULL,
                 consumed_at REAL,
                 UNIQUE(user_id, persona_id, fingerprint),
@@ -259,6 +268,7 @@ class UserBaselineManager:
                 user_id INTEGER NOT NULL,
                 persona_id TEXT NOT NULL DEFAULT '',
                 category TEXT NOT NULL,
+                content TEXT NOT NULL DEFAULT '',
                 content_hash TEXT NOT NULL,
                 deleted_at REAL NOT NULL,
                 evidence_cutoff REAL NOT NULL,
@@ -277,20 +287,32 @@ class UserBaselineManager:
                 evidence_id TEXT PRIMARY KEY,
                 user_id INTEGER NOT NULL,
                 message_text TEXT NOT NULL,
+                message_role TEXT NOT NULL DEFAULT 'unknown',
+                speaker_name TEXT NOT NULL DEFAULT '',
+                message_timestamp REAL,
                 created_at REAL NOT NULL,
                 FOREIGN KEY(user_id) REFERENCES user_baseline_users(user_id)
                     ON DELETE CASCADE
             );
             """
         )
-        cursor = await self.db.execute("PRAGMA table_info(user_baseline_windows)")
-        window_columns = {str(row["name"]) for row in await cursor.fetchall()}
-        if "generation_failures" not in window_columns:
+        cursor = await self.db.execute("PRAGMA table_info(user_baseline_evidence)")
+        evidence_columns = {str(row["name"]) for row in await cursor.fetchall()}
+        for column, definition in (
+            ("message_role", "TEXT NOT NULL DEFAULT 'unknown'"),
+            ("speaker_name", "TEXT NOT NULL DEFAULT ''"),
+            ("message_timestamp", "REAL"),
+        ):
+            if column not in evidence_columns:
+                await self.db.execute(
+                    f"ALTER TABLE user_baseline_evidence ADD COLUMN {column} {definition}"
+                )
+        cursor = await self.db.execute("PRAGMA table_info(user_baseline_suppressions)")
+        suppression_columns = {str(row["name"]) for row in await cursor.fetchall()}
+        if "content" not in suppression_columns:
             await self.db.execute(
-                """
-                ALTER TABLE user_baseline_windows
-                ADD COLUMN generation_failures INTEGER NOT NULL DEFAULT 0
-                """
+                "ALTER TABLE user_baseline_suppressions "
+                "ADD COLUMN content TEXT NOT NULL DEFAULT ''"
             )
         await self.db.commit()
         await self._repair_evidence_mirrors()
@@ -427,10 +449,12 @@ class UserBaselineManager:
         """Copy one valid main-memory window into each real user's evidence queue."""
         if not self.enabled or self.db is None:
             return 0
+        normalized_persona = _flat_text(persona_id)
+        if not normalized_persona:
+            return 0
         serialized, targets = self._window_targets(history_messages)
         if not serialized or not targets:
             return 0
-        normalized_persona = _flat_text(persona_id)
         inserted = 0
         for identity in targets.values():
             target_messages = self._messages_for_target(serialized, identity)
@@ -452,7 +476,7 @@ class UserBaselineManager:
             inserted += 1
             if not source_type.startswith("bootstrap_"):
                 logger.info(
-                    f"[用户底座] 新窗口已登记；累计进度 "
+                    f"[用户画像] 新窗口已登记；累计进度 "
                     f"{min(pending_count, BASELINE_BATCH_WINDOWS)}/{BASELINE_BATCH_WINDOWS}。"
                 )
             if schedule_generation:
@@ -516,7 +540,7 @@ class UserBaselineManager:
                 )
                 row = await cursor.fetchone()
                 if row is None:
-                    raise RuntimeError("用户底座身份写入失败")
+                    raise RuntimeError("用户画像身份写入失败")
                 user_id = int(row["user_id"])
                 await self.db.execute(
                     """
@@ -592,11 +616,26 @@ class UserBaselineManager:
             text = _flat_text(message.get("content"))
             if message_id <= 0 or not text:
                 continue
+            metadata = _json_dict(message.get("metadata"))
+            raw_role = str(message.get("role") or "").casefold()
+            if raw_role == "assistant" or metadata.get("is_bot_message"):
+                message_role = "assistant"
+            elif raw_role == "user":
+                message_role = "user"
+            else:
+                message_role = "unknown"
+            try:
+                message_timestamp = float(message.get("timestamp") or 0.0) or None
+            except (TypeError, ValueError):
+                message_timestamp = None
             rows.append(
                 (
                     f"W{window_id}:M{message_id}",
                     user_id,
                     text,
+                    message_role,
+                    _flat_text(message.get("sender_name")),
+                    message_timestamp,
                     created_at,
                 )
             )
@@ -605,10 +644,26 @@ class UserBaselineManager:
         await self.db.executemany(
             """
             INSERT OR IGNORE INTO user_baseline_evidence(
-                evidence_id, user_id, message_text, created_at
-            ) VALUES (?, ?, ?, ?)
+                evidence_id, user_id, message_text, message_role,
+                speaker_name, message_timestamp, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
             rows,
+        )
+        await self.db.executemany(
+            """
+            UPDATE user_baseline_evidence
+            SET message_role = CASE
+                    WHEN message_role IN ('', 'unknown') THEN ? ELSE message_role END,
+                speaker_name = CASE
+                    WHEN speaker_name = '' THEN ? ELSE speaker_name END,
+                message_timestamp = COALESCE(message_timestamp, ?)
+            WHERE evidence_id = ? AND user_id = ?
+            """,
+            [
+                (row[3], row[4], row[5], row[0], row[1])
+                for row in rows
+            ],
         )
 
     async def _trim_windows_locked(self, user_id: int, persona_id: str) -> None:
@@ -618,7 +673,7 @@ class UserBaselineManager:
             """
             SELECT window_id FROM user_baseline_windows
             WHERE user_id = ? AND persona_id = ?
-              AND status IN ('consumed', 'quarantined')
+              AND status = 'consumed'
             ORDER BY window_id DESC
             """,
             (user_id, persona_id),
@@ -648,67 +703,95 @@ class UserBaselineManager:
             if claim is None:
                 return
             windows, user_revision = claim
-            try:
-                generation = await self._call_generation_llm(
-                    user_id=user_id,
-                    persona_id=persona_id,
-                    windows=windows,
-                )
-                operations = self._parse_generation_output(
-                    generation.text,
-                    windows,
-                    entry_refs=generation.entry_refs,
-                )
-                applied = await self._apply_generation(
-                    user_id=user_id,
-                    persona_id=persona_id,
-                    windows=windows,
-                    user_revision=user_revision,
-                    operations=operations,
-                )
-                if applied is None:
-                    logger.info(
-                        "[用户底座] 生成期间检测到人工编辑，本批未应用；证据已保留。"
-                    )
-                else:
-                    logger.info(
-                        f"[用户底座] 生成完成；应用 {applied} 项，"
-                        f"消费 {len(windows)} 个窗口。"
-                    )
-            except asyncio.CancelledError:
-                raise
-            except AllBaselineOperationsRejected:
+            failure_reasons: list[str] = []
+            for attempt in range(2):
                 try:
-                    disposition = await self._record_all_rejected_batch(
+                    generation = await self._call_generation_llm(
+                        user_id=user_id,
+                        persona_id=persona_id,
+                        windows=windows,
+                    )
+                    operations, parse_rejection_reasons = self._parse_generation_output(
+                        generation.text,
+                        windows,
+                        entry_refs=generation.entry_refs,
+                        suppression_refs=generation.suppression_refs,
+                    )
+                    result = await self._apply_generation(
                         user_id=user_id,
                         persona_id=persona_id,
                         windows=windows,
                         user_revision=user_revision,
+                        operations=operations,
+                        initial_rejection_reasons=parse_rejection_reasons,
                     )
-                except Exception as exc:
-                    logger.warning(
-                        "[用户底座] 本批操作全部未通过校验，证据保留；"
-                        f"失败状态记录异常: {exc}"
-                    )
-                else:
-                    if disposition == "quarantined":
-                        logger.warning(
-                            f"[用户底座] 本批连续两次全部未通过校验；"
-                            f"已隔离 {len(windows)} 个窗口，证据保留，"
-                            "后续窗口可继续排队。"
+                    if result is None:
+                        logger.info(
+                            "[用户画像] 生成期间检测到人工编辑，本批未应用；"
+                            "画像证据副本已保留。"
                         )
-                    elif disposition == "retry":
+                        return
+                    if (
+                        result.applied == 0
+                        and result.no_change == 0
+                        and result.rejected
+                    ):
+                        raise BaselineDeterministicFailure(
+                            self._summarize_rejection_reasons(
+                                result.rejection_reasons
+                            )
+                            or "所有操作均未通过校验"
+                        )
+                    logger.info(
+                        f"[用户画像] 生成完成；应用 {result.applied} 项，"
+                        f"无变化 {result.no_change} 项，拒绝 {result.rejected} 项，"
+                        f"消费 {len(windows)} 个窗口。"
+                    )
+                    return
+                except asyncio.CancelledError:
+                    raise
+                except BaselineDeterministicFailure as exc:
+                    failure_reasons.append(str(exc))
+                    if attempt == 0:
+                        logger.info(
+                            f"[用户画像] 本批生成结果无效（{failure_reasons[0]}），"
+                            "立即重试一次。"
+                        )
+                        continue
+                    try:
+                        discarded = await self._discard_failed_batch(
+                            user_id=user_id,
+                            persona_id=persona_id,
+                            windows=windows,
+                            user_revision=user_revision,
+                            failure_reasons=tuple(failure_reasons),
+                        )
+                    except Exception:
                         logger.warning(
-                            "[用户底座] 本批操作全部未通过校验；"
-                            "证据保留，冷却后再重试一次。"
+                            "[用户画像] 本批连续两次生成结果无效；"
+                            "跳过失败，画像证据副本已保留。",
+                            exc_info=True,
+                        )
+                        return
+                    if discarded:
+                        logger.warning(
+                            "[用户画像] 本批连续两次生成结果无效"
+                            f"（首次：{failure_reasons[0]}；"
+                            f"重试：{failure_reasons[1]}），"
+                            f"已丢弃 {len(windows)} 个画像窗口副本；后续窗口不受影响。"
                         )
                     else:
                         logger.info(
-                            "[用户底座] 生成期间检测到人工编辑；"
-                            "本次失败未计数，证据已保留。"
+                            "[用户画像] 生成期间检测到人工编辑；"
+                            "本批未跳过，画像证据副本已保留。"
                         )
-            except Exception as exc:
-                logger.warning(f"[用户底座] 生成失败，证据保留并进入 6 小时冷却: {exc}")
+                    return
+                except Exception as exc:
+                    logger.warning(
+                        "[用户画像] 生成失败，画像证据副本已保留并进入 6 小时冷却: "
+                        f"{exc}"
+                    )
+                    return
 
     async def _claim_generation_batch(
         self, user_id: int, persona_id: str
@@ -778,20 +861,21 @@ class UserBaselineManager:
         ]
         return windows, int(user_row["revision"])
 
-    async def _record_all_rejected_batch(
+    async def _discard_failed_batch(
         self,
         *,
         user_id: int,
         persona_id: str,
         windows: list[dict[str, Any]],
         user_revision: int,
-    ) -> str:
-        """Retry one fully rejected batch once, then quarantine it."""
+        failure_reasons: tuple[str, str],
+    ) -> bool:
+        """Delete one twice-invalid profile batch without touching source memory."""
         if self.db is None:
-            return "stale"
+            return False
         window_ids = [int(item["window_id"]) for item in windows]
         if not window_ids:
-            return "stale"
+            return False
         placeholders = ",".join("?" for _ in window_ids)
         now = time.time()
         async with self._write_lock:
@@ -804,10 +888,10 @@ class UserBaselineManager:
                 user_row = await cursor.fetchone()
                 if user_row is None or int(user_row["revision"]) != user_revision:
                     await self.db.rollback()
-                    return "stale"
+                    return False
                 cursor = await self.db.execute(
                     f"""
-                    SELECT window_id, generation_failures
+                    SELECT window_id
                     FROM user_baseline_windows
                     WHERE user_id = ? AND persona_id = ? AND status = 'pending'
                       AND window_id IN ({placeholders})
@@ -817,42 +901,35 @@ class UserBaselineManager:
                 rows = await cursor.fetchall()
                 if len(rows) != len(window_ids):
                     await self.db.rollback()
-                    return "stale"
-                failure_count = max(
-                    int(row["generation_failures"] or 0) for row in rows
-                ) + 1
-                if failure_count >= 2:
-                    await self.db.execute(
-                        f"""
-                        UPDATE user_baseline_windows
-                        SET generation_failures = ?, status = 'quarantined',
-                            consumed_at = ?
-                        WHERE user_id = ? AND persona_id = ?
-                          AND status = 'pending'
-                          AND window_id IN ({placeholders})
-                        """,
-                        [failure_count, now, user_id, persona_id, *window_ids],
-                    )
-                    await self._trim_windows_locked(user_id, persona_id)
-                    await self._prune_unreferenced_evidence_locked(user_id)
-                    disposition = "quarantined"
-                else:
-                    await self.db.execute(
-                        f"""
-                        UPDATE user_baseline_windows
-                        SET generation_failures = ?
-                        WHERE user_id = ? AND persona_id = ?
-                          AND status = 'pending'
-                          AND window_id IN ({placeholders})
-                        """,
-                        [failure_count, user_id, persona_id, *window_ids],
-                    )
-                    disposition = "retry"
+                    return False
+                await self.db.execute(
+                    f"""
+                    DELETE FROM user_baseline_windows
+                    WHERE user_id = ? AND persona_id = ?
+                      AND status = 'pending'
+                      AND window_id IN ({placeholders})
+                    """,
+                    [user_id, persona_id, *window_ids],
+                )
+                await self._prune_unreferenced_evidence_locked(user_id)
+                await self.db.execute(
+                    """
+                    INSERT OR REPLACE INTO user_baseline_meta(key, value, updated_at)
+                    VALUES ('generation-warning-v1', ?, ?)
+                    """,
+                    (
+                        json.dumps(
+                            {"reasons": list(failure_reasons)},
+                            ensure_ascii=False,
+                        ),
+                        now,
+                    ),
+                )
                 await self.db.commit()
             except Exception:
                 await self.db.rollback()
                 raise
-        return disposition
+        return True
 
     def _resolve_provider(self):
         provider_id = _flat_text(
@@ -882,7 +959,11 @@ class UserBaselineManager:
             raise RuntimeError("LLM Provider 不可用")
         existing = await self._load_entries(user_id, persona_id, include_disabled=True)
         entry_refs = {
-            f"E{index}": item["entry_id"]
+            f"E{index}": {
+                "entry_id": item["entry_id"],
+                "category": item["category"],
+                "persona_id": item["persona_id"],
+            }
             for index, item in enumerate(existing, start=1)
         }
         existing_payload = [
@@ -901,6 +982,36 @@ class UserBaselineManager:
             }
             for index, item in enumerate(existing, start=1)
         ]
+        suppression_rows: list[aiosqlite.Row] = []
+        if self.db is not None:
+            cursor = await self.db.execute(
+                """
+                SELECT suppression_id, persona_id, content, deleted_at
+                FROM user_baseline_suppressions
+                WHERE user_id = ? AND persona_id IN (?, '') AND content != ''
+                ORDER BY deleted_at DESC
+                """,
+                (user_id, persona_id),
+            )
+            suppression_rows = await cursor.fetchall()
+        suppression_refs = {
+            f"D{index}": {
+                "suppression_id": int(row["suppression_id"]),
+                "persona_id": str(row["persona_id"] or ""),
+                "content": str(row["content"]),
+                "deleted_at": float(row["deleted_at"]),
+            }
+            for index, row in enumerate(suppression_rows, start=1)
+        }
+        suppression_payload = [
+            {
+                "suppression_ref": ref,
+                "scope": value["persona_id"] or "global",
+                "content": value["content"],
+                "deleted_at": value["deleted_at"],
+            }
+            for ref, value in suppression_refs.items()
+        ]
         evidence_blocks: list[str] = []
         for window in windows:
             lines = [f"[W{window['window_id']}]"]
@@ -917,24 +1028,28 @@ class UserBaselineManager:
                     )
             evidence_blocks.append("\n".join(lines))
         prompt = (
-            "请从以下一手对话证据中维护用户的长期底座。只输出合法 JSON，"
+            "请从以下一手对话证据中维护用户画像。只输出合法 JSON，"
             '结构为 {"operations":[...]}; operations 只允许 add、update、retire。\n'
             "允许类别：address_identity（称呼或身份锚点）、relationship（明确发生过的关系锚点）、"
             "interaction_preference（用户明确要求 Bot 如何互动）、long_term_boundary（长期边界）、"
             "global_constraint（极少量全局硬约束）。\n"
             "禁止写近期情绪、性格推断、普通兴趣、当前任务、短期约定或关系好感度；"
-            "不能从 Bot 单方面说法推断用户事实。每个操作必须带 evidence_ids，且只能引用下方 W:M。\n"
+            "除 relationship 外不能从 Bot 单方面说法推断用户事实。"
+            "每个操作必须带 evidence_ids，且只能引用下方 W:M。\n"
             "add 字段：op/category/content/evidence_ids；update 字段再加 entry_ref；"
-            "retire 字段：op/entry_ref/evidence_ids。entry_ref 只能原样使用现有底座中的 E 编号。"
-            "现有底座中的 editable 由系统实时计算："
+            "retire 字段：op/entry_ref/evidence_ids。entry_ref 只能原样使用现有画像中的 E 编号。"
+            "现有画像中的 editable 由系统实时计算："
             "只有 editable=true 的条目允许 update 或 retire；editable=false 的条目只供参考，"
             "不得修改、退役，也不得通过 add 绕过保护来改写其结论。\n"
             "若新证据是在补充、修正或自然演化某条 editable=true 的条目，必须优先 update，"
             "可在证据支持下调整措辞、侧重点和关系表述；只有没有可承接条目时才 add。"
             "不得 add 与任何现有条目语义重复或冲突的近义版本。"
+            "若确有删除后的新证据恢复某条已删除结论，add/update 必须带对应 suppression_ref；"
+            "suppression_ref 只能原样使用删除记录中的 D 编号。"
             "内容必须是中性、自包含、长期有效的一句话，不得包含证据编号。\n\n"
             f"当前 persona：{persona_id or '未命名'}\n"
-            f"现有底座：{json.dumps(existing_payload, ensure_ascii=False)}\n\n"
+            f"现有画像：{json.dumps(existing_payload, ensure_ascii=False)}\n\n"
+            f"适用删除记录：{json.dumps(suppression_payload, ensure_ascii=False)}\n\n"
             "本批证据：\n" + "\n\n".join(evidence_blocks)
         )
         response = await provider.text_chat(
@@ -946,8 +1061,12 @@ class UserBaselineManager:
         )
         text = getattr(response, "completion_text", "")
         if not isinstance(text, str) or not text.strip():
-            raise ValueError("LLM 返回空响应")
-        return BaselineGenerationResponse(text=text, entry_refs=entry_refs)
+            raise BaselineDeterministicFailure("LLM 返回空响应")
+        return BaselineGenerationResponse(
+            text=text,
+            entry_refs=entry_refs,
+            suppression_refs=suppression_refs,
+        )
 
     @staticmethod
     def _strip_json_fence(value: str) -> str:
@@ -965,58 +1084,84 @@ class UserBaselineManager:
         response_text: str,
         windows: list[dict[str, Any]],
         *,
-        entry_refs: dict[str, str],
-    ) -> list[dict[str, Any]]:
+        entry_refs: dict[str, dict[str, Any]],
+        suppression_refs: dict[str, dict[str, Any]] | None = None,
+    ) -> tuple[list[dict[str, Any]], list[str]]:
         try:
             payload = json.loads(self._strip_json_fence(response_text))
         except (TypeError, json.JSONDecodeError) as exc:
-            raise ValueError("LLM 输出不是合法 JSON") from exc
+            raise BaselineDeterministicFailure("LLM 输出不是合法 JSON") from exc
         operations = payload.get("operations") if isinstance(payload, dict) else None
         if not isinstance(operations, list):
-            raise ValueError("LLM 输出缺少 operations 数组")
-        valid_evidence_ids = {
-            f"W{window['window_id']}:M{int(message.get('id') or 0)}"
+            raise BaselineDeterministicFailure("LLM 输出缺少 operations 数组")
+        evidence_by_id = {
+            f"W{window['window_id']}:M{int(message.get('id') or 0)}": {
+                "role": (
+                    "assistant"
+                    if str(message.get("role") or "").casefold() == "assistant"
+                    or _json_dict(message.get("metadata")).get("is_bot_message")
+                    else "user"
+                    if str(message.get("role") or "").casefold() == "user"
+                    else "unknown"
+                ),
+                "timestamp": self._message_timestamp(message.get("timestamp")),
+            }
             for window in windows
             for message in window["messages"]
             if int(message.get("id") or 0) > 0
         }
         parsed: list[dict[str, Any]] = []
+        rejection_reasons: list[str] = []
         for index, raw in enumerate(operations):
             item = self._parse_operation(
                 raw=raw,
-                valid_evidence_ids=valid_evidence_ids,
+                evidence_by_id=evidence_by_id,
                 entry_refs=entry_refs,
+                suppression_refs=suppression_refs or {},
             )
             if isinstance(item, dict):
                 parsed.append(item)
             else:
-                logger.warning(
-                    f"[用户底座] 跳过第 {index + 1} 条 operation（{item}）"
+                rejection_reasons.append(item)
+                logger.debug(
+                    f"[用户画像] 跳过第 {index + 1} 条 operation（{item}）"
                 )
-        if operations and not parsed:
-            raise AllBaselineOperationsRejected(
-                "LLM 返回的 operations 全部未通过校验"
-            )
-        return parsed
+        return parsed, rejection_reasons
+
+    @staticmethod
+    def _summarize_rejection_reasons(reasons: tuple[str, ...] | list[str]) -> str:
+        counts = Counter(reason for reason in reasons if reason)
+        return "；".join(
+            f"{count} 个{reason}" for reason, count in counts.items()
+        )
+
+    @staticmethod
+    def _message_timestamp(value: Any) -> float | None:
+        try:
+            timestamp = float(value or 0.0)
+        except (TypeError, ValueError):
+            return None
+        return timestamp if timestamp > 0 else None
 
     @staticmethod
     def _parse_operation(
         *,
         raw: Any,
-        valid_evidence_ids: set[str],
-        entry_refs: dict[str, str],
+        evidence_by_id: dict[str, dict[str, Any]],
+        entry_refs: dict[str, dict[str, Any]],
+        suppression_refs: dict[str, dict[str, Any]],
     ) -> dict[str, Any] | str:
         if not isinstance(raw, dict):
-            return "operation 必须是对象"
+            return "操作不是对象"
         op = _flat_text(raw.get("op")).casefold()
         if op not in {"add", "update", "retire"}:
-            return "operation 类型无效"
+            return "操作类型无效"
         evidence_ids = raw.get("evidence_ids")
         if not isinstance(evidence_ids, list) or not evidence_ids:
-            return "每个 operation 必须引用证据"
+            return "操作未引用证据"
         normalized_evidence = [_flat_text(item) for item in evidence_ids]
-        if any(item not in valid_evidence_ids for item in normalized_evidence):
-            return "operation 引用了本批之外的证据"
+        if any(item not in evidence_by_id for item in normalized_evidence):
+            return "操作引用了本批之外的证据"
         item: dict[str, Any] = {
             "op": op,
             "evidence_ids": list(dict.fromkeys(normalized_evidence)),
@@ -1024,11 +1169,11 @@ class UserBaselineManager:
         if op in {"update", "retire"}:
             entry_ref = _flat_text(raw.get("entry_ref")).upper()
             if not entry_ref:
-                return "update/retire 缺少 entry_ref"
-            entry_id = entry_refs.get(entry_ref)
-            if entry_id is None:
-                return "operation 引用了无效 entry_ref"
-            item["entry_id"] = entry_id
+                return "更新或退役操作缺少条目引用"
+            entry = entry_refs.get(entry_ref)
+            if entry is None:
+                return "操作引用了无效条目"
+            item["entry_id"] = entry["entry_id"]
         if op in {"add", "update"}:
             category = _flat_text(raw.get("category"))
             content = _flat_text(raw.get("content"))
@@ -1039,6 +1184,32 @@ class UserBaselineManager:
             except ValueError as exc:
                 return str(exc)
             item.update(category=category, content=content)
+        else:
+            category = str(entry["category"])
+        qualifying_roles = {"user", "assistant"} if category == "relationship" else {"user"}
+        if not any(
+            evidence_by_id[evidence_id]["role"] in qualifying_roles
+            for evidence_id in item["evidence_ids"]
+        ):
+            if category == "relationship":
+                return "关系条目未引用目标用户原话或当前 persona 的 Bot 发言"
+            return "条目未引用目标用户原话"
+        suppression_ref = _flat_text(raw.get("suppression_ref")).upper()
+        if suppression_ref:
+            if op not in {"add", "update"}:
+                return "退役操作不能引用删除记录"
+            suppression = suppression_refs.get(suppression_ref)
+            if suppression is None:
+                return "操作引用了无效删除记录"
+            if not any(
+                evidence_by_id[evidence_id]["role"] in qualifying_roles
+                and evidence_by_id[evidence_id]["timestamp"] is not None
+                and evidence_by_id[evidence_id]["timestamp"]
+                > float(suppression["deleted_at"])
+                for evidence_id in item["evidence_ids"]
+            ):
+                return "恢复删除结论必须引用删除后的新证据"
+            item["suppression_id"] = int(suppression["suppression_id"])
         return item
 
     @staticmethod
@@ -1046,23 +1217,23 @@ class UserBaselineManager:
         category: str, content: str, *, automatic: bool = False
     ) -> None:
         if category not in BASELINE_CATEGORIES:
-            raise ValueError("底座类别无效")
+            raise ValueError("画像类别无效")
         if not content:
-            raise ValueError("底座正文不能为空")
+            raise ValueError("画像正文不能为空")
         if len(content) > 180:
-            raise ValueError("底座正文不能超过 180 字")
+            raise ValueError("画像正文不能超过 180 字")
         if _MACHINE_ID_PATTERN.search(content):
-            raise ValueError("底座正文不能包含内部编号")
+            raise ValueError("画像正文不能包含内部编号")
         if not automatic:
             return
         if _ORDINARY_INTEREST_PATTERN.search(content):
-            raise ValueError("普通兴趣不能进入用户底座")
+            raise ValueError("普通兴趣不能进入用户画像")
         if _PERSONALITY_INFERENCE_PATTERN.search(content):
-            raise ValueError("性格推断不能进入用户底座")
+            raise ValueError("性格推断不能进入用户画像")
         if _MOOD_PATTERN.search(content) and category != "long_term_boundary":
-            raise ValueError("近期情绪不能进入用户底座")
+            raise ValueError("近期情绪不能进入用户画像")
         if _TEMPORARY_PATTERN.search(content):
-            raise ValueError("短期状态或约定不能进入用户底座")
+            raise ValueError("短期状态或约定不能进入用户画像")
         if category == "interaction_preference" and _ORDINARY_INTEREST_PATTERN.search(
             content
         ):
@@ -1071,7 +1242,7 @@ class UserBaselineManager:
             raise ValueError("关系锚点缺少明确关系证据")
 
     async def _prune_unreferenced_evidence_locked(self, user_id: int) -> None:
-        """Keep evidence needed by entries, pending work, or quarantined batches."""
+        """Keep profile evidence copies needed by entries or pending work."""
         if self.db is None:
             return
         cursor = await self.db.execute(
@@ -1090,7 +1261,7 @@ class UserBaselineManager:
         cursor = await self.db.execute(
             """
             SELECT window_id, message_ids_json FROM user_baseline_windows
-            WHERE user_id = ? AND status IN ('pending', 'quarantined')
+            WHERE user_id = ? AND status = 'pending'
             """,
             (user_id,),
         )
@@ -1158,13 +1329,16 @@ class UserBaselineManager:
         windows: list[dict[str, Any]],
         user_revision: int,
         operations: list[dict[str, Any]],
-    ) -> int | None:
+        initial_rejection_reasons: list[str] | tuple[str, ...] = (),
+    ) -> BaselineApplyResult | None:
         if self.db is None:
             return None
         now = time.time()
         window_ids = [int(item["window_id"]) for item in windows]
-        evidence_cutoff = max(float(item["ended_at"] or 0.0) for item in windows)
         applied = 0
+        no_change = 0
+        rejection_reasons = list(initial_rejection_reasons)
+        rejected = len(rejection_reasons)
         async with self._write_lock:
             await self.db.execute("BEGIN IMMEDIATE")
             try:
@@ -1176,39 +1350,25 @@ class UserBaselineManager:
                 if row is None or int(row["revision"]) != user_revision:
                     await self.db.rollback()
                     return None
-                active_count_cursor = await self.db.execute(
-                    """
-                    SELECT COUNT(*) AS count FROM user_baseline_entries
-                    WHERE user_id = ? AND persona_id IN (?, '')
-                      AND enabled = 1 AND retired_at IS NULL
-                    """,
-                    (user_id, persona_id),
-                )
-                count_row = await active_count_cursor.fetchone()
-                active_count = int(count_row["count"] if count_row else 0)
-                for operation in operations:
+                for index, operation in enumerate(operations):
                     op = operation["op"]
                     if op == "add":
-                        if active_count >= BASELINE_MAX_ENTRIES:
-                            continue
-                        if await self._is_suppressed_locked(
+                        if "suppression_id" not in operation and await self._is_suppressed_locked(
                             user_id=user_id,
                             persona_id=persona_id,
-                            category=operation["category"],
                             content=operation["content"],
-                            evidence_cutoff=evidence_cutoff,
                         ):
+                            no_change += 1
                             continue
-                        duplicate = await self.db.execute(
-                            """
-                            SELECT 1 FROM user_baseline_entries
-                            WHERE user_id = ? AND persona_id = ? AND content_key = ?
-                              AND retired_at IS NULL LIMIT 1
-                            """,
-                            (user_id, persona_id, _content_key(operation["content"])),
-                        )
-                        if await duplicate.fetchone():
+                        if await self._has_duplicate_entry_locked(
+                            user_id=user_id,
+                            persona_id=persona_id,
+                            content_key=_content_key(operation["content"]),
+                        ):
+                            no_change += 1
                             continue
+                        savepoint = f"baseline_add_{index}"
+                        await self.db.execute(f"SAVEPOINT {savepoint}")
                         await self.db.execute(
                             """
                             INSERT INTO user_baseline_entries(
@@ -1231,7 +1391,23 @@ class UserBaselineManager:
                                 now,
                             ),
                         )
-                        active_count += 1
+                        try:
+                            await self._validate_user_budgets_locked(user_id)
+                        except ValueError:
+                            await self.db.execute(f"ROLLBACK TO {savepoint}")
+                            await self.db.execute(f"RELEASE {savepoint}")
+                            rejected += 1
+                            rejection_reasons.append(
+                                "新增条目超出数量或 token 预算"
+                            )
+                            continue
+                        await self.db.execute(f"RELEASE {savepoint}")
+                        if "suppression_id" in operation:
+                            await self.db.execute(
+                                "DELETE FROM user_baseline_suppressions "
+                                "WHERE suppression_id = ? AND user_id = ?",
+                                (operation["suppression_id"], user_id),
+                            )
                         applied += 1
                     else:
                         cursor = await self.db.execute(
@@ -1243,7 +1419,15 @@ class UserBaselineManager:
                             (operation["entry_id"], user_id, persona_id),
                         )
                         entry = await cursor.fetchone()
-                        if entry is None or bool(entry["locked"]):
+                        if entry is None:
+                            rejected += 1
+                            rejection_reasons.append(
+                                "引用条目不属于当前 persona 或已不存在"
+                            )
+                            continue
+                        if bool(entry["locked"]):
+                            rejected += 1
+                            rejection_reasons.append("条目不允许自动更新")
                             continue
                         if op == "retire":
                             await self.db.execute(
@@ -1255,17 +1439,68 @@ class UserBaselineManager:
                                 """,
                                 (
                                     now,
-                                    json.dumps(
-                                        operation["evidence_ids"], ensure_ascii=False
-                                    ),
+                                    "[]",
                                     now,
                                     operation["entry_id"],
                                 ),
                             )
-                            active_count = max(
-                                0, active_count - int(bool(entry["enabled"]))
-                            )
+                            applied += 1
                         else:
+                            if "suppression_id" not in operation and await self._is_suppressed_locked(
+                                user_id=user_id,
+                                persona_id=persona_id,
+                                content=operation["content"],
+                            ):
+                                no_change += 1
+                                continue
+                            if await self._has_duplicate_entry_locked(
+                                user_id=user_id,
+                                persona_id=persona_id,
+                                content_key=_content_key(operation["content"]),
+                                exclude_entry_id=operation["entry_id"],
+                            ):
+                                rejected += 1
+                                rejection_reasons.append(
+                                    "更新后的内容与其他条目重复"
+                                )
+                                continue
+                            merged_evidence = list(
+                                dict.fromkeys(
+                                    [
+                                        *_json_list(entry["evidence_json"]),
+                                        *operation["evidence_ids"],
+                                    ]
+                                )
+                            )
+                            unchanged = (
+                                str(entry["category"]) == operation["category"]
+                                and str(entry["content"]) == operation["content"]
+                            )
+                            if unchanged:
+                                if merged_evidence != _json_list(entry["evidence_json"]):
+                                    await self.db.execute(
+                                        """
+                                        UPDATE user_baseline_entries
+                                        SET source_type = 'automatic', evidence_json = ?,
+                                            revision = revision + 1, updated_at = ?
+                                        WHERE entry_id = ?
+                                        """,
+                                        (
+                                            json.dumps(merged_evidence, ensure_ascii=False),
+                                            now,
+                                            operation["entry_id"],
+                                        ),
+                                    )
+                                if "suppression_id" in operation:
+                                    await self.db.execute(
+                                        "DELETE FROM user_baseline_suppressions "
+                                        "WHERE suppression_id = ? AND user_id = ?",
+                                        (operation["suppression_id"], user_id),
+                                    )
+                                no_change += 1
+                                continue
+                            savepoint = f"baseline_update_{index}"
+                            await self.db.execute(f"SAVEPOINT {savepoint}")
                             await self.db.execute(
                                 """
                                 UPDATE user_baseline_entries
@@ -1278,14 +1513,38 @@ class UserBaselineManager:
                                     operation["category"],
                                     operation["content"],
                                     _content_key(operation["content"]),
-                                    json.dumps(
-                                        operation["evidence_ids"], ensure_ascii=False
-                                    ),
+                                    json.dumps(merged_evidence, ensure_ascii=False),
                                     now,
                                     operation["entry_id"],
                                 ),
                             )
-                        applied += 1
+                            try:
+                                await self._validate_user_budgets_locked(user_id)
+                            except ValueError:
+                                await self.db.execute(f"ROLLBACK TO {savepoint}")
+                                await self.db.execute(f"RELEASE {savepoint}")
+                                rejected += 1
+                                rejection_reasons.append(
+                                    "更新后超出数量或 token 预算"
+                                )
+                                continue
+                            await self.db.execute(f"RELEASE {savepoint}")
+                            if "suppression_id" in operation:
+                                await self.db.execute(
+                                    "DELETE FROM user_baseline_suppressions "
+                                    "WHERE suppression_id = ? AND user_id = ?",
+                                    (operation["suppression_id"], user_id),
+                                )
+                            applied += 1
+                result = BaselineApplyResult(
+                    applied=applied,
+                    no_change=no_change,
+                    rejected=rejected,
+                    rejection_reasons=tuple(rejection_reasons),
+                )
+                if not applied and not no_change and rejected:
+                    await self.db.rollback()
+                    return result
                 placeholders = ",".join("?" for _ in window_ids)
                 await self.db.execute(
                     f"""
@@ -1296,7 +1555,6 @@ class UserBaselineManager:
                     [now, *window_ids],
                 )
                 await self._prune_unreferenced_evidence_locked(user_id)
-                await self._validate_user_budgets_locked(user_id)
                 await self.db.execute(
                     """
                     UPDATE user_baseline_states
@@ -1318,33 +1576,55 @@ class UserBaselineManager:
             except Exception:
                 await self.db.rollback()
                 raise
-        return applied
+        return result
+
+    async def _has_duplicate_entry_locked(
+        self,
+        *,
+        user_id: int,
+        persona_id: str,
+        content_key: str,
+        exclude_entry_id: str = "",
+    ) -> bool:
+        if self.db is None:
+            return False
+        scope_sql = "" if not persona_id else "AND persona_id IN (?, '')"
+        params: list[Any] = [user_id, content_key]
+        if persona_id:
+            params.append(persona_id)
+        exclude_sql = ""
+        if exclude_entry_id:
+            exclude_sql = "AND entry_id != ?"
+            params.append(exclude_entry_id)
+        cursor = await self.db.execute(
+            f"""
+            SELECT 1 FROM user_baseline_entries
+            WHERE user_id = ? AND content_key = ? {scope_sql} {exclude_sql}
+              AND retired_at IS NULL LIMIT 1
+            """,
+            params,
+        )
+        return await cursor.fetchone() is not None
 
     async def _is_suppressed_locked(
         self,
         *,
         user_id: int,
         persona_id: str,
-        category: str,
         content: str,
-        evidence_cutoff: float,
     ) -> bool:
         if self.db is None:
             return False
         cursor = await self.db.execute(
             """
-            SELECT content_hash, evidence_cutoff FROM user_baseline_suppressions
-            WHERE user_id = ? AND persona_id = ? AND category = ?
+            SELECT content_hash FROM user_baseline_suppressions
+            WHERE user_id = ? AND persona_id IN (?, '')
             """,
-            (user_id, persona_id, category),
+            (user_id, persona_id),
         )
         rows = await cursor.fetchall()
         content_hash = _content_hash(content)
-        return any(
-            str(row["content_hash"]) == content_hash
-            and evidence_cutoff <= float(row["evidence_cutoff"])
-            for row in rows
-        )
+        return any(str(row["content_hash"]) == content_hash for row in rows)
 
     async def resolve_event_identity(self, event: Any) -> BaselineIdentity | None:
         platform = ""
@@ -1457,6 +1737,7 @@ class UserBaselineManager:
             "source_type": str(row["source_type"]),
             "evidence": _json_list(row["evidence_json"]),
             "locked": bool(row["locked"]),
+            "allow_auto_update": not bool(row["locked"]),
             "enabled": bool(row["enabled"]),
             "revision": int(row["revision"]),
             "created_at": float(row["created_at"]),
@@ -1483,17 +1764,24 @@ class UserBaselineManager:
         placeholders = ",".join("?" for _ in evidence_ids)
         cursor = await self.db.execute(
             f"""
-            SELECT evidence_id, message_text FROM user_baseline_evidence
+            SELECT evidence_id, message_text, message_role,
+                   speaker_name, message_timestamp
+            FROM user_baseline_evidence
             WHERE user_id = ? AND evidence_id IN ({placeholders})
             """,
             [user_id, *sorted(evidence_ids)],
         )
-        text_by_id = {
-            str(row["evidence_id"]): str(row["message_text"])
+        evidence_by_id = {
+            str(row["evidence_id"]): {
+                "text": str(row["message_text"]),
+                "role": str(row["message_role"] or "unknown"),
+                "speaker_name": str(row["speaker_name"] or ""),
+                "timestamp": row["message_timestamp"],
+            }
             for row in await cursor.fetchall()
         }
         for entry in entries:
-            decorated: list[dict[str, str]] = []
+            decorated: list[dict[str, Any]] = []
             for evidence in entry.get("evidence") or []:
                 evidence_id = _flat_text(
                     evidence.get("id") if isinstance(evidence, dict) else evidence
@@ -1501,7 +1789,16 @@ class UserBaselineManager:
                 decorated.append(
                     {
                         "id": evidence_id,
-                        "text": text_by_id.get(evidence_id, ""),
+                        "text": evidence_by_id.get(evidence_id, {}).get("text", ""),
+                        "role": evidence_by_id.get(evidence_id, {}).get(
+                            "role", "unknown"
+                        ),
+                        "speaker_name": evidence_by_id.get(evidence_id, {}).get(
+                            "speaker_name", ""
+                        ),
+                        "timestamp": evidence_by_id.get(evidence_id, {}).get(
+                            "timestamp"
+                        ),
                     }
                 )
             entry["evidence"] = decorated
@@ -1512,13 +1809,13 @@ class UserBaselineManager:
         if not entries:
             return ""
         lines = [
-            "[用户底座｜长期有效]",
+            "[用户画像｜长期有效]",
             "以下信息长期有效；若与用户本轮原话冲突，以本轮原话为准。",
         ]
         for entry in entries:
             label = _CATEGORY_LABELS.get(entry["category"], entry["category"])
             lines.append(f"- [{label}] {entry['content']}")
-        lines.append("[/用户底座]")
+        lines.append("[/用户画像]")
         return "\n".join(lines)
 
     @classmethod
@@ -1561,6 +1858,25 @@ class UserBaselineManager:
                 "total": 0,
                 "batch_windows": BASELINE_BATCH_WINDOWS,
                 "token_budget": BASELINE_TOKEN_BUDGET,
+                "generation_warning": None,
+            }
+        cursor = await self.db.execute(
+            """
+            SELECT value, updated_at FROM user_baseline_meta
+            WHERE key = 'generation-warning-v1'
+            """
+        )
+        warning_row = await cursor.fetchone()
+        generation_warning = None
+        if warning_row:
+            warning_value = _json_dict(warning_row["value"])
+            reasons = [
+                _flat_text(item)
+                for item in _json_list(warning_value.get("reasons"))[:2]
+            ]
+            generation_warning = {
+                "occurred_at": float(warning_row["updated_at"]),
+                "reasons": reasons,
             }
         where = ""
         params: list[Any] = []
@@ -1628,6 +1944,7 @@ class UserBaselineManager:
             "total": total,
             "batch_windows": BASELINE_BATCH_WINDOWS,
             "token_budget": BASELINE_TOKEN_BUDGET,
+            "generation_warning": generation_warning,
         }
 
     async def get_user_detail(self, user_id: int) -> dict[str, Any] | None:
@@ -1711,7 +2028,7 @@ class UserBaselineManager:
         self, *, user_id: int, payload: dict[str, Any]
     ) -> dict[str, Any]:
         if self.db is None:
-            raise RuntimeError("用户底座尚未初始化")
+            raise RuntimeError("用户画像尚未初始化")
         entry_id = _flat_text(payload.get("entry_id"))
         expected_revision = payload.get("revision")
         now = time.time()
@@ -1726,15 +2043,26 @@ class UserBaselineManager:
                     )
                     existing = await cursor.fetchone()
                     if existing is None:
-                        raise ValueError("底座条目不存在")
+                        raise ValueError("用户画像条目不存在")
                     if expected_revision is None or int(expected_revision) != int(
                         existing["revision"]
                     ):
                         raise ValueError("条目已被其他操作修改，请刷新后重试")
                 if existing is not None and set(payload).issubset(
-                    {"entry_id", "revision", "locked", "enabled"}
+                    {
+                        "entry_id",
+                        "revision",
+                        "locked",
+                        "allow_auto_update",
+                        "enabled",
+                    }
                 ):
-                    locked = int(bool(payload.get("locked", existing["locked"])))
+                    if "allow_auto_update" in payload:
+                        locked = int(not bool(payload["allow_auto_update"]))
+                    else:
+                        locked = int(bool(payload.get("locked", existing["locked"])))
+                    if not str(existing["persona_id"] or ""):
+                        locked = 1
                     enabled = int(bool(payload.get("enabled", existing["enabled"])))
                     await self.db.execute(
                         "UPDATE user_baseline_entries SET locked = ?, enabled = ?, revision = revision + 1, updated_at = ? WHERE entry_id = ?",
@@ -1764,6 +2092,32 @@ class UserBaselineManager:
                         )
                     )
                     self._validate_entry_content(category, content, automatic=False)
+                    if await self._has_duplicate_entry_locked(
+                        user_id=user_id,
+                        persona_id=persona_id,
+                        content_key=_content_key(content),
+                        exclude_entry_id=entry_id,
+                    ):
+                        raise ValueError("用户画像中已存在相同内容")
+                    substantive = existing is not None and any(
+                        (
+                            str(existing["persona_id"] or "") != persona_id,
+                            str(existing["category"]) != category,
+                            str(existing["content"]) != content,
+                        )
+                    )
+                    if "allow_auto_update" in payload:
+                        locked = int(not bool(payload["allow_auto_update"]))
+                    elif "locked" in payload:
+                        locked = int(bool(payload["locked"]))
+                    else:
+                        locked = (
+                            1
+                            if existing is None or substantive
+                            else int(existing["locked"])
+                        )
+                    if not persona_id:
+                        locked = 1
                     if existing is None:
                         entry_id = uuid.uuid4().hex
                         await self.db.execute(
@@ -1772,7 +2126,7 @@ class UserBaselineManager:
                                 entry_id, user_id, persona_id, category, content,
                                 content_key, source_type, evidence_json, locked,
                                 enabled, revision, created_at, updated_at
-                            ) VALUES (?, ?, ?, ?, ?, ?, 'manual', '[]', 1, ?, 1, ?, ?)
+                            ) VALUES (?, ?, ?, ?, ?, ?, 'manual', '[]', ?, ?, 1, ?, ?)
                             """,
                             (
                                 entry_id,
@@ -1781,17 +2135,20 @@ class UserBaselineManager:
                                 category,
                                 content,
                                 _content_key(content),
+                                locked,
                                 enabled,
                                 now,
                                 now,
                             ),
                         )
                     else:
+                        source_type = "manual" if substantive else str(existing["source_type"])
+                        evidence_json = "[]" if substantive else str(existing["evidence_json"])
                         await self.db.execute(
                             """
                             UPDATE user_baseline_entries
                             SET persona_id = ?, category = ?, content = ?, content_key = ?,
-                                source_type = 'manual', locked = 1, enabled = ?,
+                                source_type = ?, evidence_json = ?, locked = ?, enabled = ?,
                                 revision = revision + 1, updated_at = ?
                             WHERE entry_id = ?
                             """,
@@ -1800,6 +2157,9 @@ class UserBaselineManager:
                                 category,
                                 content,
                                 _content_key(content),
+                                source_type,
+                                evidence_json,
+                                locked,
                                 enabled,
                                 now,
                                 entry_id,
@@ -1816,7 +2176,7 @@ class UserBaselineManager:
                 raise
         detail = await self.get_user_detail(user_id)
         if detail is None:
-            raise RuntimeError("用户底座不存在")
+            raise RuntimeError("用户画像不存在")
         return detail
 
     async def _validate_user_budgets_locked(self, user_id: int) -> None:
@@ -1838,7 +2198,7 @@ class UserBaselineManager:
         self, *, user_id: int, entry_id: str, revision: int
     ) -> dict[str, Any]:
         if self.db is None:
-            raise RuntimeError("用户底座尚未初始化")
+            raise RuntimeError("用户画像尚未初始化")
         now = time.time()
         async with self._write_lock:
             await self.db.execute("BEGIN IMMEDIATE")
@@ -1849,15 +2209,17 @@ class UserBaselineManager:
                 )
                 row = await cursor.fetchone()
                 if row is None:
-                    raise ValueError("底座条目不存在")
+                    raise ValueError("用户画像条目不存在")
                 if int(row["revision"]) != int(revision):
                     raise ValueError("条目已被其他操作修改，请刷新后重试")
                 await self.db.execute(
                     """
                     INSERT INTO user_baseline_suppressions(
-                        user_id, persona_id, category, content_hash, deleted_at, evidence_cutoff
-                    ) VALUES (?, ?, ?, ?, ?, ?)
+                        user_id, persona_id, category, content, content_hash,
+                        deleted_at, evidence_cutoff
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(user_id, persona_id, category, content_hash) DO UPDATE SET
+                        content = excluded.content,
                         deleted_at = excluded.deleted_at,
                         evidence_cutoff = excluded.evidence_cutoff
                     """,
@@ -1865,6 +2227,7 @@ class UserBaselineManager:
                         user_id,
                         str(row["persona_id"] or ""),
                         str(row["category"]),
+                        str(row["content"]),
                         _content_hash(row["content"]),
                         now,
                         now,
@@ -1884,12 +2247,12 @@ class UserBaselineManager:
                 raise
         detail = await self.get_user_detail(user_id)
         if detail is None:
-            raise RuntimeError("用户底座不存在")
+            raise RuntimeError("用户画像不存在")
         return detail
 
     async def delete_user(self, *, user_id: int, revision: int) -> None:
         if self.db is None:
-            raise RuntimeError("用户底座尚未初始化")
+            raise RuntimeError("用户画像尚未初始化")
         async with self._write_lock:
             cursor = await self.db.execute(
                 "DELETE FROM user_baseline_users WHERE user_id = ? AND revision = ?",
@@ -1897,7 +2260,7 @@ class UserBaselineManager:
             )
             if cursor.rowcount != 1:
                 await self.db.rollback()
-                raise ValueError("用户底座已被其他操作修改，请刷新后重试")
+                raise ValueError("用户画像已被其他操作修改，请刷新后重试")
             await self.db.commit()
 
     async def bootstrap_existing_data(self) -> int:
@@ -1926,7 +2289,7 @@ class UserBaselineManager:
                     metadata.get("source_session_id") or metadata.get("session_id")
                 )
                 persona_id = _flat_text(metadata.get("persona_id"))
-                if not source or not session_id:
+                if not source or not session_id or not persona_id:
                     continue
                 seeded += await self.register_summary_window(
                     session_id=session_id,
@@ -1942,7 +2305,7 @@ class UserBaselineManager:
             seeded += await self._bootstrap_conversation_windows(seen_message_ids)
         except Exception:
             logger.warning(
-                "[用户底座] 旧原文预热失败；不会改用二手记忆。", exc_info=True
+                "[用户画像] 旧原文预热失败；不会改用二手记忆。", exc_info=True
             )
         now = time.time()
         await self.db.execute(
@@ -1952,7 +2315,7 @@ class UserBaselineManager:
         await self.db.commit()
         if seeded:
             logger.info(
-                f"[用户底座] 已从一手原文预热 {seeded} 个窗口；等待下次成功总结再生成。"
+                f"[用户画像] 已从一手原文预热 {seeded} 个窗口；等待下次成功总结再生成。"
             )
         return seeded
 
@@ -1976,7 +2339,9 @@ class UserBaselineManager:
         for row in await cursor.fetchall():
             session_id = _flat_text(row["source_session_id"])
             if session_id:
-                persona_by_session[session_id] = _flat_text(row["persona_id"])
+                persona_id = _flat_text(row["persona_id"])
+                if persona_id:
+                    persona_by_session[session_id] = persona_id
         if not persona_by_session:
             return 0
         trigger_rounds = max(
@@ -2004,23 +2369,30 @@ class UserBaselineManager:
                     "SELECT * FROM messages WHERE session_id = ? ORDER BY id ASC LIMIT ?",
                     (session_id, summarized_count),
                 )
-                messages = []
+                segments: list[list[dict[str, Any]]] = []
+                current_segment: list[dict[str, Any]] = []
                 for row in await cursor.fetchall():
                     message_id = int(row["id"])
                     if (session_id, message_id) in seen_message_ids:
+                        if current_segment:
+                            segments.append(current_segment)
+                            current_segment = []
                         continue
-                    messages.append(dict(row))
-                for offset in range(0, len(messages), window_size):
-                    chunk = messages[offset : offset + window_size]
-                    if len(chunk) < 2:
-                        continue
-                    seeded += await self.register_summary_window(
-                        session_id=session_id,
-                        history_messages=chunk,
-                        persona_id=persona_by_session[session_id],
-                        source_type="bootstrap_conversation",
-                        schedule_generation=False,
-                    )
+                    current_segment.append(dict(row))
+                if current_segment:
+                    segments.append(current_segment)
+                for segment in segments:
+                    for offset in range(0, len(segment), window_size):
+                        chunk = segment[offset : offset + window_size]
+                        if len(chunk) < 2:
+                            continue
+                        seeded += await self.register_summary_window(
+                            session_id=session_id,
+                            history_messages=chunk,
+                            persona_id=persona_by_session[session_id],
+                            source_type="bootstrap_conversation",
+                            schedule_generation=False,
+                        )
         return seeded
 
 

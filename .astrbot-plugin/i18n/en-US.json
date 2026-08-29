@@ -76,11 +76,11 @@
       }
     },
     "user_baseline": {
-      "description": "User Baseline",
-      "hint": "Maintain a small set of long-lived anchors for each stable user and inject them into every turn. Automatic generation requires both 8 new summarized windows and a 6-hour cooldown; the block is fixed at 8 entries and 800 tokens.",
+      "description": "User Profile",
+      "hint": "Maintain a small set of long-lived anchors for each stable user and inject them into every turn. Automatic generation requires both 8 new summarized windows and a 6-hour cooldown; the block is fixed at 12 entries and 800 tokens.",
       "enabled": {
-        "description": "Enable User Baseline",
-        "hint": "Disabled by default. When enabled, first-hand conversation text is accumulated as evidence and used to maintain the baseline automatically. Startup never calls the LLM."
+        "description": "Enable User Profile",
+        "hint": "Disabled by default. When enabled, first-hand conversation text is accumulated as evidence and used to maintain the user profile automatically. Startup never calls the LLM."
       }
     },
     "recall_engine": {

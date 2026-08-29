@@ -220,7 +220,7 @@ class MemoryRecall:
             raise
         except Exception:
             logger.warning(
-                f"[{session_id}] 用户底座读取失败；正常记忆召回继续执行。",
+                f"[{session_id}] 用户画像读取失败；正常记忆召回继续执行。",
                 exc_info=True,
             )
             return None
@@ -254,7 +254,7 @@ class MemoryRecall:
                 TextPart(text=payload.text).mark_as_temp()
             )
         logger.info(
-            f"[{session_id}] [用户底座] 注入 {len(payload.entries)} 条；"
+            f"[{session_id}] [用户画像] 注入 {len(payload.entries)} 条；"
             f"预算 {payload.token_count}/{int(getattr(manager, 'token_budget', 800))} "
             f"token；方式={actual_method}。"
         )
@@ -356,7 +356,7 @@ class MemoryRecall:
                     )
                     await self.message_utils.enforce_message_limit(session_id)
 
-                # 用户底座与相关召回相互独立：它先注入，且不受 top_k=0 影响。
+                # 用户画像与相关召回相互独立：它先注入，且不受 top_k=0 影响。
                 persona_id = await get_persona_id(self.context, event)
                 baseline_payload = await self._inject_user_baseline(
                     event=event,

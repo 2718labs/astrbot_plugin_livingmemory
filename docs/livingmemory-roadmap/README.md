@@ -116,7 +116,7 @@ Sfuture（其余独立愿景不进入当前执行链）
   ├─ 可选 rerank / 动态路线选择
   ├─ 结构化时间与时间检索
   ├─ topic 候选生成
-  ├─ 长期底座（常驻事实）
+  ├─ 用户画像（常驻事实）
   └─ 当前有效状态视图
 
 已进入默认召回链
@@ -135,7 +135,7 @@ Sfuture（其余独立愿景不进入当前执行链）
 | S5 | 让无关消息不注入，相关消息按 fact 命中并在硬预算内装配 | I10、I11、I13、I14、I16、I17、I18、I22、U02 | fact search、route fusion/calibration、filter、budget packer、formatting | S3、S4 | Done | [S5](S5.md) |
 | S6 | 校准生命周期信号并补充必要观察体验 | I08、I13、U01、U02 | lifecycle、event tracking、WebUI | S5 | Done | [S6](S6.md) |
 | Stest | 对完成范围做完整链路、长周期和盲测体验验收，判定改造净收益 | I20 | eval harness、time-controlled replay、paired blind review | S5；以及所有获准实施的 S6 项 | Done：核心通过，可选路线保持关闭 | [Stest](Stest.md) |
-| Sfuture | 记录非破坏性聚合、矛盾消解、可选 rerank、动态路线选择、结构化时间/时间检索、topic 候选生成、长期底座及当前有效状态等独立愿景；长期底座作为下一项优先调查，其余立项前不进入任务计划 | I07、F01、F04、F05、F06 | 未定，须独立调查 | 不属于当前依赖链 | Vision | [Sfuture](Sfuture.md) |
+| Sfuture | 记录非破坏性聚合、矛盾消解、可选 rerank、动态路线选择、结构化时间/时间检索、topic 候选生成、用户画像及当前有效状态等独立愿景；用户画像已立项，其余立项前不进入任务计划 | I07、F01、F04、F05、F06 | 未定，须独立调查 | 不属于当前依赖链 | Vision | [Sfuture](Sfuture.md) |
 
 ## 问题总表
 

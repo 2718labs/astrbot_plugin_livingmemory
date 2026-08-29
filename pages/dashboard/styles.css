@@ -1038,21 +1038,11 @@ body {
   background: var(--text-tertiary);
 }
 
-/* ── User Baselines ─────────────────────────────────────── */
+/* ── User Profiles ──────────────────────────────────────── */
 .baseline-page-body {
   display: flex;
   flex-direction: column;
   min-height: 0;
-}
-
-.baseline-feature-state {
-  margin-bottom: var(--space-4);
-  padding: var(--space-3) var(--space-4);
-  border: 1px solid var(--warning);
-  border-radius: var(--radius-md);
-  background: var(--warning-light);
-  color: var(--text-primary);
-  font-size: 13px;
 }
 
 .baseline-card-grid {
@@ -1154,9 +1144,60 @@ body {
   margin-top: var(--space-4);
 }
 
+.baseline-generation-warning {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  margin-top: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid color-mix(in srgb, var(--warning) 35%, var(--border-light));
+  border-radius: var(--radius-md);
+  background: var(--warning-light);
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.baseline-generation-warning .btn {
+  flex: 0 0 auto;
+}
+
 .baseline-entry-list {
   display: grid;
   gap: var(--space-3);
+}
+
+.baseline-entry-sections {
+  display: grid;
+  gap: var(--space-4);
+}
+
+.baseline-entry-section {
+  display: grid;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-lg);
+  background: var(--bg-hover);
+}
+
+.baseline-entry-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.baseline-entry-section-count {
+  min-width: 22px;
+  padding: 1px 7px;
+  border-radius: var(--radius-full);
+  background: var(--bg-card);
+  color: var(--text-tertiary);
+  text-align: center;
+  font-size: 11px;
 }
 
 .baseline-entry-card {
@@ -1178,6 +1219,18 @@ body {
   font-size: 13px;
   line-height: 1.65;
   overflow-wrap: anywhere;
+}
+
+.baseline-entry-meta,
+.baseline-form-help {
+  color: var(--text-tertiary);
+  font-size: 11px;
+}
+
+.baseline-danger-zone {
+  margin-top: var(--space-6);
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--border-light);
 }
 
 .baseline-entry-actions .btn {

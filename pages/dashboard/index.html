@@ -30,7 +30,7 @@
           </button>
           <button class="nav-item" data-page="baselines" data-i18n-aria="nav.baselines">
             <i data-lucide="contact-round" aria-hidden="true"></i>
-            <span data-i18n="nav.baselines">User Baselines</span>
+            <span data-i18n="nav.baselines">User Profiles</span>
           </button>
           <button class="nav-item" data-page="recall" data-i18n-aria="nav.recall">
             <i data-lucide="scan-search" aria-hidden="true"></i>
@@ -205,10 +205,10 @@
           </div>
         </section>
 
-        <!-- Page: User Baselines -->
+        <!-- Page: User Profiles -->
         <section class="page" id="page-baselines">
           <header class="page-header">
-            <div class="page-heading"><span class="page-index">03</span><span class="page-title" data-i18n="nav.baselines">User Baselines</span></div>
+            <div class="page-heading"><span class="page-index">03</span><span class="page-title" data-i18n="nav.baselines">User Profiles</span></div>
           </header>
           <div class="page-body baseline-page-body">
             <div class="filter-bar">
@@ -223,8 +223,11 @@
                 <span data-i18n="common.refresh">Refresh</span>
               </button>
             </div>
-            <div id="baseline-feature-state" class="baseline-feature-state hidden"></div>
             <div id="baseline-cards" class="baseline-card-grid"></div>
+            <div id="baseline-generation-warning" class="baseline-generation-warning hidden" role="status">
+              <span id="baseline-generation-warning-text">A user profile batch failed twice and was skipped.</span>
+              <button type="button" class="btn btn-sm btn-ghost" id="baseline-warning-dismiss" data-i18n="baseline.dismissWarning">Don't show this again</button>
+            </div>
             <div class="pagination baseline-pagination">
               <div class="pagination-controls">
                 <button class="btn btn-sm btn-ghost" id="baseline-prev" disabled><i data-lucide="arrow-left" aria-hidden="true"></i><span data-i18n="pagination.prev">Previous</span></button>

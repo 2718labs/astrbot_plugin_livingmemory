@@ -75,7 +75,7 @@ class CommandHandler:
             )
         except Exception:
             logger.warning(
-                f"[{session_id}] 用户底座窗口登记失败；手动总结结果不受影响。",
+                f"[{session_id}] 用户画像窗口登记失败；手动总结结果不受影响。",
                 exc_info=True,
             )
 

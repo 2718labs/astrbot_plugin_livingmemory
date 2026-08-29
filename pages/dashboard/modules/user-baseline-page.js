@@ -7,6 +7,21 @@ const CATEGORIES = [
   "long_term_boundary",
   "global_constraint",
 ];
+const ENTRY_SECTIONS = [
+  {
+    key: "identity",
+    categories: new Set(["address_identity", "relationship"]),
+  },
+  {
+    key: "interaction",
+    categories: new Set(["interaction_preference"]),
+  },
+  {
+    key: "boundaries",
+    categories: new Set(["long_term_boundary", "global_constraint"]),
+  },
+];
+const WARNING_DISMISSED_AT_KEY = "livingmemory.baselineWarningDismissedAt";
 
 export class UserBaselinePage {
   constructor(state, apiClient, peekPanel) {
@@ -18,8 +33,9 @@ export class UserBaselinePage {
     this.page = 1;
     this.pageSize = 20;
     this.keyword = "";
-    this.enabled = false;
     this.batchWindows = 8;
+    this.generationWarning = null;
+    this.generationWarningAt = 0;
     this.detail = null;
     this.editing = false;
     this._fetchGeneration = 0;
@@ -32,6 +48,7 @@ export class UserBaselinePage {
     const refresh = document.getElementById("baseline-refresh");
     const prev = document.getElementById("baseline-prev");
     const next = document.getElementById("baseline-next");
+    const warningDismiss = document.getElementById("baseline-warning-dismiss");
 
     if (keyword) keyword.addEventListener("keydown", event => {
       if (event.key !== "Enter") return;
@@ -55,6 +72,15 @@ export class UserBaselinePage {
       this.page += 1;
       this.fetch();
     });
+    if (warningDismiss) warningDismiss.addEventListener("click", () => {
+      try {
+        window.localStorage?.setItem(
+          WARNING_DISMISSED_AT_KEY,
+          String(this.generationWarningAt),
+        );
+      } catch (_) { /* ignore */ }
+      this.renderGenerationWarning();
+    });
 
     this._refreshTimer = window.setInterval(() => {
       if (this.state.page === "baselines" && !this.state.isEditing) this.fetch({ quiet: true });
@@ -76,8 +102,11 @@ export class UserBaselinePage {
       if (generation !== this._fetchGeneration) return;
       this.items = Array.isArray(data.items) ? data.items : [];
       this.total = Number(data.total || 0);
-      this.enabled = Boolean(data.enabled);
       this.batchWindows = Number(data.batch_windows || 8);
+      this.generationWarning = data.generation_warning && typeof data.generation_warning === "object"
+        ? data.generation_warning
+        : null;
+      this.generationWarningAt = Number(this.generationWarning?.occurred_at || 0);
       this.render();
     } catch (error) {
       if (generation !== this._fetchGeneration || options.quiet) return;
@@ -86,11 +115,6 @@ export class UserBaselinePage {
   }
 
   render() {
-    const featureState = document.getElementById("baseline-feature-state");
-    if (featureState) {
-      featureState.classList.toggle("hidden", this.enabled);
-      featureState.textContent = this.enabled ? "" : window.t("baseline.disabledNote");
-    }
     const container = document.getElementById("baseline-cards");
     if (!container) return;
     if (!this.items.length) {
@@ -102,7 +126,40 @@ export class UserBaselinePage {
       });
     }
     this.updatePagination();
+    this.renderGenerationWarning();
     if (window.lmHydrateIcons) window.lmHydrateIcons();
+  }
+
+  shouldShowGenerationWarning() {
+    if (!this.generationWarningAt) return false;
+    try {
+      const dismissedAt = Number(
+        window.localStorage?.getItem(WARNING_DISMISSED_AT_KEY) || 0,
+      );
+      return dismissedAt < this.generationWarningAt;
+    } catch (_) {
+      return true;
+    }
+  }
+
+  renderGenerationWarning() {
+    const warning = document.getElementById("baseline-generation-warning");
+    if (!warning) return;
+    warning.classList.toggle("hidden", !this.shouldShowGenerationWarning());
+    const message = document.getElementById("baseline-generation-warning-text");
+    if (!message || !this.generationWarning) return;
+    message.textContent = this.generationWarningText();
+  }
+
+  generationWarningText() {
+    const reasons = Array.isArray(this.generationWarning.reasons)
+      ? this.generationWarning.reasons
+      : [];
+    return window.t(
+      "baseline.generationWarning",
+      reasons[0] || window.t("baseline.unknownFailureReason"),
+      reasons[1] || window.t("baseline.unknownFailureReason"),
+    );
   }
 
   renderCard(item) {
@@ -161,24 +218,7 @@ export class UserBaselinePage {
 
     let html = '<div class="memory-detail-actions">';
     html += '<button class="btn btn-primary btn-sm" data-baseline-action="add"><i data-lucide="plus" aria-hidden="true"></i><span>' + esc(window.t("baseline.add")) + "</span></button>";
-    html += '<button class="btn btn-danger btn-sm" data-baseline-action="delete-user"><i data-lucide="user-round-x" aria-hidden="true"></i><span>' + esc(window.t("baseline.deleteUser")) + "</span></button></div>";
-    html += '<div class="memory-detail-meta-grid">';
-    html += this.meta(window.t("baseline.identity"), this.detail.platform + ":" + this.detail.canonical_identity);
-    html += this.meta(window.t("baseline.revision"), this.detail.revision);
-    const usageValues = Object.values(this.detail.token_usage || {});
-    html += this.meta(window.t("baseline.tokenUsage"), (usageValues.length ? Math.max(...usageValues) : 0) + "/" + this.detail.token_budget);
-    html += this.meta(window.t("baseline.featureState"), this.detail.enabled ? window.t("common.enabled") : window.t("common.disabled"));
     html += "</div>";
-
-    if (Array.isArray(this.detail.states) && this.detail.states.length) {
-      html += '<div class="peek-section"><div class="peek-section-title">' + esc(window.t("baseline.generation")) + "</div>";
-      html += '<div class="baseline-entry-list">' + this.detail.states.map(state => {
-        const persona = state.persona_id || window.t("baseline.global");
-        return '<div class="baseline-entry-card"><div class="baseline-entry-head"><strong>' + esc(persona) + '</strong><span class="type-tag">' + esc(state.progress_count + "/" + Number(this.detail.batch_windows || this.batchWindows)) + "</span></div>" +
-          '<div class="baseline-card-foot"><span>' + esc(this.cooldownText(state.cooldown_remaining)) + "</span><span>" +
-          esc(state.last_success_at ? formatTimestamp(state.last_success_at) : window.t("baseline.neverGenerated")) + "</span></div></div>";
-      }).join("") + "</div></div>";
-    }
 
     const groups = this.groupEntries(this.detail.entries || []);
     if (!groups.length) {
@@ -186,9 +226,16 @@ export class UserBaselinePage {
     } else {
       for (const group of groups) {
         html += '<div class="baseline-group-title">' + esc(group.label) + "</div>";
-        html += '<div class="baseline-entry-list">' + group.entries.map(entry => this.renderEntry(entry)).join("") + "</div>";
+        html += '<div class="baseline-entry-sections">';
+        for (const section of this.groupEntrySections(group.entries)) {
+          html += '<section class="baseline-entry-section">';
+          html += '<div class="baseline-entry-section-head"><span>' + esc(section.label) + '</span><span class="baseline-entry-section-count">' + section.entries.length + "</span></div>";
+          html += '<div class="baseline-entry-list">' + section.entries.map(entry => this.renderEntry(entry)).join("") + "</div></section>";
+        }
+        html += "</div>";
       }
     }
+    html += '<div class="baseline-danger-zone"><button class="btn btn-danger btn-sm" data-baseline-action="delete-user"><i data-lucide="user-round-x" aria-hidden="true"></i><span>' + esc(window.t("baseline.deleteUser")) + "</span></button></div>";
     const body = document.getElementById("peek-body");
     body.innerHTML = html;
     body.onclick = event => this.handleDetailAction(event);
@@ -196,39 +243,38 @@ export class UserBaselinePage {
     if (window.lmHydrateIcons) window.lmHydrateIcons();
   }
 
-  meta(label, value) {
-    return '<div class="memory-detail-meta-item"><div class="memory-detail-meta-label">' + esc(label) + '</div><div class="memory-detail-meta-value">' + esc(value) + "</div></div>";
-  }
-
   groupEntries(entries) {
     const groups = new Map();
     for (const entry of entries) {
       const persona = entry.persona_id || "";
-      const key = persona + "\u0000" + entry.category;
-      if (!groups.has(key)) {
-        const scope = persona || window.t("baseline.global");
-        groups.set(key, { label: scope + " · " + window.t("baseline.category." + entry.category), entries: [] });
+      if (!groups.has(persona)) {
+        groups.set(persona, { label: persona || window.t("baseline.global"), entries: [] });
       }
-      groups.get(key).entries.push(entry);
+      groups.get(persona).entries.push(entry);
     }
     return Array.from(groups.values());
   }
 
+  groupEntrySections(entries) {
+    return ENTRY_SECTIONS.map(section => ({
+      label: window.t("baseline.section." + section.key),
+      entries: entries.filter(entry => section.categories.has(entry.category)),
+    })).filter(section => section.entries.length);
+  }
+
   renderEntry(entry) {
     const state = entry.enabled ? window.t("common.enabled") : window.t("common.disabled");
-    const lock = entry.locked ? window.t("baseline.locked") : window.t("baseline.unlocked");
     const source = entry.source_type === "manual" ? window.t("baseline.manual") : window.t("baseline.automatic");
+    const autoUpdate = entry.allow_auto_update ? window.t("baseline.autoUpdateAllowed") : window.t("baseline.autoUpdateBlocked");
     let html = '<article class="baseline-entry-card ' + (entry.enabled ? "" : "is-disabled") + '">';
-    html += '<div class="baseline-entry-head"><span class="type-tag">' + esc(window.t("baseline.category." + entry.category)) + '</span><span class="status-pill active">' + esc(state) + '</span><span class="type-tag">' + esc(lock) + '</span><span class="type-tag">' + esc(source) + "</span></div>";
+    html += '<div class="baseline-entry-head"><span class="type-tag">' + esc(window.t("baseline.category." + entry.category)) + '</span><span class="status-pill ' + (entry.enabled ? "active" : "") + '">' + esc(state) + "</span></div>";
     html += '<div class="baseline-entry-content">' + esc(entry.content) + "</div>";
+    html += '<div class="baseline-entry-meta">' + esc(source + " · " + autoUpdate) + "</div>";
     if (Array.isArray(entry.evidence) && entry.evidence.length) {
       html += '<details class="memory-fact-technical"><summary>' + esc(window.t("baseline.evidence", entry.evidence.length)) + '</summary><div class="memory-fact-lifecycle">' + entry.evidence.map(ev => this.renderEvidence(ev)).join("") + "</div></details>";
     }
     html += '<div class="baseline-entry-actions">';
     html += this.actionButton("edit", entry.entry_id, "pencil", "baseline.edit");
-    html += this.actionButton("toggle-enabled", entry.entry_id, entry.enabled ? "eye-off" : "eye", entry.enabled ? "baseline.disable" : "baseline.enable");
-    html += this.actionButton("toggle-lock", entry.entry_id, entry.locked ? "lock-open" : "lock", entry.locked ? "baseline.unlock" : "baseline.lock");
-    if (entry.persona_id) html += this.actionButton("promote", entry.entry_id, "globe-2", "baseline.promote");
     html += this.actionButton("delete-entry", entry.entry_id, "trash-2", "baseline.delete", true);
     html += "</div></article>";
     return html;
@@ -238,8 +284,12 @@ export class UserBaselinePage {
     if (!ev || typeof ev !== "object") {
       return '<div class="memory-fact-lifecycle-item"><span class="evidence-id">' + esc(String(ev)) + "</span></div>";
     }
-    const quote = ev.text ? ' &mdash; "' + esc(ev.text) + '"' : "";
-    return '<div class="memory-fact-lifecycle-item"><span class="evidence-id">' + esc(ev.id) + "</span>" + quote + "</div>";
+    const role = String(ev.role || "unknown");
+    const speaker = ev.speaker_name || (role === "assistant" ? "Bot" : window.t("baseline.unknownUser"));
+    const time = ev.timestamp ? formatTimestamp(ev.timestamp) : "";
+    const title = time ? ' title="' + esc(time) + '"' : "";
+    const quote = ev.text ? "：“" + esc(ev.text) + "”" : "";
+    return '<div class="memory-fact-lifecycle-item"' + title + '><span class="evidence-id">' + esc(ev.id) + "</span> — " + esc(speaker) + quote + "</div>";
   }
 
   actionButton(action, entryId, icon, key, danger = false) {
@@ -257,11 +307,6 @@ export class UserBaselinePage {
     const entry = this.findEntry(button.dataset.entryId);
     if (action === "add") return this.renderForm(null);
     if (action === "edit" && entry) return this.renderForm(entry);
-    if (action === "toggle-enabled" && entry) return this.controlEntry(entry, { enabled: !entry.enabled });
-    if (action === "toggle-lock" && entry) return this.controlEntry(entry, { locked: !entry.locked });
-    if (action === "promote" && entry) return this.controlEntry(entry, {
-      persona_id: "", category: entry.category, content: entry.content, enabled: entry.enabled,
-    });
     if (action === "delete-entry" && entry) return this.deleteEntry(entry);
     if (action === "delete-user") return this.deleteUser();
   }
@@ -277,10 +322,22 @@ export class UserBaselinePage {
     html += this.selectField("baseline-entry-persona", "baseline.scopeLabel", [["", window.t("baseline.global")], ...Array.from(personas).map(persona => [persona, persona])], entry?.persona_id || "");
     html += '<div class="baseline-form-field"><label for="baseline-entry-content">' + esc(window.t("baseline.contentLabel")) + '</label><textarea id="baseline-entry-content" class="memory-detail-edit-area compact" maxlength="180">' + esc(entry?.content || "") + "</textarea></div>";
     html += '<label class="baseline-form-check"><input id="baseline-entry-enabled" type="checkbox" ' + (entry?.enabled === false ? "" : "checked") + ' />' + esc(window.t("baseline.enabledLabel")) + "</label>";
+    html += '<label class="baseline-form-check"><input id="baseline-entry-auto-update" type="checkbox" ' + (entry?.allow_auto_update ? "checked" : "") + ' />' + esc(window.t("baseline.allowAutoUpdate")) + "</label>";
+    html += '<div class="baseline-form-help" id="baseline-global-note">' + esc(window.t("baseline.globalManualOnly")) + "</div>";
     html += '<div class="confirm-dialog-actions"><button type="button" class="btn btn-secondary" id="baseline-form-cancel">' + esc(window.t("common.cancel")) + '</button><button type="submit" class="btn btn-primary">' + esc(window.t("common.save")) + "</button></div></form>";
     const body = document.getElementById("peek-body");
     body.innerHTML = html;
     body.onclick = null;
+    const persona = document.getElementById("baseline-entry-persona");
+    const autoUpdate = document.getElementById("baseline-entry-auto-update");
+    const disableAutoUpdate = () => { autoUpdate.checked = false; };
+    document.getElementById("baseline-entry-category").addEventListener("change", disableAutoUpdate);
+    document.getElementById("baseline-entry-content").addEventListener("input", disableAutoUpdate);
+    persona.addEventListener("change", () => {
+      disableAutoUpdate();
+      this.updateAutoUpdateState();
+    });
+    this.updateAutoUpdateState();
     document.getElementById("baseline-form-cancel").addEventListener("click", () => this.renderDetail());
     document.getElementById("baseline-entry-form").addEventListener("submit", event => {
       event.preventDefault();
@@ -292,6 +349,17 @@ export class UserBaselinePage {
     return '<div class="baseline-form-field"><label for="' + id + '">' + esc(window.t(labelKey)) + '</label><select class="input select" id="' + id + '">' + options.map(([value, label]) => '<option value="' + esc(value) + '" ' + (value === selected ? "selected" : "") + '>' + esc(label) + "</option>").join("") + "</select></div>";
   }
 
+  updateAutoUpdateState() {
+    const persona = document.getElementById("baseline-entry-persona");
+    const autoUpdate = document.getElementById("baseline-entry-auto-update");
+    const note = document.getElementById("baseline-global-note");
+    if (!persona || !autoUpdate || !note) return;
+    const isGlobal = !persona.value;
+    if (isGlobal) autoUpdate.checked = false;
+    autoUpdate.disabled = isGlobal;
+    note.classList.toggle("hidden", !isGlobal);
+  }
+
   async saveForm(entry) {
     const content = document.getElementById("baseline-entry-content").value.trim();
     if (!content) return this.toast(window.t("baseline.contentRequired"), true);
@@ -301,18 +369,10 @@ export class UserBaselinePage {
       persona_id: document.getElementById("baseline-entry-persona").value,
       content,
       enabled: document.getElementById("baseline-entry-enabled").checked,
+      allow_auto_update: document.getElementById("baseline-entry-auto-update").checked,
     };
     if (entry) Object.assign(payload, { entry_id: entry.entry_id, revision: entry.revision });
     await this.postEntry(payload);
-  }
-
-  async controlEntry(entry, changes) {
-    await this.postEntry({
-      user_id: this.detail.user_id,
-      entry_id: entry.entry_id,
-      revision: entry.revision,
-      ...changes,
-    });
   }
 
   async postEntry(payload) {
