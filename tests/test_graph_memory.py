@@ -825,6 +825,61 @@ async def test_graph_keyword_retriever_supports_configurable_second_hop(
 
 
 @pytest.mark.asyncio
+async def test_same_topic_graph_recall_stays_inside_session_scope(tmp_path: Path):
+    graph_store = GraphStore(str(tmp_path / "same_topic_scope.db"))
+    await graph_store.initialize()
+    topic_key = "topic:沟通偏好"
+    node_key_to_id = await graph_store.upsert_nodes(
+        [GraphNode("topic", "沟通偏好", "沟通偏好")]
+    )
+    await graph_store.add_entries(
+        [
+            GraphEntry(
+                entry_key="user-a-preference",
+                source_memory_id=21,
+                session_id="test:private:user-a",
+                persona_id="persona_1",
+                entry_type="fact",
+                content="用户甲偏好直接给结论",
+                metadata={"fact_id": "fact_user_a"},
+                node_keys=[topic_key],
+                relation_type="fact",
+            ),
+            GraphEntry(
+                entry_key="user-b-preference",
+                source_memory_id=22,
+                session_id="test:private:user-b",
+                persona_id="persona_1",
+                entry_type="fact",
+                content="用户乙偏好先说明背景",
+                metadata={"fact_id": "fact_user_b"},
+                node_keys=[topic_key],
+                relation_type="fact",
+            ),
+        ],
+        node_key_to_id,
+        {},
+    )
+
+    retriever = GraphKeywordRetriever(graph_store, TextProcessor())
+    user_a_hits = await retriever.search(
+        "沟通偏好",
+        limit=5,
+        session_id="test:private:user-a",
+        persona_id="persona_1",
+    )
+    user_b_hits = await retriever.search(
+        "沟通偏好",
+        limit=5,
+        session_id="test:private:user-b",
+        persona_id="persona_1",
+    )
+
+    assert {item.doc_id for item in user_a_hits} == {21}
+    assert {item.doc_id for item in user_b_hits} == {22}
+
+
+@pytest.mark.asyncio
 async def test_memory_engine_dual_route_promotes_graph_hits(tmp_path: Path):
     doc_db_path = tmp_path / "memory.db"
     document_vectors = FaissVecDB(

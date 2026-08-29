@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 from astrbot_plugin_livingmemory.core.models.conversation_models import Message
+from astrbot_plugin_livingmemory.core.processors.graph_extractor import GraphExtractor
 from astrbot_plugin_livingmemory.core.processors.memory_processor import MemoryProcessor
 from astrbot_plugin_livingmemory.core.prompts.prompt_manager import (
     get_prompt_manager,
@@ -1589,6 +1590,41 @@ async def test_bot_reply_can_bind_window_user_without_repeating_nickname():
     participant_ref = result.metadata["key_facts"][0]["participant_refs"][0]
     assert participant_ref["participant_id"] == "test:u1"
     assert participant_ref["source"] == "message_sender"
+
+
+@pytest.mark.asyncio
+async def test_private_generic_user_subject_uses_window_user_identity():
+    payload = _memory_json(
+        "2026-08-29上午，用户多次咨询化工问题。",
+        summary="2026-08-29上午，用户随后提到工作安排。",
+        topics=["用户的经济行为", "用户画像"],
+    )
+    processor = MemoryProcessor(
+        llm_provider=_DummyLLMProvider(payload),
+        context=None,
+    )
+
+    result = await processor.process_conversation_result(messages=_make_messages())
+
+    assert result.status == "store"
+    assert result.metadata["canonical_summary"] == (
+        "2026-08-29上午，张三随后提到工作安排。"
+    )
+    fact = result.metadata["key_facts"][0]
+    assert fact["fact"] == "2026-08-29上午，张三多次咨询化工问题。"
+    assert fact["participants"] == ["张三"]
+    assert fact["participant_refs"][0]["participant_id"] == "test:u1"
+    assert fact["topics"] == ["用户的经济行为", "用户画像"]
+    graph = GraphExtractor().extract(1, result.content, result.metadata)
+    assert any(
+        node.node_key == "person:account:test:u1" and node.value == "张三"
+        for node in graph.nodes
+    )
+    assert any(
+        edge.source_key == "person:account:test:u1"
+        and edge.relation_type == "mentioned_in"
+        for edge in graph.edges
+    )
 
 
 @pytest.mark.asyncio

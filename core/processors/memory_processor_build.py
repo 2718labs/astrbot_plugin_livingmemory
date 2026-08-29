@@ -52,6 +52,33 @@ def _build_identity_alias_lookup(
     return lookup
 
 
+_PRIVATE_USER_SUBJECT_RE = re.compile(
+    r"(^|[，；。！？]\s*)用户"
+    r"(?!画像|界面|页面|体验|需求|数据|信息|账号|账户|身份|昵称|名称|"
+    r"权限|配置|设置|反馈|群体|系统|协议|端|侧|ID)"
+)
+
+
+def _normalize_private_user_subject(
+    text: str,
+    identities: list[dict[str, Any]],
+    *,
+    is_group_chat: bool,
+) -> str:
+    """Resolve a generic private-chat user reference to this window's sole user."""
+    if is_group_chat or "用户" not in text:
+        return text
+    users = [identity for identity in identities if not identity.get("is_bot")]
+    if len(users) != 1:
+        return text
+    display_name = str(users[0].get("display_name") or "").strip()
+    if not display_name:
+        return text
+    return _PRIVATE_USER_SUBJECT_RE.sub(
+        lambda match: f"{match.group(1)}{display_name}", text
+    )
+
+
 class MemoryProcessorBuildMixin:
     """MemoryProcessor 拆分模块：MemoryProcessorBuildMixin"""
 
@@ -244,16 +271,21 @@ class MemoryProcessorBuildMixin:
         for original_unit_index, unit in admitted_units:
             prepared_facts: list[dict[str, Any]] = []
             for candidate in unit["key_facts"]:
+                fact_text = _normalize_private_user_subject(
+                    str(candidate["fact"]),
+                    identities,
+                    is_group_chat=is_group_chat,
+                )
                 topic_refs = [
                     ref
                     for name in candidate["topics"]
                     for ref in [_resolve_topic(name)]
                     if ref["name"]
                 ]
-                participant_refs = _participant_refs_for_fact(candidate["fact"])
+                participant_refs = _participant_refs_for_fact(fact_text)
                 prepared_facts.append(
                     {
-                        "fact": candidate["fact"],
+                        "fact": fact_text,
                         "topics": unique_strings(ref["name"] for ref in topic_refs),
                         "topic_refs": topic_refs,
                         "participants": unique_strings(
@@ -295,7 +327,11 @@ class MemoryProcessorBuildMixin:
                 fact["fact_id"] = stable_fact_id(parent_id, fact_key)
 
             texts = [fact["fact"] for fact in prepared_facts]
-            summary = str(unit["summary"]).strip()
+            summary = _normalize_private_user_subject(
+                str(unit["summary"]).strip(),
+                identities,
+                is_group_chat=is_group_chat,
+            )
             content = "；".join(texts)
             document_topic_refs: list[dict[str, str]] = []
             document_participant_refs: list[dict[str, Any]] = []
