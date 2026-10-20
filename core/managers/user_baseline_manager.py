@@ -25,6 +25,12 @@ BASELINE_COOLDOWN_SECONDS = 6 * 60 * 60
 BASELINE_MAX_ENTRIES = 12
 BASELINE_TOKEN_BUDGET = 800
 BASELINE_MAX_WINDOWS_PER_SCOPE = 40
+PORTRAIT_TOKEN_BUDGET = 360
+PORTRAIT_MAX_CHARS = 420
+PORTRAIT_HISTORY_LIMIT = 20
+BASELINE_SUPPRESSION_LIMIT = 10
+BASELINE_SUPPRESSION_KEEP = 50
+BASELINE_SUPPRESSION_NOTE_MAX = 120
 GLOBAL_PERSONA = ""
 
 BASELINE_CATEGORIES = {
@@ -180,11 +186,17 @@ class UserBaselineManager:
         self._write_lock = asyncio.Lock()
         self._scope_locks: dict[tuple[int, str], asyncio.Lock] = {}
         self._generation_tasks: set[asyncio.Task] = set()
+        self._portrait_tasks: set[asyncio.Task] = set()
+        self._portrait_locks: dict[tuple[int, str], asyncio.Lock] = {}
         self._closing = False
 
     @property
     def enabled(self) -> bool:
         return bool(self.config_manager.get("user_baseline.enabled", False))
+
+    @property
+    def portrait_enabled(self) -> bool:
+        return bool(self.config_manager.get("user_baseline.portrait", True))
 
     async def initialize(self) -> None:
         Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
@@ -270,6 +282,7 @@ class UserBaselineManager:
                 category TEXT NOT NULL,
                 content TEXT NOT NULL DEFAULT '',
                 content_hash TEXT NOT NULL,
+                note TEXT NOT NULL DEFAULT '',
                 deleted_at REAL NOT NULL,
                 evidence_cutoff REAL NOT NULL,
                 UNIQUE(user_id, persona_id, category, content_hash),
@@ -294,6 +307,37 @@ class UserBaselineManager:
                 FOREIGN KEY(user_id) REFERENCES user_baseline_users(user_id)
                     ON DELETE CASCADE
             );
+
+            CREATE TABLE IF NOT EXISTS user_baseline_portraits (
+                user_id INTEGER NOT NULL,
+                persona_id TEXT NOT NULL DEFAULT '',
+                text TEXT NOT NULL DEFAULT '',
+                entries_hash TEXT NOT NULL DEFAULT '',
+                locked INTEGER NOT NULL DEFAULT 0,
+                source TEXT NOT NULL DEFAULT 'auto',
+                revision INTEGER NOT NULL DEFAULT 0,
+                token_count INTEGER NOT NULL DEFAULT 0,
+                updated_at REAL NOT NULL,
+                PRIMARY KEY(user_id, persona_id),
+                FOREIGN KEY(user_id) REFERENCES user_baseline_users(user_id)
+                    ON DELETE CASCADE
+            );
+
+            CREATE TABLE IF NOT EXISTS user_baseline_portrait_revisions (
+                portrait_revision_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                persona_id TEXT NOT NULL DEFAULT '',
+                revision INTEGER NOT NULL,
+                text TEXT NOT NULL,
+                entries_hash TEXT NOT NULL DEFAULT '',
+                source TEXT NOT NULL DEFAULT 'auto',
+                created_at REAL NOT NULL,
+                FOREIGN KEY(user_id) REFERENCES user_baseline_users(user_id)
+                    ON DELETE CASCADE
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_user_baseline_portrait_revisions
+            ON user_baseline_portrait_revisions(user_id, persona_id, revision);
             """
         )
         cursor = await self.db.execute("PRAGMA table_info(user_baseline_evidence)")
@@ -314,6 +358,11 @@ class UserBaselineManager:
                 "ALTER TABLE user_baseline_suppressions "
                 "ADD COLUMN content TEXT NOT NULL DEFAULT ''"
             )
+        if "note" not in suppression_columns:
+            await self.db.execute(
+                "ALTER TABLE user_baseline_suppressions "
+                "ADD COLUMN note TEXT NOT NULL DEFAULT ''"
+            )
         await self.db.commit()
         await self._repair_evidence_mirrors()
         if self.enabled:
@@ -321,11 +370,14 @@ class UserBaselineManager:
 
     async def close(self) -> None:
         self._closing = True
-        for task in list(self._generation_tasks):
+        for task in list(self._generation_tasks) + list(self._portrait_tasks):
             task.cancel()
-        if self._generation_tasks:
-            await asyncio.gather(*self._generation_tasks, return_exceptions=True)
+        if self._generation_tasks or self._portrait_tasks:
+            await asyncio.gather(
+                *self._generation_tasks, *self._portrait_tasks, return_exceptions=True
+            )
         self._generation_tasks.clear()
+        self._portrait_tasks.clear()
         if self.db is not None:
             await self.db.close()
             self.db = None
@@ -986,12 +1038,13 @@ class UserBaselineManager:
         if self.db is not None:
             cursor = await self.db.execute(
                 """
-                SELECT suppression_id, persona_id, content, deleted_at
+                SELECT suppression_id, persona_id, content, note, deleted_at
                 FROM user_baseline_suppressions
                 WHERE user_id = ? AND persona_id IN (?, '') AND content != ''
-                ORDER BY deleted_at DESC
+                ORDER BY deleted_at DESC, suppression_id DESC
+                LIMIT ?
                 """,
-                (user_id, persona_id),
+                (user_id, persona_id, BASELINE_SUPPRESSION_LIMIT),
             )
             suppression_rows = await cursor.fetchall()
         suppression_refs = {
@@ -1008,9 +1061,10 @@ class UserBaselineManager:
                 "suppression_ref": ref,
                 "scope": value["persona_id"] or "global",
                 "content": value["content"],
+                "note": _flat_text(suppression_rows[index - 1]["note"]),
                 "deleted_at": value["deleted_at"],
             }
-            for ref, value in suppression_refs.items()
+            for index, (ref, value) in enumerate(suppression_refs.items(), start=1)
         ]
         evidence_blocks: list[str] = []
         for window in windows:
@@ -1046,6 +1100,8 @@ class UserBaselineManager:
             "不得 add 与任何现有条目语义重复或冲突的近义版本。"
             "若确有删除后的新证据恢复某条已删除结论，add/update 必须带对应 suppression_ref；"
             "suppression_ref 只能原样使用删除记录中的 D 编号。"
+            "删除记录中的 note 是用户删除时写的原因，只用来避免重复生成同类结论，"
+            "不得写进任何条目内容。"
             "内容必须是中性、自包含、长期有效的一句话，不得包含证据编号。\n\n"
             f"当前 persona：{persona_id or '未命名'}\n"
             f"现有画像：{json.dumps(existing_payload, ensure_ascii=False)}\n\n"
@@ -1705,7 +1761,23 @@ class UserBaselineManager:
         entries = await self._load_entries(
             int(row["user_id"]), _flat_text(persona_id), include_disabled=False
         )
-        return self._pack_entries(entries)
+        user_id = int(row["user_id"])
+        persona = _flat_text(persona_id)
+        packed = self._pack_entries(entries)
+        portrait = await self._usable_portrait(user_id, persona, entries)
+        if portrait is not None:
+            text = self._render_portrait_block(portrait["text"])
+            tokens = token_upper_bound(text) if text else 0
+            if text and tokens <= BASELINE_TOKEN_BUDGET:
+                return BaselineInjection(
+                    text=text,
+                    entries=packed.entries,
+                    token_count=tokens,
+                    content_keys=packed.content_keys,
+                )
+        elif entries:
+            self._schedule_portrait_rewrite(user_id, persona)
+        return packed
 
     async def _load_entries(
         self, user_id: int, persona_id: str, *, include_disabled: bool
@@ -1837,6 +1909,422 @@ class UserBaselineManager:
             content_keys=frozenset(_content_key(item["content"]) for item in selected),
         )
 
+    # ---- 小作文：由当前生效条目派生的一段散文，供注入使用 ----
+
+    @staticmethod
+    def _portrait_fingerprint(entries: list[dict[str, Any]]) -> str:
+        payload = [
+            [
+                str(item.get("entry_id") or ""),
+                str(item.get("category") or ""),
+                str(item.get("content") or ""),
+                bool(item.get("locked")),
+            ]
+            for item in entries
+        ]
+        payload.sort()
+        digest = hashlib.sha256(
+            json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        )
+        return digest.hexdigest()[:32]
+
+    async def _load_portrait(
+        self, user_id: int, persona_id: str
+    ) -> dict[str, Any] | None:
+        if self.db is None:
+            return None
+        cursor = await self.db.execute(
+            """
+            SELECT * FROM user_baseline_portraits
+            WHERE user_id = ? AND persona_id = ?
+            """,
+            (user_id, persona_id),
+        )
+        row = await cursor.fetchone()
+        if row is None:
+            return None
+        return {
+            "user_id": int(row["user_id"]),
+            "persona_id": str(row["persona_id"] or ""),
+            "text": str(row["text"] or ""),
+            "entries_hash": str(row["entries_hash"] or ""),
+            "locked": bool(row["locked"]),
+            "source": str(row["source"] or "auto"),
+            "revision": int(row["revision"]),
+            "token_count": int(row["token_count"]),
+            "updated_at": float(row["updated_at"]),
+        }
+
+    @staticmethod
+    def _render_portrait_block(text: str) -> str:
+        body = text.strip()
+        if not body:
+            return ""
+        return "\n".join(
+            [
+                "[用户画像｜长期有效]",
+                "以下信息长期有效；若与用户本轮原话冲突，以本轮原话为准。",
+                body,
+                "[/用户画像]",
+            ]
+        )
+
+    @staticmethod
+    def _clean_portrait_text(value: Any) -> str:
+        text = _flat_text(value)
+        if text.startswith("```"):
+            text = text.strip("`").strip()
+            if text[:4].casefold() == "text":
+                text = text[4:]
+        text = re.sub(r"^(?:小作文|用户画像)\s*[:：]\s*", "", text.strip())
+        text = re.sub(r"\n{3,}", "\n\n", text)
+        return text.strip()
+
+    @staticmethod
+    def _validate_portrait_text(text: str) -> str:
+        if not text:
+            raise BaselineDeterministicFailure("小作文为空")
+        if len(text) > PORTRAIT_MAX_CHARS:
+            raise BaselineDeterministicFailure(
+                f"小作文超过 {PORTRAIT_MAX_CHARS} 字上限"
+            )
+        if re.search(r"(?m)^\s*(?:[-*•]|\d+[.、)）])\s*", text):
+            raise BaselineDeterministicFailure("小作文必须是散文而不是列表")
+        if "[" in text or "]" in text:
+            raise BaselineDeterministicFailure("小作文不能包含标记符号")
+        if token_upper_bound(text) > PORTRAIT_TOKEN_BUDGET:
+            raise BaselineDeterministicFailure(
+                f"小作文超过 {PORTRAIT_TOKEN_BUDGET} token 预算"
+            )
+        return text
+
+    async def _call_portrait_llm(
+        self, *, entries: list[dict[str, Any]], previous_text: str
+    ) -> str:
+        provider = self._resolve_provider()
+        if provider is None:
+            raise RuntimeError("LLM Provider 不可用")
+        payload = [
+            {
+                "category": _CATEGORY_LABELS.get(item["category"], item["category"]),
+                "content": item["content"],
+                "locked": bool(item["locked"]),
+            }
+            for item in entries
+        ]
+        prompt = (
+            "下面是一份用户画像的条目清单，请把它写成一段常驻使用的散文。\n"
+            "要求：\n"
+            f"1. 中文，{PORTRAIT_MAX_CHARS} 字以内，一到两段，只输出正文。\n"
+            "2. 不要列表、编号、标题、Markdown、括号注释，也不要用方括号。\n"
+            "3. 顺序：称呼与身份 → 与 Bot 的关系 → 互动偏好 → 长期边界与硬约束。\n"
+            "4. 只覆盖给定条目，不新增事实；不推测性格、情绪、好感度、兴趣或当前任务。\n"
+            "5. 合并同义条目，读起来像一段人话，不要逐条翻译清单。\n"
+            "6. locked=true 的条目是用户亲手写定的措辞，必须完整吸收进正文，"
+            "意思不得弱化、反转或省略；它们不会另外重复列出。\n"
+            "7. 若给了上一版，保持前后一致，只体现条目的实际变化。\n\n"
+            f"条目：{json.dumps(payload, ensure_ascii=False)}\n\n"
+            "上一版："
+            + (previous_text.strip() or "（无）")
+        )
+        response = await provider.text_chat(
+            prompt=prompt,
+            system_prompt=(
+                "你只根据给定的画像条目写一段中性的常驻介绍，"
+                "不新增事实，不推断人格，不改写用户锁定的原话。"
+            ),
+        )
+        text = getattr(response, "completion_text", "")
+        if not isinstance(text, str) or not text.strip():
+            raise BaselineDeterministicFailure("LLM 返回空响应")
+        return self._validate_portrait_text(self._clean_portrait_text(text))
+
+    async def _trim_portrait_history_locked(
+        self, user_id: int, persona_id: str
+    ) -> None:
+        if self.db is None:
+            return
+        await self.db.execute(
+            """
+            DELETE FROM user_baseline_portrait_revisions
+            WHERE user_id = ? AND persona_id = ? AND portrait_revision_id NOT IN (
+                SELECT portrait_revision_id FROM user_baseline_portrait_revisions
+                WHERE user_id = ? AND persona_id = ?
+                ORDER BY revision DESC, portrait_revision_id DESC
+                LIMIT ?
+            )
+            """,
+            (
+                user_id,
+                persona_id,
+                user_id,
+                persona_id,
+                PORTRAIT_HISTORY_LIMIT,
+            ),
+        )
+
+    async def _store_portrait_locked(
+        self,
+        *,
+        user_id: int,
+        persona_id: str,
+        text: str,
+        entries_hash: str,
+        locked: bool,
+        source: str,
+    ) -> dict[str, Any]:
+        if self.db is None:
+            raise RuntimeError("用户画像尚未初始化")
+        current = await self._load_portrait(user_id, persona_id)
+        revision = (current["revision"] + 1) if current else 1
+        now = time.time()
+        await self.db.execute(
+            """
+            INSERT INTO user_baseline_portraits(
+                user_id, persona_id, text, entries_hash, locked, source,
+                revision, token_count, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(user_id, persona_id) DO UPDATE SET
+                text = excluded.text,
+                entries_hash = excluded.entries_hash,
+                locked = excluded.locked,
+                source = excluded.source,
+                revision = excluded.revision,
+                token_count = excluded.token_count,
+                updated_at = excluded.updated_at
+            """,
+            (
+                user_id,
+                persona_id,
+                text,
+                entries_hash,
+                int(bool(locked)),
+                source,
+                revision,
+                token_upper_bound(text),
+                now,
+            ),
+        )
+        await self.db.execute(
+            """
+            INSERT INTO user_baseline_portrait_revisions(
+                user_id, persona_id, revision, text, entries_hash, source, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (user_id, persona_id, revision, text, entries_hash, source, now),
+        )
+        await self._trim_portrait_history_locked(user_id, persona_id)
+        return {
+            "user_id": user_id,
+            "persona_id": persona_id,
+            "text": text,
+            "entries_hash": entries_hash,
+            "locked": bool(locked),
+            "source": source,
+            "revision": revision,
+            "token_count": token_upper_bound(text),
+            "updated_at": now,
+        }
+
+    async def rewrite_portrait(
+        self,
+        *,
+        user_id: int,
+        persona_id: str,
+        force: bool = False,
+        source: str = "auto",
+    ) -> dict[str, Any] | None:
+        """Rewrite the portrait for one persona from its current entries."""
+        if self.db is None or not self.portrait_enabled:
+            return None
+        lock = self._portrait_locks.setdefault((user_id, persona_id), asyncio.Lock())
+        if lock.locked():
+            return None
+        async with lock:
+            entries = await self._load_entries(
+                user_id, persona_id, include_disabled=False
+            )
+            if not entries:
+                return None
+            current = await self._load_portrait(user_id, persona_id)
+            if current and current["locked"] and not force:
+                return current
+            fingerprint = self._portrait_fingerprint(entries)
+            if current and current["entries_hash"] == fingerprint and not force:
+                return current
+            text = await self._call_portrait_llm(
+                entries=entries,
+                previous_text=current["text"] if current else "",
+            )
+            async with self._write_lock:
+                portrait = await self._store_portrait_locked(
+                    user_id=user_id,
+                    persona_id=persona_id,
+                    text=text,
+                    entries_hash=fingerprint,
+                    locked=False,
+                    source=source,
+                )
+                await self.db.commit()
+            return portrait
+
+    def _schedule_portrait_rewrite(self, user_id: int, persona_id: str) -> None:
+        if self._closing or not self.portrait_enabled:
+            return
+        lock = self._portrait_locks.get((user_id, persona_id))
+        if lock is not None and lock.locked():
+            return
+        task = asyncio.create_task(
+            self._safe_rewrite_portrait(user_id, persona_id)
+        )
+        self._portrait_tasks.add(task)
+        task.add_done_callback(self._portrait_tasks.discard)
+
+    async def _safe_rewrite_portrait(self, user_id: int, persona_id: str) -> None:
+        try:
+            await self.rewrite_portrait(user_id=user_id, persona_id=persona_id)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(f"[用户画像] 小作文重写失败，条目已生效：{exc}")
+
+    async def _portrait_personas(self, user_id: int, persona_id: str) -> list[str]:
+        if persona_id:
+            return [persona_id]
+        if self.db is None:
+            return [GLOBAL_PERSONA]
+        cursor = await self.db.execute(
+            "SELECT persona_id FROM user_baseline_states WHERE user_id = ?",
+            (user_id,),
+        )
+        personas = [str(row["persona_id"] or "") for row in await cursor.fetchall()]
+        return personas or [GLOBAL_PERSONA]
+
+    async def _refresh_portraits_for(self, user_id: int, persona_id: str) -> None:
+        for persona in await self._portrait_personas(user_id, persona_id):
+            self._schedule_portrait_rewrite(user_id, persona)
+
+    async def _usable_portrait(
+        self, user_id: int, persona_id: str, entries: list[dict[str, Any]]
+    ) -> dict[str, Any] | None:
+        if not self.portrait_enabled:
+            return None
+        portrait = await self._load_portrait(user_id, persona_id)
+        if portrait is None or not portrait["text"]:
+            return None
+        if portrait["locked"]:
+            return portrait
+        if portrait["entries_hash"] != self._portrait_fingerprint(entries):
+            return None
+        return portrait
+
+    async def update_portrait(
+        self, *, user_id: int, persona_id: str, text: Any, locked: bool = True
+    ) -> dict[str, Any]:
+        """Store a user-written portrait; locked portraits survive rewrites."""
+        if self.db is None:
+            raise RuntimeError("用户画像尚未初始化")
+        cleaned = self._clean_portrait_text(text)
+        if not cleaned:
+            raise ValueError("小作文不能为空")
+        if len(cleaned) > PORTRAIT_MAX_CHARS:
+            raise ValueError(f"小作文不能超过 {PORTRAIT_MAX_CHARS} 字")
+        if "[" in cleaned or "]" in cleaned:
+            raise ValueError("小作文不能包含方括号")
+        if token_upper_bound(cleaned) > PORTRAIT_TOKEN_BUDGET:
+            raise ValueError(f"小作文不能超过 {PORTRAIT_TOKEN_BUDGET} token")
+        entries = await self._load_entries(
+            user_id, persona_id, include_disabled=False
+        )
+        fingerprint = self._portrait_fingerprint(entries)
+        async with self._write_lock:
+            await self._store_portrait_locked(
+                user_id=user_id,
+                persona_id=persona_id,
+                text=cleaned,
+                entries_hash=fingerprint,
+                locked=locked,
+                source="manual",
+            )
+            await self.db.commit()
+        detail = await self.get_user_detail(user_id)
+        if detail is None:
+            raise RuntimeError("用户画像不存在")
+        return detail
+
+    async def regenerate_portrait(
+        self, *, user_id: int, persona_id: str
+    ) -> dict[str, Any]:
+        """Force a rewrite even when the current portrait is locked."""
+        if self.db is None:
+            raise RuntimeError("用户画像尚未初始化")
+        portrait = await self.rewrite_portrait(
+            user_id=user_id, persona_id=persona_id, force=True, source="manual"
+        )
+        if portrait is None:
+            raise ValueError("没有可用于生成小作文的条目")
+        detail = await self.get_user_detail(user_id)
+        if detail is None:
+            raise RuntimeError("用户画像不存在")
+        return detail
+
+    async def list_portrait_revisions(
+        self, user_id: int, persona_id: str, limit: int = PORTRAIT_HISTORY_LIMIT
+    ) -> list[dict[str, Any]]:
+        if self.db is None:
+            return []
+        cursor = await self.db.execute(
+            """
+            SELECT revision, text, entries_hash, source, created_at
+            FROM user_baseline_portrait_revisions
+            WHERE user_id = ? AND persona_id = ?
+            ORDER BY revision DESC, portrait_revision_id DESC
+            LIMIT ?
+            """,
+            (user_id, persona_id, max(1, int(limit))),
+        )
+        return [
+            {
+                "revision": int(row["revision"]),
+                "text": str(row["text"] or ""),
+                "entries_hash": str(row["entries_hash"] or ""),
+                "source": str(row["source"] or "auto"),
+                "created_at": float(row["created_at"]),
+            }
+            for row in await cursor.fetchall()
+        ]
+
+    async def rollback_portrait(
+        self, *, user_id: int, persona_id: str, revision: int
+    ) -> dict[str, Any]:
+        if self.db is None:
+            raise RuntimeError("用户画像尚未初始化")
+        cursor = await self.db.execute(
+            """
+            SELECT text, entries_hash FROM user_baseline_portrait_revisions
+            WHERE user_id = ? AND persona_id = ? AND revision = ?
+            ORDER BY portrait_revision_id DESC LIMIT 1
+            """,
+            (user_id, persona_id, int(revision)),
+        )
+        row = await cursor.fetchone()
+        if row is None:
+            raise ValueError("小作文历史版本不存在")
+        async with self._write_lock:
+            await self._store_portrait_locked(
+                user_id=user_id,
+                persona_id=persona_id,
+                text=str(row["text"] or ""),
+                entries_hash=str(row["entries_hash"] or ""),
+                locked=True,
+                source="rollback",
+            )
+            await self.db.commit()
+        detail = await self.get_user_detail(user_id)
+        if detail is None:
+            raise RuntimeError("用户画像不存在")
+        return detail
+
     @classmethod
     def _validate_budget(cls, entries: list[dict[str, Any]]) -> int:
         enabled = [item for item in entries if item.get("enabled", True)]
@@ -1874,10 +2362,11 @@ class UserBaselineManager:
                 _flat_text(item)
                 for item in _json_list(warning_value.get("reasons"))[:2]
             ]
-            generation_warning = {
-                "occurred_at": float(warning_row["updated_at"]),
-                "reasons": reasons,
-            }
+            if not warning_value.get("dismissed"):
+                generation_warning = {
+                    "occurred_at": float(warning_row["updated_at"]),
+                    "reasons": reasons,
+                }
         where = ""
         params: list[Any] = []
         if keyword:
@@ -1947,6 +2436,33 @@ class UserBaselineManager:
             "generation_warning": generation_warning,
         }
 
+    async def dismiss_generation_warning(self) -> bool:
+        """Hide the recorded generation warning until the next failure lands."""
+        if self.db is None:
+            return False
+        cursor = await self.db.execute(
+            """
+            SELECT value FROM user_baseline_meta
+            WHERE key = 'generation-warning-v1'
+            """
+        )
+        row = await cursor.fetchone()
+        if row is None:
+            return False
+        value = _json_dict(row["value"])
+        if value.get("dismissed"):
+            return True
+        value["dismissed"] = 1
+        await self.db.execute(
+            """
+            UPDATE user_baseline_meta SET value = ?
+            WHERE key = 'generation-warning-v1'
+            """,
+            (json.dumps(value, ensure_ascii=False),),
+        )
+        await self.db.commit()
+        return True
+
     async def get_user_detail(self, user_id: int) -> dict[str, Any] | None:
         if self.db is None:
             return None
@@ -2007,7 +2523,56 @@ class UserBaselineManager:
             ).token_count
             for persona in personas or [""]
         }
+        portraits: list[dict[str, Any]] = []
+        if self.portrait_enabled:
+            cursor = await self.db.execute(
+                """
+                SELECT * FROM user_baseline_portraits
+                WHERE user_id = ? ORDER BY persona_id
+                """,
+                (user_id,),
+            )
+            for row in await cursor.fetchall():
+                persona = str(row["persona_id"] or "")
+                visible = [
+                    item
+                    for item in entries
+                    if item["enabled"] and item["persona_id"] in {"", persona}
+                ]
+                portraits.append(
+                    {
+                        "persona_id": persona,
+                        "text": str(row["text"] or ""),
+                        "locked": bool(row["locked"]),
+                        "source": str(row["source"] or "auto"),
+                        "revision": int(row["revision"]),
+                        "token_count": int(row["token_count"]),
+                        "updated_at": float(row["updated_at"]),
+                        "stale": str(row["entries_hash"] or "")
+                        != self._portrait_fingerprint(visible),
+                    }
+                )
         entries = await self._attach_evidence_texts(entries, user_id=user_id)
+        cursor = await self.db.execute(
+            """
+            SELECT persona_id, category, content, note, deleted_at
+            FROM user_baseline_suppressions
+            WHERE user_id = ? AND content != ''
+            ORDER BY deleted_at DESC, suppression_id DESC
+            LIMIT ?
+            """,
+            (user_id, BASELINE_SUPPRESSION_LIMIT),
+        )
+        graveyard = [
+            {
+                "persona_id": str(row["persona_id"] or ""),
+                "category": str(row["category"]),
+                "content": str(row["content"]),
+                "note": str(row["note"] or ""),
+                "deleted_at": float(row["deleted_at"]),
+            }
+            for row in await cursor.fetchall()
+        ]
         return {
             "user_id": int(user["user_id"]),
             "display_name": str(user["display_name"]),
@@ -2022,6 +2587,11 @@ class UserBaselineManager:
             "token_budget": BASELINE_TOKEN_BUDGET,
             "batch_windows": BASELINE_BATCH_WINDOWS,
             "entry_limit": BASELINE_MAX_ENTRIES,
+            "portraits": portraits,
+            "graveyard": graveyard,
+            "portrait_enabled": self.portrait_enabled,
+            "portrait_token_budget": PORTRAIT_TOKEN_BUDGET,
+            "portrait_max_chars": PORTRAIT_MAX_CHARS,
         }
 
     async def upsert_manual_entry(
@@ -2195,11 +2765,17 @@ class UserBaselineManager:
             self._validate_budget(applicable)
 
     async def delete_manual_entry(
-        self, *, user_id: int, entry_id: str, revision: int
+        self,
+        *,
+        user_id: int,
+        entry_id: str,
+        revision: int,
+        note: str = "",
     ) -> dict[str, Any]:
         if self.db is None:
             raise RuntimeError("用户画像尚未初始化")
         now = time.time()
+        note_text = " ".join(_flat_text(note).split())[:BASELINE_SUPPRESSION_NOTE_MAX]
         async with self._write_lock:
             await self.db.execute("BEGIN IMMEDIATE")
             try:
@@ -2216,10 +2792,11 @@ class UserBaselineManager:
                     """
                     INSERT INTO user_baseline_suppressions(
                         user_id, persona_id, category, content, content_hash,
-                        deleted_at, evidence_cutoff
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                        note, deleted_at, evidence_cutoff
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(user_id, persona_id, category, content_hash) DO UPDATE SET
                         content = excluded.content,
+                        note = excluded.note,
                         deleted_at = excluded.deleted_at,
                         evidence_cutoff = excluded.evidence_cutoff
                     """,
@@ -2229,9 +2806,13 @@ class UserBaselineManager:
                         str(row["category"]),
                         str(row["content"]),
                         _content_hash(row["content"]),
+                        note_text,
                         now,
                         now,
                     ),
+                )
+                await self._trim_suppressions_locked(
+                    user_id, str(row["persona_id"] or "")
                 )
                 await self.db.execute(
                     "DELETE FROM user_baseline_entries WHERE entry_id = ?", (entry_id,)
@@ -2249,6 +2830,31 @@ class UserBaselineManager:
         if detail is None:
             raise RuntimeError("用户画像不存在")
         return detail
+
+    async def _trim_suppressions_locked(
+        self, user_id: int, persona_id: str
+    ) -> None:
+        """Keep the graveyard bounded; the oldest deletions fall out first."""
+        if self.db is None:
+            return
+        await self.db.execute(
+            """
+            DELETE FROM user_baseline_suppressions
+            WHERE user_id = ? AND persona_id = ? AND suppression_id NOT IN (
+                SELECT suppression_id FROM user_baseline_suppressions
+                WHERE user_id = ? AND persona_id = ?
+                ORDER BY deleted_at DESC, suppression_id DESC
+                LIMIT ?
+            )
+            """,
+            (
+                user_id,
+                persona_id,
+                user_id,
+                persona_id,
+                BASELINE_SUPPRESSION_KEEP,
+            ),
+        )
 
     async def delete_user(self, *, user_id: int, revision: int) -> None:
         if self.db is None:

@@ -157,6 +157,8 @@ async def test_invalid_json_retries_immediately_then_discards_profile_copies(
         ]
         assert "首次：LLM 输出不是合法 JSON" in caplog.text
         assert "重试：LLM 输出不是合法 JSON" in caplog.text
+        assert await manager.dismiss_generation_warning() is True
+        assert (await manager.list_users())["generation_warning"] is None
     finally:
         await manager.close()
 
@@ -1323,6 +1325,82 @@ async def test_evidence_mirror_pruned_when_no_active_entry_references(tmp_path):
         ) as cur:
             row = await cur.fetchone()
         assert int(row["n"]) == 0
+    finally:
+        await manager.close()
+
+
+@pytest.mark.asyncio
+async def test_delete_note_reaches_graveyard_and_prompt_view_is_capped(tmp_path):
+    manager, _, context = await _manager(tmp_path)
+    try:
+        await manager.register_summary_window(
+            session_id="test:session",
+            history_messages=_window(1),
+            persona_id="persona-a",
+            schedule_generation=False,
+        )
+        user_id = (await manager.list_users())["items"][0]["user_id"]
+        detail = None
+        for index in range(12):
+            detail = await manager.upsert_manual_entry(
+                user_id=user_id,
+                payload={
+                    "persona_id": "persona-a",
+                    "category": "interaction_preference",
+                    "content": f"用户第 {index} 次表达过的偏好。",
+                    "allow_auto_update": True,
+                },
+            )
+            entry = next(
+                item
+                for item in detail["entries"]
+                if item["content"] == f"用户第 {index} 次表达过的偏好。"
+            )
+            detail = await manager.delete_manual_entry(
+                user_id=user_id,
+                entry_id=entry["entry_id"],
+                revision=entry["revision"],
+                note=f"原因 {index}",
+            )
+        assert detail is not None
+        assert len(detail["graveyard"]) == 10
+        assert detail["graveyard"][0]["note"] == "原因 11"
+        assert detail["graveyard"][0]["content"] == "用户第 11 次表达过的偏好。"
+
+        prompt = await manager._call_generation_llm(
+            user_id=user_id, persona_id="persona-a", windows=[]
+        )
+        assert len(prompt.suppression_refs) == 10
+        assert prompt.suppression_refs["D1"]["content"] == "用户第 11 次表达过的偏好。"
+        sent_prompt = context.provider.text_chat.await_args.kwargs["prompt"]
+        assert '"note": "原因 11"' in sent_prompt
+        assert "原因 2" in sent_prompt
+        assert "原因 0" not in sent_prompt
+
+        for index in range(45):
+            await manager.db.execute(
+                """
+                INSERT INTO user_baseline_suppressions(
+                    user_id, persona_id, category, content, content_hash,
+                    note, deleted_at, evidence_cutoff
+                ) VALUES (?, 'persona-a', 'relationship', ?, ?, '', ?, ?)
+                """,
+                (
+                    user_id,
+                    f"批量删除内容 {index}",
+                    f"hash-{index}",
+                    1_700_000_000 + index,
+                    1_700_000_000 + index,
+                ),
+            )
+        await manager._trim_suppressions_locked(user_id, "persona-a")
+        await manager.db.commit()
+        async with manager.db.execute(
+            "SELECT COUNT(*) AS n FROM user_baseline_suppressions WHERE user_id = ?",
+            (user_id,),
+        ) as cur:
+            row = await cur.fetchone()
+        assert int(row["n"]) == 50
     finally:
         await manager.close()
 

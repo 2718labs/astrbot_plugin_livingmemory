@@ -1471,7 +1471,7 @@ class TestRouteRegistration:
         plugin = FakePlugin()
         api = PluginPageApi(plugin)
         api.register_routes()
-        assert len(plugin._api_routes) == 25
+        assert len(plugin._api_routes) == 30
 
         paths = {route for route, _, _, _ in plugin._api_routes}
         prefix = PAGE_API_PREFIX
@@ -1959,7 +1959,21 @@ class TestUserBaselineRoutes:
             deleted = await api.delete_user_baseline_entry()
         assert deleted["status"] == "ok"
         manager.delete_manual_entry.assert_awaited_once_with(
-            user_id=7, entry_id="e1", revision=3
+            user_id=7, entry_id="e1", revision=3, note=""
+        )
+
+        manager.delete_manual_entry.reset_mock()
+        with _qp(
+            get_json={
+                "user_id": 7,
+                "entry_id": "e1",
+                "revision": 3,
+                "note": "它自己瞎猜的，别再生成",
+            }
+        ):
+            await api.delete_user_baseline_entry()
+        manager.delete_manual_entry.assert_awaited_once_with(
+            user_id=7, entry_id="e1", revision=3, note="它自己瞎猜的，别再生成"
         )
 
         with _qp(get_json={"user_id": 7, "revision": 4}):

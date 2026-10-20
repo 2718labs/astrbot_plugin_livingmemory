@@ -1272,6 +1272,135 @@ body {
   .baseline-card-stats { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 }
 
+.baseline-portrait {
+  display: grid;
+  gap: var(--space-3);
+  padding: var(--space-4) var(--space-5);
+  background: color-mix(in srgb, var(--bg-card) 90%, var(--bg-hover));
+  border: 1px solid var(--border-light);
+  border-left: 3px solid var(--accent);
+  border-radius: var(--radius-md);
+}
+
+.baseline-portrait-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.baseline-portrait-title {
+  color: var(--text-primary);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+
+.baseline-portrait-meta {
+  color: var(--text-tertiary);
+  font-size: 11px;
+}
+
+.baseline-portrait-text {
+  color: var(--text-primary);
+  font-size: 13px;
+  line-height: 1.7;
+  white-space: pre-wrap;
+}
+
+.baseline-portrait-text.is-empty,
+.baseline-portrait-hint {
+  color: var(--text-tertiary);
+  font-size: 12px;
+}
+
+.baseline-portrait-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.baseline-portrait-history {
+  display: grid;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-sm);
+}
+
+.baseline-portrait-history-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  color: var(--text-tertiary);
+  font-size: 11px;
+}
+
+.baseline-portrait-history-text {
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+}
+
+.baseline-lock-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: var(--radius-full);
+  background: var(--warning-light);
+  color: var(--warning);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.baseline-lock-badge svg {
+  width: 11px;
+  height: 11px;
+}
+
+.baseline-entry-card.is-locked {
+  border-left: 3px solid var(--warning);
+}
+
+.baseline-graveyard {
+  margin-top: var(--space-4);
+  padding: var(--space-3) var(--space-4);
+  border: 1px dashed var(--border-light);
+  border-radius: var(--radius-md);
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.baseline-graveyard summary {
+  cursor: pointer;
+  color: var(--text-tertiary);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.baseline-graveyard-hint,
+.baseline-graveyard-note {
+  color: var(--text-tertiary);
+  font-size: 11px;
+}
+
+.baseline-graveyard-item {
+  display: grid;
+  gap: 2px;
+  margin-top: var(--space-3);
+  padding-left: var(--space-3);
+  border-left: 2px solid var(--border-light);
+}
+
+.baseline-graveyard-content {
+  color: var(--text-secondary);
+  font-size: 12px;
+  text-decoration: line-through;
+}
+
 .memory-fact-list {
   display: grid;
   gap: var(--space-4);

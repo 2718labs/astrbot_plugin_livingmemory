@@ -191,6 +191,36 @@ class PluginPageApi:
             "LivingMemory Page user baselines",
         )
         register(
+            f"{PAGE_API_PREFIX}/user-baselines/portrait/save",
+            self.save_user_baseline_portrait,
+            ["POST"],
+            "LivingMemory Page save user baseline portrait",
+        )
+        register(
+            f"{PAGE_API_PREFIX}/user-baselines/portrait/rewrite",
+            self.rewrite_user_baseline_portrait,
+            ["POST"],
+            "LivingMemory Page rewrite user baseline portrait",
+        )
+        register(
+            f"{PAGE_API_PREFIX}/user-baselines/portrait/rollback",
+            self.rollback_user_baseline_portrait,
+            ["POST"],
+            "LivingMemory Page rollback user baseline portrait",
+        )
+        register(
+            f"{PAGE_API_PREFIX}/user-baselines/portrait/revisions",
+            self.list_user_baseline_portrait_revisions,
+            ["GET"],
+            "LivingMemory Page user baseline portrait revisions",
+        )
+        register(
+            f"{PAGE_API_PREFIX}/user-baselines/warning/dismiss",
+            self.dismiss_user_baseline_warning,
+            ["POST"],
+            "LivingMemory Page dismiss user baseline warning",
+        )
+        register(
             f"{PAGE_API_PREFIX}/user-baselines/detail",
             self.get_user_baseline_detail,
             ["GET"],
@@ -354,6 +384,46 @@ class PluginPageApi:
         if error:
             return error
         return await self.user_baseline_handler.list_users(
+            ready["user_baseline_manager"]
+        )
+
+    async def save_user_baseline_portrait(self):
+        ready, error = await self._ensure_plugin_ready()
+        if error:
+            return error
+        return await self.user_baseline_handler.save_portrait(
+            ready["user_baseline_manager"]
+        )
+
+    async def rewrite_user_baseline_portrait(self):
+        ready, error = await self._ensure_plugin_ready()
+        if error:
+            return error
+        return await self.user_baseline_handler.rewrite_portrait(
+            ready["user_baseline_manager"]
+        )
+
+    async def rollback_user_baseline_portrait(self):
+        ready, error = await self._ensure_plugin_ready()
+        if error:
+            return error
+        return await self.user_baseline_handler.rollback_portrait(
+            ready["user_baseline_manager"]
+        )
+
+    async def list_user_baseline_portrait_revisions(self):
+        ready, error = await self._ensure_plugin_ready()
+        if error:
+            return error
+        return await self.user_baseline_handler.list_portrait_revisions(
+            ready["user_baseline_manager"]
+        )
+
+    async def dismiss_user_baseline_warning(self):
+        ready, error = await self._ensure_plugin_ready()
+        if error:
+            return error
+        return await self.user_baseline_handler.dismiss_warning(
             ready["user_baseline_manager"]
         )
 

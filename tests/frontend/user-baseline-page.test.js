@@ -101,6 +101,7 @@ test("baseline entry exposes only edit and delete actions", () => {
     enabled: true,
     source_type: "automatic",
     allow_auto_update: true,
+    locked: false,
     evidence: [],
   });
   const actions = [...html.matchAll(/data-baseline-action="([^"]+)"/g)].map(
@@ -108,16 +109,79 @@ test("baseline entry exposes only edit and delete actions", () => {
   );
   assert.deepEqual(actions, ["edit", "delete-entry"]);
   assert.match(html, /baseline\.autoUpdateAllowed/);
-  assert.doesNotMatch(html, /toggle|promote|lock/);
+  assert.doesNotMatch(html, /baseline-lock-badge/);
 });
 
-test("baseline warning dismissal applies only to the current failure", () => {
-  const stored = new Map();
-  window.localStorage = {
-    getItem(key) { return stored.get(key) ?? null; },
-    setItem(key, value) { stored.set(key, value); },
+test("returning from an entry form restores the detail scroll offset", () => {
+  const elements = new Map();
+  const make = () => {
+    const element = { textContent: "", scrollTop: 0, onclick: null, _html: "" };
+    Object.defineProperty(element, "innerHTML", {
+      get() { return this._html; },
+      set(value) {
+        this._html = value;
+        this.scrollTop = 0;
+      },
+    });
+    return element;
   };
+  global.document.getElementById = id => {
+    if (!elements.has(id)) elements.set(id, make());
+    return elements.get(id);
+  };
+  const page = new UserBaselinePage({ page: "baselines" }, {}, { open() {} });
+  page.detail = {
+    user_id: 7,
+    display_name: "Tester",
+    personas: ["persona-a"],
+    entries: [],
+    portraits: [],
+    graveyard: [],
+  };
+  const body = elements.get("peek-body") || elements.set("peek-body", make()).get("peek-body");
+  body.scrollTop = 420;
+  page.captureDetailScroll();
+  body.scrollTop = 0;
+
+  page.backToDetail();
+  assert.equal(body.scrollTop, 420);
+
+  page.renderDetail();
+  assert.equal(body.scrollTop, 0);
+});
+
+test("locked baseline entry shows a visible lock badge", () => {
   const page = new UserBaselinePage({ page: "baselines" }, {}, {});
+  const html = page.renderEntry({
+    entry_id: "entry-2",
+    persona_id: "persona-a",
+    category: "long_term_boundary",
+    content: "不要叫我前辈",
+    enabled: true,
+    source_type: "manual",
+    allow_auto_update: false,
+    locked: true,
+    evidence: [],
+  });
+  assert.match(html, /is-locked/);
+  assert.match(html, /baseline-lock-badge/);
+  assert.match(html, /data-lucide="lock"/);
+  assert.match(html, /baseline\.locked/);
+  assert.match(html, /baseline\.autoUpdateBlocked/);
+  const actions = [...html.matchAll(/data-baseline-action="([^"]+)"/g)].map(
+    match => match[1]
+  );
+  assert.deepEqual(actions, ["edit", "delete-entry"]);
+});
+
+test("baseline warning dismissal is persisted on the server", async () => {
+  global.document.getElementById = () => null;
+  const posted = [];
+  const page = new UserBaselinePage(
+    { page: "baselines" },
+    { async post(path, payload) { posted.push([path, payload]); } },
+    {},
+  );
   page.generationWarning = {
     occurred_at: 100,
     reasons: ["JSON 格式错误", "操作未引用目标用户原话"],
@@ -127,9 +191,24 @@ test("baseline warning dismissal applies only to the current failure", () => {
   assert.match(page.generationWarningText(), /JSON 格式错误/);
   assert.match(page.generationWarningText(), /操作未引用目标用户原话/);
 
-  window.localStorage.setItem("livingmemory.baselineWarningDismissedAt", "100");
+  assert.equal(await page.dismissGenerationWarning(), true);
+  assert.deepEqual(posted, [["user-baselines/warning/dismiss", {}]]);
+  assert.equal(page.generationWarning, null);
   assert.equal(page.shouldShowGenerationWarning(), false);
+});
 
-  page.generationWarningAt = 101;
+test("baseline warning stays visible when dismissal fails", async () => {
+  global.document.getElementById = () => null;
+  const page = new UserBaselinePage(
+    { page: "baselines" },
+    { async post() { throw new Error("boom"); } },
+    {},
+  );
+  page.generationWarning = { occurred_at: 100, reasons: ["x", "y"] };
+  page.generationWarningAt = 100;
+  const toasts = [];
+  page.toast = (message, isError) => toasts.push([message, isError]);
+  assert.equal(await page.dismissGenerationWarning(), false);
   assert.equal(page.shouldShowGenerationWarning(), true);
+  assert.deepEqual(toasts, [["boom", true]]);
 });
