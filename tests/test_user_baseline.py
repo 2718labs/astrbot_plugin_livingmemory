@@ -121,6 +121,42 @@ async def test_ten_windows_and_six_hour_cooldown_are_both_required(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_successful_batch_clears_a_previous_generation_warning(tmp_path):
+    manager, _, _ = await _manager(tmp_path, response_text='{"operations":[]}')
+    try:
+        await manager.db.execute(
+            """
+            INSERT OR REPLACE INTO user_baseline_meta(key, value, updated_at)
+            VALUES ('generation-warning-v1', ?, ?)
+            """,
+            (
+                json.dumps({"reasons": ["旧失败原因"], "dismissed": 1}, ensure_ascii=False),
+                1_700_000_000,
+            ),
+        )
+        await manager.db.commit()
+        assert (await manager.list_users())["generation_warning"] is None
+
+        for index in range(1, BASELINE_BATCH_WINDOWS + 1):
+            await manager.register_summary_window(
+                session_id="test:session",
+                history_messages=_window(index),
+                persona_id="persona-a",
+                schedule_generation=False,
+            )
+        user_id = (await manager.list_users())["items"][0]["user_id"]
+        await manager._maybe_generate(user_id, "persona-a")
+
+        async with manager.db.execute(
+            "SELECT COUNT(*) AS n FROM user_baseline_meta WHERE key = 'generation-warning-v1'"
+        ) as cur:
+            row = await cur.fetchone()
+        assert int(row["n"]) == 0
+    finally:
+        await manager.close()
+
+
+@pytest.mark.asyncio
 async def test_invalid_json_retries_immediately_then_discards_profile_copies(
     tmp_path, caplog
 ):

@@ -1612,6 +1612,9 @@ class UserBaselineManager:
                 )
                 await self._prune_unreferenced_evidence_locked(user_id)
                 await self.db.execute(
+                    "DELETE FROM user_baseline_meta WHERE key = 'generation-warning-v1'"
+                )
+                await self.db.execute(
                     """
                     UPDATE user_baseline_states
                     SET last_success_at = ?, revision = revision + 1, updated_at = ?
