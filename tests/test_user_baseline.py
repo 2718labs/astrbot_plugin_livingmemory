@@ -1595,6 +1595,143 @@ async def test_initialize_migrates_existing_baseline_schema(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_generation_merge_operation_combines_same_category_entries(tmp_path):
+    manager, _, _ = await _manager(tmp_path)
+    try:
+        await manager.register_summary_window(
+            session_id="test:session",
+            history_messages=_window(1),
+            persona_id="persona-a",
+            schedule_generation=False,
+        )
+        user_id = (await manager.list_users())["items"][0]["user_id"]
+        contents = ["用户所学专业为电气工程。", "用户已辞职准备考研。"]
+        created = []
+        for content in contents:
+            detail = await manager.upsert_manual_entry(
+                user_id=user_id,
+                payload={
+                    "persona_id": "persona-a",
+                    "category": "address_identity",
+                    "content": content,
+                    "allow_auto_update": True,
+                },
+            )
+            created.append(
+                next(item for item in detail["entries"] if item["content"] == content)
+            )
+        windows = [
+            {
+                "window_id": 1,
+                "messages": [item.to_dict() for item in _window(1)],
+            }
+        ]
+        entry_refs = {
+            "E1": {
+                "entry_id": created[0]["entry_id"],
+                "category": "address_identity",
+                "persona_id": "persona-a",
+            },
+            "E2": {
+                "entry_id": created[1]["entry_id"],
+                "category": "address_identity",
+                "persona_id": "persona-a",
+            },
+        }
+        parsed, rejection_reasons = manager._parse_generation_output(
+            json.dumps(
+                {
+                    "operations": [
+                        {
+                            "op": "merge",
+                            "entry_refs": ["E1", "E2"],
+                            "content": "用户电气工程专业，已辞职准备考研。",
+                            "evidence_ids": ["W1:M1"],
+                        }
+                    ]
+                },
+                ensure_ascii=False,
+            ),
+            windows,
+            entry_refs=entry_refs,
+        )
+        assert rejection_reasons == []
+        assert parsed[0]["op"] == "merge"
+        assert parsed[0]["category"] == "address_identity"
+
+        revision = (await manager.get_user_detail(user_id))["revision"]
+        result = await manager._apply_generation(
+            user_id=user_id,
+            persona_id="persona-a",
+            windows=windows,
+            user_revision=revision,
+            operations=parsed,
+        )
+        assert result is not None
+        assert result.applied == 1
+        detail = await manager.get_user_detail(user_id)
+        assert [item["content"] for item in detail["entries"]] == [
+            "用户电气工程专业，已辞职准备考研。"
+        ]
+        assert "W1:M1" in [item["id"] for item in detail["entries"][0]["evidence"]]
+    finally:
+        await manager.close()
+
+
+def test_generation_merge_rejects_cross_category_and_single_source():
+    windows = [
+        {
+            "window_id": 1,
+            "messages": [item.to_dict() for item in _window(1)],
+        }
+    ]
+    entry_refs = {
+        "E1": {"entry_id": "a", "category": "address_identity", "persona_id": "p"},
+        "E2": {"entry_id": "b", "category": "relationship", "persona_id": "p"},
+    }
+    manager = UserBaselineManager.__new__(UserBaselineManager)
+    cross, reasons = manager._parse_generation_output(
+        json.dumps(
+            {
+                "operations": [
+                    {
+                        "op": "merge",
+                        "entry_refs": ["E1", "E2"],
+                        "content": "合并结果",
+                        "evidence_ids": ["W1:M1"],
+                    }
+                ]
+            },
+            ensure_ascii=False,
+        ),
+        windows,
+        entry_refs=entry_refs,
+    )
+    assert cross == []
+    assert reasons == ["不同类别不能合并"]
+
+    single, single_reasons = manager._parse_generation_output(
+        json.dumps(
+            {
+                "operations": [
+                    {
+                        "op": "merge",
+                        "entry_refs": ["E1"],
+                        "content": "合并结果",
+                        "evidence_ids": ["W1:M1"],
+                    }
+                ]
+            },
+            ensure_ascii=False,
+        ),
+        windows,
+        entry_refs=entry_refs,
+    )
+    assert single == []
+    assert single_reasons == ["合并至少需要两条条目引用"]
+
+
+@pytest.mark.asyncio
 async def test_persona_entries_precede_global_and_manual_save_enforces_budget(tmp_path):
     manager, _, _ = await _manager(tmp_path)
     try:

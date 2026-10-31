@@ -1100,7 +1100,7 @@ class UserBaselineManager:
             evidence_blocks.append("\n".join(lines))
         prompt = (
             "请从以下一手对话证据中维护用户画像。只输出合法 JSON，"
-            '结构为 {"operations":[...]}; operations 只允许 add、update、retire。\n'
+            '结构为 {"operations":[...]}; operations 只允许 add、update、retire、merge。\n'
             "允许类别：address_identity（称呼或身份锚点）、relationship（明确发生过的关系锚点）、"
             "stable_preference（长期稳定的个人偏好，如饮食口味、生活作息、娱乐喜好）、"
             "interaction_preference（用户明确要求 Bot 如何互动）、long_term_boundary（长期边界）、"
@@ -1111,6 +1111,15 @@ class UserBaselineManager:
                 for key, value in BASELINE_CATEGORY_SLOTS.items()
             )
             + "；某类已满时只能 update 或合并该类已有条目，不得继续 add。\n"
+            "条目是「每个类别的一段完整画像」，不是「一句一个属性」："
+            "同一类别的内容尽量合成一条，一条内可用「；」并列多个属性；"
+            "只有彼此独立、需要单独锁定或单独删除的属性才拆成多条。"
+            "同一类别已有条目时，优先 update 把新属性并进去，不要为每个新属性 add 一条。\n"
+            "merge 用来收拾已经碎掉的同类条目：字段 op/entry_refs/content/evidence_ids，"
+            "entry_refs 至少两条且必须同类别、全部 editable=true；content 用「；」并列，"
+            "必须覆盖所有来源条目的信息，不得丢失也不得新增事实。"
+            "只要同类条目在写同一个人的同一类属性、且都不是锁定条目，就应当 merge，"
+            "不要因为「每条都能单独删」而放任它们保持多条。\n"
             "禁止写近期情绪、性格推断、一次性兴趣或一时尝鲜、当前任务、短期约定或关系好感度；"
             "偏好只在用户反复表达、属于稳定口味或长期习惯时才归入 stable_preference，"
             "“最近喜欢”“试了一次”这类一次性内容一律不写。"
@@ -1119,7 +1128,7 @@ class UserBaselineManager:
             "add 字段：op/category/content/evidence_ids；update 字段再加 entry_ref；"
             "retire 字段：op/entry_ref/evidence_ids。entry_ref 只能原样使用现有画像中的 E 编号。"
             "现有画像中的 editable 由系统实时计算："
-            "只有 editable=true 的条目允许 update 或 retire；editable=false 的条目只供参考，"
+            "只有 editable=true 的条目允许 update、retire 或 merge；editable=false 的条目只供参考，"
             "不得修改、退役，也不得通过 add 绕过保护来改写其结论。\n"
             "若新证据是在补充、修正或自然演化某条 editable=true 的条目，必须优先 update，"
             "可在证据支持下调整措辞、侧重点和关系表述；只有没有可承接条目时才 add。"
@@ -1236,7 +1245,7 @@ class UserBaselineManager:
         if not isinstance(raw, dict):
             return "操作不是对象"
         op = _flat_text(raw.get("op")).casefold()
-        if op not in {"add", "update", "retire"}:
+        if op not in {"add", "update", "retire", "merge"}:
             return "操作类型无效"
         evidence_ids = raw.get("evidence_ids")
         if not isinstance(evidence_ids, list) or not evidence_ids:
@@ -1248,6 +1257,34 @@ class UserBaselineManager:
             "op": op,
             "evidence_ids": list(dict.fromkeys(normalized_evidence)),
         }
+        if op == "merge":
+            refs = raw.get("entry_refs")
+            if not isinstance(refs, list) or len(refs) < 2:
+                return "合并至少需要两条条目引用"
+            entries = []
+            for value in refs:
+                entry_ref = _flat_text(value).upper()
+                entry = entry_refs.get(entry_ref)
+                if entry is None:
+                    return "操作引用了无效条目"
+                entries.append(entry)
+            categories = {str(entry["category"]) for entry in entries}
+            if len(categories) != 1:
+                return "不同类别不能合并"
+            category = categories.pop()
+            content = _flat_text(raw.get("content"))
+            try:
+                UserBaselineManager._validate_entry_content(
+                    category, content, automatic=True
+                )
+            except ValueError as exc:
+                return str(exc)
+            entry_ids = [str(entry["entry_id"]) for entry in entries]
+            if len(set(entry_ids)) != len(entry_ids):
+                return "合并引用了重复条目"
+            item.update(
+                entry_ids=entry_ids, category=category, content=content
+            )
         if op in {"update", "retire"}:
             entry_ref = _flat_text(raw.get("entry_ref")).upper()
             if not entry_ref:
@@ -1266,7 +1303,7 @@ class UserBaselineManager:
             except ValueError as exc:
                 return str(exc)
             item.update(category=category, content=content)
-        else:
+        elif op in {"update", "retire"}:
             category = str(entry["category"])
         qualifying_roles = {"user", "assistant"} if category == "relationship" else {"user"}
         if not any(
@@ -1432,7 +1469,68 @@ class UserBaselineManager:
                     return None
                 for index, operation in enumerate(operations):
                     op = operation["op"]
-                    if op == "add":
+                    if op == "merge":
+                        savepoint = f"baseline_merge_{index}"
+                        await self.db.execute(f"SAVEPOINT {savepoint}")
+                        placeholders = ",".join("?" for _ in operation["entry_ids"])
+                        cursor = await self.db.execute(
+                            f"""
+                            SELECT * FROM user_baseline_entries
+                            WHERE entry_id IN ({placeholders}) AND user_id = ?
+                              AND retired_at IS NULL
+                            """,
+                            [*operation["entry_ids"], user_id],
+                        )
+                        rows = await cursor.fetchall()
+                        if len(rows) != len(operation["entry_ids"]) or any(
+                            bool(item["locked"]) for item in rows
+                        ):
+                            await self.db.execute(f"ROLLBACK TO {savepoint}")
+                            await self.db.execute(f"RELEASE {savepoint}")
+                            rejected += 1
+                            rejection_reasons.append("合并只能针对可编辑的同类条目")
+                            continue
+                        merged_evidence = list(operation["evidence_ids"])
+                        for item in rows:
+                            for value in _json_list(item["evidence_json"]):
+                                evidence_id = _flat_text(value)
+                                if evidence_id and evidence_id not in merged_evidence:
+                                    merged_evidence.append(evidence_id)
+                        await self.db.execute(
+                            """
+                            INSERT INTO user_baseline_entries(
+                                entry_id, user_id, persona_id, category, content,
+                                content_key, source_type, evidence_json, locked,
+                                enabled, revision, created_at, updated_at
+                            ) VALUES (?, ?, ?, ?, ?, ?, 'automatic', ?, 0, 1, 1, ?, ?)
+                            """,
+                            (
+                                uuid.uuid4().hex,
+                                user_id,
+                                persona_id,
+                                operation["category"],
+                                operation["content"],
+                                _content_key(operation["content"]),
+                                json.dumps(merged_evidence, ensure_ascii=False),
+                                now,
+                                now,
+                            ),
+                        )
+                        await self.db.execute(
+                            f"DELETE FROM user_baseline_entries WHERE entry_id IN ({placeholders})",
+                            operation["entry_ids"],
+                        )
+                        try:
+                            await self._validate_user_budgets_locked(user_id)
+                        except ValueError:
+                            await self.db.execute(f"ROLLBACK TO {savepoint}")
+                            await self.db.execute(f"RELEASE {savepoint}")
+                            rejected += 1
+                            rejection_reasons.append("合并后超出数量或 token 预算")
+                            continue
+                        await self.db.execute(f"RELEASE {savepoint}")
+                        applied += 1
+                    elif op == "add":
                         if "suppression_id" not in operation and await self._is_suppressed_locked(
                             user_id=user_id,
                             persona_id=persona_id,
