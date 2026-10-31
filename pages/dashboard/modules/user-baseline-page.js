@@ -470,9 +470,6 @@ export class UserBaselinePage {
     html += '<span class="status-pill ' + (entry.enabled ? "active" : "") + '">' + esc(state) + "</span></div>";
     html += '<div class="baseline-entry-content">' + esc(entry.content) + "</div>";
     html += '<div class="baseline-entry-meta">' + esc(source + " · " + autoUpdate) + "</div>";
-    if (Array.isArray(entry.evidence) && entry.evidence.length) {
-      html += '<details class="memory-fact-technical"><summary>' + esc(window.t("baseline.evidence", entry.evidence.length)) + '</summary><div class="memory-fact-lifecycle">' + entry.evidence.map(ev => this.renderEvidence(ev)).join("") + "</div></details>";
-    }
     html += '<div class="baseline-entry-actions">';
     html += this.actionButton("edit", entry.entry_id, "pencil", "baseline.edit");
     html += this.actionButton("delete-entry", entry.entry_id, "trash-2", "baseline.delete", true);
@@ -482,18 +479,6 @@ export class UserBaselinePage {
 
   lockBadge() {
     return '<span class="baseline-lock-badge"><i data-lucide="lock" aria-hidden="true"></i>' + esc(window.t("baseline.locked")) + "</span>";
-  }
-
-  renderEvidence(ev) {
-    if (!ev || typeof ev !== "object") {
-      return '<div class="memory-fact-lifecycle-item"><span class="evidence-id">' + esc(String(ev)) + "</span></div>";
-    }
-    const role = String(ev.role || "unknown");
-    const speaker = ev.speaker_name || (role === "assistant" ? "Bot" : window.t("baseline.unknownUser"));
-    const time = ev.timestamp ? formatTimestamp(ev.timestamp) : "";
-    const title = time ? ' title="' + esc(time) + '"' : "";
-    const quote = ev.text ? "：“" + esc(ev.text) + "”" : "";
-    return '<div class="memory-fact-lifecycle-item"' + title + '><span class="evidence-id">' + esc(ev.id) + "</span> — " + esc(speaker) + quote + "</div>";
   }
 
   actionButton(action, entryId, icon, key, danger = false) {

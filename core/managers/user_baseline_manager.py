@@ -313,18 +313,6 @@ class UserBaselineManager:
                 updated_at REAL NOT NULL
             );
 
-            CREATE TABLE IF NOT EXISTS user_baseline_evidence (
-                evidence_id TEXT PRIMARY KEY,
-                user_id INTEGER NOT NULL,
-                message_text TEXT NOT NULL,
-                message_role TEXT NOT NULL DEFAULT 'unknown',
-                speaker_name TEXT NOT NULL DEFAULT '',
-                message_timestamp REAL,
-                created_at REAL NOT NULL,
-                FOREIGN KEY(user_id) REFERENCES user_baseline_users(user_id)
-                    ON DELETE CASCADE
-            );
-
             CREATE TABLE IF NOT EXISTS user_baseline_portraits (
                 user_id INTEGER NOT NULL,
                 persona_id TEXT NOT NULL DEFAULT '',
@@ -357,17 +345,6 @@ class UserBaselineManager:
             ON user_baseline_portrait_revisions(user_id, persona_id, revision);
             """
         )
-        cursor = await self.db.execute("PRAGMA table_info(user_baseline_evidence)")
-        evidence_columns = {str(row["name"]) for row in await cursor.fetchall()}
-        for column, definition in (
-            ("message_role", "TEXT NOT NULL DEFAULT 'unknown'"),
-            ("speaker_name", "TEXT NOT NULL DEFAULT ''"),
-            ("message_timestamp", "REAL"),
-        ):
-            if column not in evidence_columns:
-                await self.db.execute(
-                    f"ALTER TABLE user_baseline_evidence ADD COLUMN {column} {definition}"
-                )
         cursor = await self.db.execute("PRAGMA table_info(user_baseline_suppressions)")
         suppression_columns = {str(row["name"]) for row in await cursor.fetchall()}
         if "content" not in suppression_columns:
@@ -381,7 +358,6 @@ class UserBaselineManager:
                 "ADD COLUMN note TEXT NOT NULL DEFAULT ''"
             )
         await self.db.commit()
-        await self._repair_evidence_mirrors()
         if self.enabled:
             await self.bootstrap_existing_data()
 
@@ -642,13 +618,6 @@ class UserBaselineManager:
                     ),
                 )
                 was_inserted = cursor.rowcount > 0
-                if was_inserted:
-                    await self._backfill_evidence_locked(
-                        user_id=user_id,
-                        window_id=int(cursor.lastrowid),
-                        messages=messages,
-                        created_at=now,
-                    )
                 cursor = await self.db.execute(
                     """
                     SELECT COUNT(*) AS pending_count
@@ -665,75 +634,6 @@ class UserBaselineManager:
                 await self.db.rollback()
                 raise
         return (user_id, pending_count) if was_inserted else None
-
-    async def _backfill_evidence_locked(
-        self,
-        *,
-        user_id: int,
-        window_id: int,
-        messages: list[dict[str, Any]],
-        created_at: float,
-    ) -> None:
-        """Mirror first-hand message texts into a window-independent evidence
-        table so the WebUI can show quoted sources even after the original
-        window rows are trimmed by BASELINE_MAX_WINDOWS_PER_SCOPE."""
-        if self.db is None:
-            return
-        rows = []
-        for message in messages:
-            message_id = int(message.get("id") or 0)
-            text = _flat_text(message.get("content"))
-            if message_id <= 0 or not text:
-                continue
-            metadata = _json_dict(message.get("metadata"))
-            raw_role = str(message.get("role") or "").casefold()
-            if raw_role == "assistant" or metadata.get("is_bot_message"):
-                message_role = "assistant"
-            elif raw_role == "user":
-                message_role = "user"
-            else:
-                message_role = "unknown"
-            try:
-                message_timestamp = float(message.get("timestamp") or 0.0) or None
-            except (TypeError, ValueError):
-                message_timestamp = None
-            rows.append(
-                (
-                    f"W{window_id}:M{message_id}",
-                    user_id,
-                    text,
-                    message_role,
-                    _flat_text(message.get("sender_name")),
-                    message_timestamp,
-                    created_at,
-                )
-            )
-        if not rows:
-            return
-        await self.db.executemany(
-            """
-            INSERT OR IGNORE INTO user_baseline_evidence(
-                evidence_id, user_id, message_text, message_role,
-                speaker_name, message_timestamp, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?)
-            """,
-            rows,
-        )
-        await self.db.executemany(
-            """
-            UPDATE user_baseline_evidence
-            SET message_role = CASE
-                    WHEN message_role IN ('', 'unknown') THEN ? ELSE message_role END,
-                speaker_name = CASE
-                    WHEN speaker_name = '' THEN ? ELSE speaker_name END,
-                message_timestamp = COALESCE(message_timestamp, ?)
-            WHERE evidence_id = ? AND user_id = ?
-            """,
-            [
-                (row[3], row[4], row[5], row[0], row[1])
-                for row in rows
-            ],
-        )
 
     async def _trim_windows_locked(self, user_id: int, persona_id: str) -> None:
         if self.db is None:
@@ -980,7 +880,6 @@ class UserBaselineManager:
                     """,
                     [user_id, persona_id, *window_ids],
                 )
-                await self._prune_unreferenced_evidence_locked(user_id)
                 await self.db.execute(
                     """
                     INSERT OR REPLACE INTO user_baseline_meta(key, value, updated_at)
@@ -1320,14 +1219,6 @@ class UserBaselineManager:
             suppression = suppression_refs.get(suppression_ref)
             if suppression is None:
                 return "操作引用了无效删除记录"
-            if not any(
-                evidence_by_id[evidence_id]["role"] in qualifying_roles
-                and evidence_by_id[evidence_id]["timestamp"] is not None
-                and evidence_by_id[evidence_id]["timestamp"]
-                > float(suppression["deleted_at"])
-                for evidence_id in item["evidence_ids"]
-            ):
-                return "恢复删除结论必须引用删除后的新证据"
             item["suppression_id"] = int(suppression["suppression_id"])
         return item
 
@@ -1357,86 +1248,6 @@ class UserBaselineManager:
             content
         ):
             raise ValueError("一次性尝鲜不能作为稳定偏好")
-
-    async def _prune_unreferenced_evidence_locked(self, user_id: int) -> None:
-        """Keep profile evidence copies needed by entries or pending work."""
-        if self.db is None:
-            return
-        cursor = await self.db.execute(
-            """
-            SELECT evidence_json FROM user_baseline_entries
-            WHERE user_id = ? AND retired_at IS NULL
-            """,
-            (user_id,),
-        )
-        referenced: set[str] = set()
-        for row in await cursor.fetchall():
-            for item in _json_list(row["evidence_json"]):
-                evidence_id = _flat_text(item)
-                if evidence_id:
-                    referenced.add(evidence_id)
-        cursor = await self.db.execute(
-            """
-            SELECT window_id, message_ids_json FROM user_baseline_windows
-            WHERE user_id = ? AND status = 'pending'
-            """,
-            (user_id,),
-        )
-        for row in await cursor.fetchall():
-            window_id = int(row["window_id"])
-            for item in _json_list(row["message_ids_json"]):
-                try:
-                    message_id = int(item)
-                except (TypeError, ValueError):
-                    continue
-                if message_id > 0:
-                    referenced.add(f"W{window_id}:M{message_id}")
-        if not referenced:
-            await self.db.execute(
-                "DELETE FROM user_baseline_evidence WHERE user_id = ?",
-                (user_id,),
-            )
-            return
-        placeholders = ",".join("?" for _ in referenced)
-        await self.db.execute(
-            f"""
-            DELETE FROM user_baseline_evidence
-            WHERE user_id = ? AND evidence_id NOT IN ({placeholders})
-            """,
-            [user_id, *sorted(referenced)],
-        )
-
-    async def _repair_evidence_mirrors(self) -> None:
-        """Rebuild recoverable mirrors, then discard rows no longer needed."""
-        if self.db is None:
-            return
-        async with self._write_lock:
-            await self.db.execute("BEGIN IMMEDIATE")
-            try:
-                cursor = await self.db.execute(
-                    """
-                    SELECT user_id, window_id, messages_json, created_at
-                    FROM user_baseline_windows
-                    ORDER BY window_id
-                    """
-                )
-                rows = await cursor.fetchall()
-                user_ids: set[int] = set()
-                for row in rows:
-                    user_id = int(row["user_id"])
-                    user_ids.add(user_id)
-                    await self._backfill_evidence_locked(
-                        user_id=user_id,
-                        window_id=int(row["window_id"]),
-                        messages=_json_list(row["messages_json"]),
-                        created_at=float(row["created_at"] or time.time()),
-                    )
-                for user_id in user_ids:
-                    await self._prune_unreferenced_evidence_locked(user_id)
-                await self.db.commit()
-            except Exception:
-                await self.db.rollback()
-                raise
 
     async def _apply_generation(
         self,
@@ -1490,12 +1301,6 @@ class UserBaselineManager:
                             rejected += 1
                             rejection_reasons.append("合并只能针对可编辑的同类条目")
                             continue
-                        merged_evidence = list(operation["evidence_ids"])
-                        for item in rows:
-                            for value in _json_list(item["evidence_json"]):
-                                evidence_id = _flat_text(value)
-                                if evidence_id and evidence_id not in merged_evidence:
-                                    merged_evidence.append(evidence_id)
                         await self.db.execute(
                             """
                             INSERT INTO user_baseline_entries(
@@ -1511,7 +1316,7 @@ class UserBaselineManager:
                                 operation["category"],
                                 operation["content"],
                                 _content_key(operation["content"]),
-                                json.dumps(merged_evidence, ensure_ascii=False),
+                                "[]",
                                 now,
                                 now,
                             ),
@@ -1562,9 +1367,7 @@ class UserBaselineManager:
                                 operation["category"],
                                 operation["content"],
                                 _content_key(operation["content"]),
-                                json.dumps(
-                                    operation["evidence_ids"], ensure_ascii=False
-                                ),
+                                "[]",
                                 now,
                                 now,
                             ),
@@ -1642,33 +1445,11 @@ class UserBaselineManager:
                                     "更新后的内容与其他条目重复"
                                 )
                                 continue
-                            merged_evidence = list(
-                                dict.fromkeys(
-                                    [
-                                        *_json_list(entry["evidence_json"]),
-                                        *operation["evidence_ids"],
-                                    ]
-                                )
-                            )
                             unchanged = (
                                 str(entry["category"]) == operation["category"]
                                 and str(entry["content"]) == operation["content"]
                             )
                             if unchanged:
-                                if merged_evidence != _json_list(entry["evidence_json"]):
-                                    await self.db.execute(
-                                        """
-                                        UPDATE user_baseline_entries
-                                        SET source_type = 'automatic', evidence_json = ?,
-                                            revision = revision + 1, updated_at = ?
-                                        WHERE entry_id = ?
-                                        """,
-                                        (
-                                            json.dumps(merged_evidence, ensure_ascii=False),
-                                            now,
-                                            operation["entry_id"],
-                                        ),
-                                    )
                                 if "suppression_id" in operation:
                                     await self.db.execute(
                                         "DELETE FROM user_baseline_suppressions "
@@ -1691,7 +1472,7 @@ class UserBaselineManager:
                                     operation["category"],
                                     operation["content"],
                                     _content_key(operation["content"]),
-                                    json.dumps(merged_evidence, ensure_ascii=False),
+                                    "[]",
                                     now,
                                     operation["entry_id"],
                                 ),
@@ -1732,7 +1513,6 @@ class UserBaselineManager:
                     """,
                     [now, *window_ids],
                 )
-                await self._prune_unreferenced_evidence_locked(user_id)
                 await self.db.execute(
                     "DELETE FROM user_baseline_meta WHERE key = 'generation-warning-v1'"
                 )
@@ -1932,7 +1712,7 @@ class UserBaselineManager:
             "category": str(row["category"]),
             "content": str(row["content"]),
             "source_type": str(row["source_type"]),
-            "evidence": _json_list(row["evidence_json"]),
+            "evidence": [],
             "locked": bool(row["locked"]),
             "allow_auto_update": not bool(row["locked"]),
             "enabled": bool(row["enabled"]),
@@ -1940,66 +1720,6 @@ class UserBaselineManager:
             "created_at": float(row["created_at"]),
             "updated_at": float(row["updated_at"]),
         }
-
-    async def _attach_evidence_texts(
-        self, entries: list[dict[str, Any]], *, user_id: int
-    ) -> list[dict[str, Any]]:
-        """Replace bare evidence ids (W{n}:M{m}) with {id, text} objects using
-        the window-independent evidence mirror."""
-        if not entries or self.db is None:
-            return entries
-        evidence_ids: set[str] = set()
-        for entry in entries:
-            for evidence in entry.get("evidence") or []:
-                evidence_id = _flat_text(
-                    evidence.get("id") if isinstance(evidence, dict) else evidence
-                )
-                if evidence_id:
-                    evidence_ids.add(evidence_id)
-        if not evidence_ids:
-            return entries
-        placeholders = ",".join("?" for _ in evidence_ids)
-        cursor = await self.db.execute(
-            f"""
-            SELECT evidence_id, message_text, message_role,
-                   speaker_name, message_timestamp
-            FROM user_baseline_evidence
-            WHERE user_id = ? AND evidence_id IN ({placeholders})
-            """,
-            [user_id, *sorted(evidence_ids)],
-        )
-        evidence_by_id = {
-            str(row["evidence_id"]): {
-                "text": str(row["message_text"]),
-                "role": str(row["message_role"] or "unknown"),
-                "speaker_name": str(row["speaker_name"] or ""),
-                "timestamp": row["message_timestamp"],
-            }
-            for row in await cursor.fetchall()
-        }
-        for entry in entries:
-            decorated: list[dict[str, Any]] = []
-            for evidence in entry.get("evidence") or []:
-                evidence_id = _flat_text(
-                    evidence.get("id") if isinstance(evidence, dict) else evidence
-                )
-                decorated.append(
-                    {
-                        "id": evidence_id,
-                        "text": evidence_by_id.get(evidence_id, {}).get("text", ""),
-                        "role": evidence_by_id.get(evidence_id, {}).get(
-                            "role", "unknown"
-                        ),
-                        "speaker_name": evidence_by_id.get(evidence_id, {}).get(
-                            "speaker_name", ""
-                        ),
-                        "timestamp": evidence_by_id.get(evidence_id, {}).get(
-                            "timestamp"
-                        ),
-                    }
-                )
-            entry["evidence"] = decorated
-        return entries
 
     @staticmethod
     def _render_entries(entries: list[dict[str, Any]]) -> str:
@@ -2707,7 +2427,6 @@ class UserBaselineManager:
                         != self._portrait_fingerprint(visible),
                     }
                 )
-        entries = await self._attach_evidence_texts(entries, user_id=user_id)
         cursor = await self.db.execute(
             """
             SELECT persona_id, category, content, note, deleted_at
@@ -2973,7 +2692,6 @@ class UserBaselineManager:
                 await self.db.execute(
                     "DELETE FROM user_baseline_entries WHERE entry_id = ?", (entry_id,)
                 )
-                await self._prune_unreferenced_evidence_locked(user_id)
                 await self.db.execute(
                     "UPDATE user_baseline_users SET revision = revision + 1, updated_at = ? WHERE user_id = ?",
                     (now, user_id),
@@ -3168,3 +2886,4 @@ __all__ = [
     "BaselineInjection",
     "UserBaselineManager",
 ]
+

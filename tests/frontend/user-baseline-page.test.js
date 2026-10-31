@@ -91,22 +91,6 @@ test("baseline entries map into four sections carrying their slot quotas", () =>
   assert.match(sections[3].label, /baseline\.section\.boundaries/);
 });
 
-test("baseline evidence renders its id and escaped source text", () => {
-  const page = new UserBaselinePage({ page: "baselines" }, {}, {});
-  const html = page.renderEvidence({
-    id: "W3:M7",
-    text: '<script>alert("x")</script>',
-    role: "user",
-    speaker_name: "Tester",
-    timestamp: 1_700_000_000,
-  });
-  assert.match(html, /W3:M7/);
-  assert.match(html, /Tester/);
-  assert.match(html, /title=/);
-  assert.match(html, /&lt;script&gt;alert\(&quot;x&quot;\)&lt;\/script&gt;/);
-  assert.doesNotMatch(html, /<script>/);
-});
-
 test("baseline entry exposes only edit and delete actions", () => {
   const page = new UserBaselinePage({ page: "baselines" }, {}, {});
   const html = page.renderEntry({

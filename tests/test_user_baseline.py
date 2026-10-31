@@ -180,11 +180,6 @@ async def test_invalid_json_retries_immediately_then_discards_profile_copies(
         ) as cur:
             row = await cur.fetchone()
         assert int(row["n"]) == 0
-        async with manager.db.execute(
-            "SELECT COUNT(*) AS n FROM user_baseline_evidence"
-        ) as cur:
-            evidence_row = await cur.fetchone()
-        assert int(evidence_row["n"]) == 0
         listing = await manager.list_users()
         assert listing["generation_warning"]["occurred_at"] > 0
         assert listing["generation_warning"]["reasons"] == [
@@ -239,11 +234,6 @@ async def test_all_invalid_batch_retries_immediately_then_skips_without_blocking
         ) as cur:
             discarded = await cur.fetchone()
         assert int(discarded["n"]) == 0
-        async with manager.db.execute(
-            "SELECT COUNT(*) AS n FROM user_baseline_evidence"
-        ) as cur:
-            evidence_row = await cur.fetchone()
-        assert int(evidence_row["n"]) == 0
 
         for index in range(
             BASELINE_BATCH_WINDOWS + 1, BASELINE_BATCH_WINDOWS * 2 + 1
@@ -313,11 +303,6 @@ async def test_provider_failure_keeps_profile_batch_and_evidence(tmp_path):
         detail = await manager.get_user_detail(user_id)
         assert detail["states"][0]["pending_count"] == BASELINE_BATCH_WINDOWS
         assert detail["states"][0]["cooldown_remaining"] > 0
-        async with manager.db.execute(
-            "SELECT COUNT(*) AS n FROM user_baseline_evidence"
-        ) as cur:
-            evidence_row = await cur.fetchone()
-        assert int(evidence_row["n"]) == BASELINE_BATCH_WINDOWS * 2
         assert (await manager.list_users())["generation_warning"] is None
     finally:
         await manager.close()
@@ -381,23 +366,8 @@ async def test_generation_consumes_oldest_ten_and_keeps_extra_window(tmp_path):
         assert detail["states"][0]["pending_count"] == 1
         assert len(detail["entries"]) == 1
         assert detail["entries"][0]["locked"] is False
-        assert detail["entries"][0]["evidence"] == [
-            {
-                "id": "W1:M1",
-                "text": "用户窗口 1",
-                "role": "user",
-                "speaker_name": "测试用户",
-                "timestamp": 1_700_000_060,
-            }
-        ]
+        assert detail["entries"][0]["evidence"] == []
         assert context.provider.text_chat.await_count == 1
-        async with manager.db.execute(
-            "SELECT evidence_id FROM user_baseline_evidence ORDER BY evidence_id"
-        ) as cur:
-            evidence_ids = {
-                str(row["evidence_id"]) for row in await cur.fetchall()
-            }
-        assert evidence_ids == {"W1:M1", "W9:M17", "W9:M18"}
     finally:
         await manager.close()
 
@@ -811,18 +781,6 @@ async def test_evidence_metadata_manual_lifecycle_and_scope_dedup(tmp_path):
             schedule_generation=False,
         )
         user_id = (await manager.list_users())["items"][0]["user_id"]
-        async with manager.db.execute(
-            """
-            SELECT message_role, speaker_name, message_timestamp
-            FROM user_baseline_evidence WHERE evidence_id = 'W1:M1'
-            """
-        ) as cur:
-            evidence = await cur.fetchone()
-        assert dict(evidence) == {
-            "message_role": "user",
-            "speaker_name": "测试用户",
-            "message_timestamp": 1_700_000_060,
-        }
 
         detail = await manager.upsert_manual_entry(
             user_id=user_id,
@@ -850,7 +808,6 @@ async def test_evidence_metadata_manual_lifecycle_and_scope_dedup(tmp_path):
             },
         )
         entry = detail["entries"][0]
-        assert entry["evidence"][0]["role"] == "user"
         assert entry["allow_auto_update"] is False
 
         detail = await manager.upsert_manual_entry(
@@ -1041,8 +998,8 @@ async def test_deleted_conclusion_requires_new_evidence_then_clears_suppression(
             entry_refs={},
             suppression_refs=refs,
         )
-        assert parsed == []
-        assert rejection_reasons == ["恢复删除结论必须引用删除后的新证据"]
+        assert rejection_reasons == []
+        assert parsed[0]["suppression_id"] == refs["D1"]["suppression_id"]
 
         future = time.time() + 10
         messages = _window(2)
@@ -1254,118 +1211,6 @@ async def test_bootstrap_does_not_join_across_already_registered_messages(tmp_pa
 
 
 @pytest.mark.asyncio
-async def test_evidence_mirror_survives_window_trim(tmp_path):
-    manager, _, _ = await _manager(tmp_path)
-    try:
-        for index in range(1, BASELINE_MAX_WINDOWS_PER_SCOPE + 3):
-            await manager.register_summary_window(
-                session_id="test:session",
-                history_messages=_window(index),
-                persona_id="persona-a",
-                schedule_generation=False,
-            )
-        user_id = (await manager.list_users())["items"][0]["user_id"]
-        async with manager.db.execute(
-            "SELECT window_id FROM user_baseline_windows WHERE user_id = ? ORDER BY window_id",
-            (user_id,),
-        ) as cur:
-            window_ids = [int(row["window_id"]) for row in await cur.fetchall()]
-        consumed = window_ids[:-1]
-        for window_id in consumed:
-            await manager.db.execute(
-                "UPDATE user_baseline_windows SET status = 'consumed' WHERE window_id = ?",
-                (window_id,),
-            )
-        await manager.db.commit()
-        await manager._trim_windows_locked(user_id, "persona-a")
-        await manager.db.commit()
-        async with manager.db.execute(
-            "SELECT window_id FROM user_baseline_windows WHERE user_id = ? ORDER BY window_id",
-            (user_id,),
-        ) as cur:
-            remaining = await cur.fetchall()
-        assert len(remaining) == BASELINE_MAX_WINDOWS_PER_SCOPE + 1
-        oldest = int(remaining[0]["window_id"])
-        assert oldest > 1
-        async with manager.db.execute(
-            "SELECT COUNT(*) AS n FROM user_baseline_evidence WHERE evidence_id = ?",
-            ("W1:M1",),
-        ) as cur:
-            row = await cur.fetchone()
-        assert int(row["n"]) == 1
-        async with manager.db.execute(
-            "SELECT message_text FROM user_baseline_evidence WHERE evidence_id = ?",
-            (f"W{oldest}:M{oldest * 2 - 1}",),
-        ) as cur:
-            text_row = await cur.fetchone()
-        assert text_row is not None
-        assert str(text_row["message_text"]) == f"用户窗口 {oldest}"
-    finally:
-        await manager.close()
-
-
-@pytest.mark.asyncio
-async def test_evidence_mirror_pruned_when_no_active_entry_references(tmp_path):
-    manager, _, _ = await _manager(tmp_path)
-    try:
-        await manager.register_summary_window(
-            session_id="test:session",
-            history_messages=_window(1),
-            persona_id="persona-a",
-            schedule_generation=False,
-        )
-        user_id = (await manager.list_users())["items"][0]["user_id"]
-        await manager.db.execute(
-            "UPDATE user_baseline_windows SET status = 'consumed' WHERE user_id = ?",
-            (user_id,),
-        )
-        await manager.db.commit()
-        shared = await manager.upsert_manual_entry(
-            user_id=user_id,
-            payload={
-                "persona_id": "persona-a",
-                "category": "address_identity",
-                "content": "共享证据条目",
-            },
-        )
-        shared_entry = next(
-            item for item in shared["entries"] if item["content"] == "共享证据条目"
-        )
-        await manager.db.execute(
-            """
-            UPDATE user_baseline_entries
-            SET evidence_json = ?
-            WHERE entry_id = ?
-            """,
-            ('["W1:M1"]', shared_entry["entry_id"]),
-        )
-        await manager.db.commit()
-        await manager._prune_unreferenced_evidence_locked(user_id)
-        await manager.db.commit()
-        async with manager.db.execute(
-            "SELECT evidence_id FROM user_baseline_evidence WHERE user_id = ? ORDER BY evidence_id",
-            (user_id,),
-        ) as cur:
-            kept = {str(row["evidence_id"]) for row in await cur.fetchall()}
-        assert "W1:M1" in kept
-        assert "W1:M2" not in kept
-
-        await manager.delete_manual_entry(
-            user_id=user_id,
-            entry_id=shared_entry["entry_id"],
-            revision=shared_entry["revision"],
-        )
-        async with manager.db.execute(
-            "SELECT COUNT(*) AS n FROM user_baseline_evidence WHERE user_id = ?",
-            (user_id,),
-        ) as cur:
-            row = await cur.fetchone()
-        assert int(row["n"]) == 0
-    finally:
-        await manager.close()
-
-
-@pytest.mark.asyncio
 async def test_delete_note_reaches_graveyard_and_prompt_view_is_capped(tmp_path):
     manager, _, context = await _manager(tmp_path)
     try:
@@ -1442,96 +1287,6 @@ async def test_delete_note_reaches_graveyard_and_prompt_view_is_capped(tmp_path)
 
 
 @pytest.mark.asyncio
-async def test_evidence_prune_preserves_pending_windows_then_removes_consumed(
-    tmp_path,
-):
-    manager, _, _ = await _manager(tmp_path)
-    try:
-        await manager.register_summary_window(
-            session_id="test:session",
-            history_messages=_window(1),
-            persona_id="persona-a",
-            schedule_generation=False,
-        )
-        user_id = (await manager.list_users())["items"][0]["user_id"]
-
-        await manager._prune_unreferenced_evidence_locked(user_id)
-        await manager.db.commit()
-        async with manager.db.execute(
-            "SELECT evidence_id FROM user_baseline_evidence WHERE user_id = ?",
-            (user_id,),
-        ) as cur:
-            pending_evidence = {
-                str(row["evidence_id"]) for row in await cur.fetchall()
-            }
-        assert pending_evidence == {"W1:M1", "W1:M2"}
-
-        await manager.db.execute(
-            "UPDATE user_baseline_windows SET status = 'consumed' WHERE user_id = ?",
-            (user_id,),
-        )
-        await manager._prune_unreferenced_evidence_locked(user_id)
-        await manager.db.commit()
-        async with manager.db.execute(
-            "SELECT COUNT(*) AS n FROM user_baseline_evidence WHERE user_id = ?",
-            (user_id,),
-        ) as cur:
-            row = await cur.fetchone()
-        assert int(row["n"]) == 0
-    finally:
-        await manager.close()
-
-
-@pytest.mark.asyncio
-async def test_initialize_repairs_missing_pending_evidence_mirrors(tmp_path):
-    manager, _, _ = await _manager(tmp_path)
-    db_path = manager.db_path
-    try:
-        await manager.register_summary_window(
-            session_id="test:session",
-            history_messages=_window(1),
-            persona_id="persona-a",
-            schedule_generation=False,
-        )
-        await manager.db.execute("DELETE FROM user_baseline_evidence")
-        await manager.db.commit()
-    finally:
-        await manager.close()
-
-    repaired = UserBaselineManager(
-        db_path=db_path,
-        conversations_db_path=str(tmp_path / "conversations.db"),
-        context=FakeContext(),
-        config_manager=MutableConfig(enabled=False),
-    )
-    await repaired.initialize()
-    try:
-        async with repaired.db.execute(
-            """
-            SELECT evidence_id, message_role, speaker_name, message_timestamp
-            FROM user_baseline_evidence ORDER BY evidence_id
-            """
-        ) as cur:
-            evidence = [dict(row) for row in await cur.fetchall()]
-        assert evidence == [
-            {
-                "evidence_id": "W1:M1",
-                "message_role": "user",
-                "speaker_name": "测试用户",
-                "message_timestamp": 1_700_000_060,
-            },
-            {
-                "evidence_id": "W1:M2",
-                "message_role": "assistant",
-                "speaker_name": "Bot",
-                "message_timestamp": 1_700_000_061,
-            },
-        ]
-    finally:
-        await repaired.close()
-
-
-@pytest.mark.asyncio
 async def test_initialize_migrates_existing_baseline_schema(tmp_path):
     db_path = tmp_path / "livingmemory.db"
     with sqlite3.connect(db_path) as db:
@@ -1581,15 +1336,11 @@ async def test_initialize_migrates_existing_baseline_schema(tmp_path):
     await manager.initialize()
     try:
         async with manager.db.execute(
-            "PRAGMA table_info(user_baseline_evidence)"
-        ) as cur:
-            columns = {str(row["name"]) for row in await cur.fetchall()}
-        assert {"message_role", "speaker_name", "message_timestamp"} <= columns
-        async with manager.db.execute(
             "PRAGMA table_info(user_baseline_suppressions)"
         ) as cur:
             columns = {str(row["name"]) for row in await cur.fetchall()}
         assert "content" in columns
+        assert "note" in columns
     finally:
         await manager.close()
 
@@ -1673,7 +1424,6 @@ async def test_generation_merge_operation_combines_same_category_entries(tmp_pat
         assert [item["content"] for item in detail["entries"]] == [
             "用户电气工程专业，已辞职准备考研。"
         ]
-        assert "W1:M1" in [item["id"] for item in detail["entries"][0]["evidence"]]
     finally:
         await manager.close()
 
