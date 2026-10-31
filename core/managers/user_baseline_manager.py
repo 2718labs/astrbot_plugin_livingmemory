@@ -22,11 +22,11 @@ from ..utils.fact_packing import token_upper_bound
 
 BASELINE_BATCH_WINDOWS = 8
 BASELINE_COOLDOWN_SECONDS = 6 * 60 * 60
-BASELINE_MAX_ENTRIES = 12
+BASELINE_MAX_ENTRIES = 18
 BASELINE_TOKEN_BUDGET = 800
 BASELINE_MAX_WINDOWS_PER_SCOPE = 40
-PORTRAIT_TOKEN_BUDGET = 360
-PORTRAIT_MAX_CHARS = 420
+PORTRAIT_TOKEN_BUDGET = 700
+PORTRAIT_MAX_CHARS = 720
 PORTRAIT_HISTORY_LIMIT = 20
 BASELINE_SUPPRESSION_LIMIT = 10
 BASELINE_SUPPRESSION_KEEP = 50
@@ -36,6 +36,7 @@ GLOBAL_PERSONA = ""
 BASELINE_CATEGORIES = {
     "address_identity",
     "relationship",
+    "stable_preference",
     "interaction_preference",
     "long_term_boundary",
     "global_constraint",
@@ -44,9 +45,20 @@ BASELINE_CATEGORIES = {
 _CATEGORY_LABELS = {
     "address_identity": "称呼与身份",
     "relationship": "关系锚点",
+    "stable_preference": "稳定偏好",
     "interaction_preference": "互动偏好",
     "long_term_boundary": "长期边界",
     "global_constraint": "硬约束",
+}
+
+# 每类条目分到的槽位；身份与偏好天然多，关系与硬约束天然少。合计 = 18。
+BASELINE_CATEGORY_SLOTS = {
+    "address_identity": 5,
+    "stable_preference": 4,
+    "interaction_preference": 4,
+    "relationship": 2,
+    "long_term_boundary": 2,
+    "global_constraint": 1,
 }
 
 _TEMPORARY_PATTERN = re.compile(
@@ -62,6 +74,11 @@ _MACHINE_ID_PATTERN = re.compile(
 _ORDINARY_INTEREST_PATTERN = re.compile(
     r"(?:喜欢|爱)(?:吃|喝|看|听|玩|买|收藏)|(?:最爱|偏爱)(?:的)?(?:食物|饮料|电影|音乐|游戏)"
 )
+_ONE_OFF_PREFERENCE_PATTERN = re.compile(
+    r"(?:尝鲜|试了|试着|第一次|一时|突然想|想试试)"
+)
+PORTRAIT_BLOCK_LABELS = ("身份", "关系", "偏好", "互动", "边界", "推断")
+PORTRAIT_BLOCK_PATTERN = re.compile(r"【([^】]{1,8})】")
 _PERSONALITY_INFERENCE_PATTERN = re.compile(
     r"(?:性格|人格|看起来|似乎|大概|可能是|应该是).{0,12}(?:的人|性格|内向|外向|敏感|理性|感性)"
 )
@@ -1085,9 +1102,18 @@ class UserBaselineManager:
             "请从以下一手对话证据中维护用户画像。只输出合法 JSON，"
             '结构为 {"operations":[...]}; operations 只允许 add、update、retire。\n'
             "允许类别：address_identity（称呼或身份锚点）、relationship（明确发生过的关系锚点）、"
+            "stable_preference（长期稳定的个人偏好，如饮食口味、生活作息、娱乐喜好）、"
             "interaction_preference（用户明确要求 Bot 如何互动）、long_term_boundary（长期边界）、"
             "global_constraint（极少量全局硬约束）。\n"
-            "禁止写近期情绪、性格推断、普通兴趣、当前任务、短期约定或关系好感度；"
+            "类别槽位（每个作用域上限）："
+            + "、".join(
+                f"{_CATEGORY_LABELS[key]}{value}条"
+                for key, value in BASELINE_CATEGORY_SLOTS.items()
+            )
+            + "；某类已满时只能 update 或合并该类已有条目，不得继续 add。\n"
+            "禁止写近期情绪、性格推断、一次性兴趣或一时尝鲜、当前任务、短期约定或关系好感度；"
+            "偏好只在用户反复表达、属于稳定口味或长期习惯时才归入 stable_preference，"
+            "“最近喜欢”“试了一次”这类一次性内容一律不写。"
             "除 relationship 外不能从 Bot 单方面说法推断用户事实。"
             "每个操作必须带 evidence_ids，且只能引用下方 W:M。\n"
             "add 字段：op/category/content/evidence_ids；update 字段再加 entry_ref；"
@@ -1282,20 +1308,18 @@ class UserBaselineManager:
             raise ValueError("画像正文不能包含内部编号")
         if not automatic:
             return
-        if _ORDINARY_INTEREST_PATTERN.search(content):
-            raise ValueError("普通兴趣不能进入用户画像")
+        if category != "stable_preference" and _ORDINARY_INTEREST_PATTERN.search(content):
+            raise ValueError("普通兴趣只能作为稳定偏好收录")
         if _PERSONALITY_INFERENCE_PATTERN.search(content):
             raise ValueError("性格推断不能进入用户画像")
         if _MOOD_PATTERN.search(content) and category != "long_term_boundary":
             raise ValueError("近期情绪不能进入用户画像")
         if _TEMPORARY_PATTERN.search(content):
             raise ValueError("短期状态或约定不能进入用户画像")
-        if category == "interaction_preference" and _ORDINARY_INTEREST_PATTERN.search(
+        if category == "stable_preference" and _ONE_OFF_PREFERENCE_PATTERN.search(
             content
         ):
-            raise ValueError("普通兴趣不能伪装为互动偏好")
-        if category == "relationship" and _ORDINARY_INTEREST_PATTERN.search(content):
-            raise ValueError("关系锚点缺少明确关系证据")
+            raise ValueError("一次性尝鲜不能作为稳定偏好")
 
     async def _prune_unreferenced_evidence_locked(self, user_id: int) -> None:
         """Keep profile evidence copies needed by entries or pending work."""
@@ -1974,12 +1998,13 @@ class UserBaselineManager:
 
     @staticmethod
     def _clean_portrait_text(value: Any) -> str:
-        text = _flat_text(value)
+        text = str(value or "").replace("\r\n", "\n").replace("\r", "\n").strip()
         if text.startswith("```"):
             text = text.strip("`").strip()
             if text[:4].casefold() == "text":
                 text = text[4:]
-        text = re.sub(r"^(?:小作文|用户画像)\s*[:：]\s*", "", text.strip())
+        text = re.sub(r"(?m)^[ \t]+|[ \t]+$", "", text.strip())
+        text = re.sub(r"[ \t]{2,}", " ", text)
         text = re.sub(r"\n{3,}", "\n\n", text)
         return text.strip()
 
@@ -1992,9 +2017,15 @@ class UserBaselineManager:
                 f"小作文超过 {PORTRAIT_MAX_CHARS} 字上限"
             )
         if re.search(r"(?m)^\s*(?:[-*•]|\d+[.、)）])\s*", text):
-            raise BaselineDeterministicFailure("小作文必须是散文而不是列表")
+            raise BaselineDeterministicFailure("小作文不能使用列表符号")
         if "[" in text or "]" in text:
-            raise BaselineDeterministicFailure("小作文不能包含标记符号")
+            raise BaselineDeterministicFailure("小作文不能包含方括号")
+        labels = PORTRAIT_BLOCK_PATTERN.findall(text)
+        if not labels:
+            raise BaselineDeterministicFailure("小作文缺少【身份】这类分段标签")
+        unknown = [label for label in labels if label not in PORTRAIT_BLOCK_LABELS]
+        if unknown:
+            raise BaselineDeterministicFailure(f"小作文出现未知分段：{unknown[0]}")
         if token_upper_bound(text) > PORTRAIT_TOKEN_BUDGET:
             raise BaselineDeterministicFailure(
                 f"小作文超过 {PORTRAIT_TOKEN_BUDGET} token 预算"
@@ -2016,16 +2047,28 @@ class UserBaselineManager:
             for item in entries
         ]
         prompt = (
-            "下面是一份用户画像的条目清单，请把它写成一段常驻使用的散文。\n"
-            "要求：\n"
-            f"1. 中文，{PORTRAIT_MAX_CHARS} 字以内，一到两段，只输出正文。\n"
-            "2. 不要列表、编号、标题、Markdown、括号注释，也不要用方括号。\n"
-            "3. 顺序：称呼与身份 → 与 Bot 的关系 → 互动偏好 → 长期边界与硬约束。\n"
-            "4. 只覆盖给定条目，不新增事实；不推测性格、情绪、好感度、兴趣或当前任务。\n"
-            "5. 合并同义条目，读起来像一段人话，不要逐条翻译清单。\n"
-            "6. locked=true 的条目是用户亲手写定的措辞，必须完整吸收进正文，"
-            "意思不得弱化、反转或省略；它们不会另外重复列出。\n"
-            "7. 若给了上一版，保持前后一致，只体现条目的实际变化。\n\n"
+            "下面是一份用户画像的条目清单。请把它压缩成一张固定格式的高密度画像卡，"
+            "供每轮对话常驻参考。\n\n"
+            "输出格式（只用这六个标签，按此顺序；某块无内容就整块省略，不要写「无」）：\n"
+            "【身份】……；……\n"
+            "【关系】……\n"
+            "【偏好】……\n"
+            "【互动】……\n"
+            "【边界】……\n"
+            "【推断】……（依据：……）\n\n"
+            "写作要求：\n"
+            "1. 只输出正文，不要标题、说明、Markdown、列表符号、序号、括号注释、方括号。\n"
+            f"2. 总长不超过 {PORTRAIT_MAX_CHARS} 字；块内用「；」分隔短句，不用「并且」「同时」「另外」，句末不加句号。\n"
+            "3. 省略主语，不要每句以「用户」开头；删掉语气词、铺垫和解释性从句，同等信息用更少的字。\n"
+            "4. 必须归纳：把多条同类条目合成一句结论，禁止一条目一句话，禁止照抄条目原句。\n"
+            "5. 【身份】收称呼、身份、职业、地点等硬信息；【关系】收与 Bot 的关系与称呼方式；"
+            "【偏好】只收稳定偏好（口味、作息、喜好）；【互动】收用户对 Bot 的互动要求；"
+            "【边界】收长期边界与硬约束。\n"
+            "6. 【推断】最多两条，必须在事实块里有依据，并在括号内点出依据关键词；"
+            "只写行为倾向，不得写性格标签（内向、敏感之类）或情绪判断。没把握就整块省略。\n"
+            "7. locked=true 的条目是用户亲手写定的措辞，必须完整保留其含义，可压缩措辞，不得弱化或反转。\n"
+            "8. 不新增条目之外的事实，不补充新的兴趣或经历。\n"
+            "9. 若给了上一版，保持前后一致，只体现条目的实际变化。\n\n"
             f"条目：{json.dumps(payload, ensure_ascii=False)}\n\n"
             "上一版："
             + (previous_text.strip() or "（无）")
@@ -2033,8 +2076,8 @@ class UserBaselineManager:
         response = await provider.text_chat(
             prompt=prompt,
             system_prompt=(
-                "你只根据给定的画像条目写一段中性的常驻介绍，"
-                "不新增事实，不推断人格，不改写用户锁定的原话。"
+                "你把画像条目压缩成带【】分段的高密度画像卡：先归纳再动笔，"
+                "不新增事实，不写性格标签，不改写用户锁定的含义。"
             ),
         )
         text = getattr(response, "completion_text", "")
@@ -2333,10 +2376,21 @@ class UserBaselineManager:
         enabled = [item for item in entries if item.get("enabled", True)]
         if len(enabled) > BASELINE_MAX_ENTRIES:
             raise ValueError(f"同一常驻块最多 {BASELINE_MAX_ENTRIES} 条")
-        tokens = token_upper_bound(cls._render_entries(enabled)) if enabled else 0
-        if tokens > BASELINE_TOKEN_BUDGET:
-            raise ValueError(f"常驻块超过 {BASELINE_TOKEN_BUDGET} token 硬预算")
-        return tokens
+        counts = Counter(item["category"] for item in enabled)
+        for category, count in counts.items():
+            slot = BASELINE_CATEGORY_SLOTS.get(category)
+            if slot is not None and count > slot:
+                label = _CATEGORY_LABELS.get(category, category)
+                raise ValueError(f"「{label}」最多 {slot} 条，已满")
+        return token_upper_bound(cls._render_entries(enabled)) if enabled else 0
+
+    @staticmethod
+    def category_usage(entries: list[dict[str, Any]]) -> dict[str, dict[str, int]]:
+        counts = Counter(item["category"] for item in entries)
+        return {
+            category: {"used": int(counts.get(category, 0)), "slot": slot}
+            for category, slot in BASELINE_CATEGORY_SLOTS.items()
+        }
 
     async def list_users(
         self, *, keyword: str = "", page: int = 1, page_size: int = 20
@@ -2590,6 +2644,7 @@ class UserBaselineManager:
             "token_budget": BASELINE_TOKEN_BUDGET,
             "batch_windows": BASELINE_BATCH_WINDOWS,
             "entry_limit": BASELINE_MAX_ENTRIES,
+            "category_slots": dict(BASELINE_CATEGORY_SLOTS),
             "portraits": portraits,
             "graveyard": graveyard,
             "portrait_enabled": self.portrait_enabled,
@@ -3008,6 +3063,7 @@ class UserBaselineManager:
 __all__ = [
     "BASELINE_BATCH_WINDOWS",
     "BASELINE_CATEGORIES",
+    "BASELINE_CATEGORY_SLOTS",
     "BASELINE_COOLDOWN_SECONDS",
     "BASELINE_MAX_ENTRIES",
     "BASELINE_TOKEN_BUDGET",

@@ -3,6 +3,7 @@ import { esc, formatTimestamp } from "./utils.js";
 const CATEGORIES = [
   "address_identity",
   "relationship",
+  "stable_preference",
   "interaction_preference",
   "long_term_boundary",
   "global_constraint",
@@ -11,6 +12,10 @@ const ENTRY_SECTIONS = [
   {
     key: "identity",
     categories: new Set(["address_identity", "relationship"]),
+  },
+  {
+    key: "preference",
+    categories: new Set(["stable_preference"]),
   },
   {
     key: "interaction",
@@ -246,7 +251,7 @@ export class UserBaselinePage {
         html += '<div class="baseline-entry-sections">';
         for (const section of this.groupEntrySections(group.entries)) {
           html += '<section class="baseline-entry-section">';
-          html += '<div class="baseline-entry-section-head"><span>' + esc(section.label) + '</span><span class="baseline-entry-section-count">' + section.entries.length + "</span></div>";
+          html += '<div class="baseline-entry-section-head"><span>' + esc(section.label) + '</span><span class="baseline-entry-section-count">' + (section.limit ? section.entries.length + "/" + section.limit : section.entries.length) + "</span></div>";
           html += '<div class="baseline-entry-list">' + section.entries.map(entry => this.renderEntry(entry)).join("") + "</div></section>";
         }
         html += "</div>";
@@ -425,10 +430,19 @@ export class UserBaselinePage {
   }
 
   groupEntrySections(entries) {
-    return ENTRY_SECTIONS.map(section => ({
-      label: window.t("baseline.section." + section.key),
-      entries: entries.filter(entry => section.categories.has(entry.category)),
-    })).filter(section => section.entries.length);
+    const slots = this.detail?.category_slots || {};
+    return ENTRY_SECTIONS.map(section => {
+      const picked = entries.filter(entry => section.categories.has(entry.category));
+      const limit = Array.from(section.categories).reduce(
+        (sum, category) => sum + Number(slots[category] || 0),
+        0,
+      );
+      return {
+        label: window.t("baseline.section." + section.key),
+        entries: picked,
+        limit,
+      };
+    }).filter(section => section.entries.length);
   }
 
   renderGraveyard() {

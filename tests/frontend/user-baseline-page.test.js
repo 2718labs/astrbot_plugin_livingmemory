@@ -57,22 +57,38 @@ test("baseline detail grouping keeps global and persona scopes separate", () => 
   assert.match(groups[1].label, /persona-a/);
 });
 
-test("baseline entries map into three visual sections without slot quotas", () => {
+test("baseline entries map into four sections carrying their slot quotas", () => {
   const page = new UserBaselinePage({ page: "baselines" }, {}, {});
+  page.detail = {
+    category_slots: {
+      address_identity: 5,
+      relationship: 2,
+      stable_preference: 4,
+      interaction_preference: 4,
+      long_term_boundary: 2,
+      global_constraint: 1,
+    },
+  };
   const sections = page.groupEntrySections([
     { category: "address_identity" },
     { category: "relationship" },
+    { category: "stable_preference" },
     { category: "interaction_preference" },
     { category: "long_term_boundary" },
     { category: "global_constraint" },
   ]);
   assert.deepEqual(
     sections.map(section => section.entries.length),
-    [2, 1, 2],
+    [2, 1, 1, 2],
+  );
+  assert.deepEqual(
+    sections.map(section => section.limit),
+    [7, 4, 4, 3],
   );
   assert.match(sections[0].label, /baseline\.section\.identity/);
-  assert.match(sections[1].label, /baseline\.section\.interaction/);
-  assert.match(sections[2].label, /baseline\.section\.boundaries/);
+  assert.match(sections[1].label, /baseline\.section\.preference/);
+  assert.match(sections[2].label, /baseline\.section\.interaction/);
+  assert.match(sections[3].label, /baseline\.section\.boundaries/);
 });
 
 test("baseline evidence renders its id and escaped source text", () => {

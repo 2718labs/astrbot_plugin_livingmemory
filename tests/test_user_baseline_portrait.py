@@ -11,8 +11,8 @@ from astrbot_plugin_livingmemory.core.managers.user_baseline_manager import (
 )
 
 PORTRAIT_TEXT = (
-    "对方从事电气工程方向，正在准备硕士研究生招生考试。"
-    "平时会让我帮忙查时间安排并设提醒，回复尽量直给、别绕弯子。"
+    "【身份】电气工程背景，考研往届生；户口与档案均在西安\n"
+    "【互动】要直给：先给结论再解释，别绕弯子"
 )
 
 
@@ -37,7 +37,7 @@ class PortraitContext:
 
         async def reply(*, prompt, system_prompt=None):
             self.prompts.append(prompt)
-            if "常驻使用的散文" in prompt:
+            if "画像卡" in prompt:
                 return SimpleNamespace(completion_text=self.portrait_text)
             return SimpleNamespace(completion_text='{"operations":[]}')
 
@@ -113,23 +113,27 @@ def _event() -> Mock:
     return event
 
 
-def test_portrait_validation_rejects_non_prose():
+def test_portrait_validation_requires_the_block_format():
     manager = UserBaselineManager.__new__(UserBaselineManager)
     with pytest.raises(BaselineDeterministicFailure):
         manager._validate_portrait_text("")
     with pytest.raises(BaselineDeterministicFailure):
-        manager._validate_portrait_text("- 第一条\n- 第二条")
+        manager._validate_portrait_text("【身份】- 第一条\n- 第二条")
     with pytest.raises(BaselineDeterministicFailure):
-        manager._validate_portrait_text("[用户画像] 内容")
+        manager._validate_portrait_text("【身份】内容[机读]")
     with pytest.raises(BaselineDeterministicFailure):
         manager._validate_portrait_text("字" * (PORTRAIT_MAX_CHARS + 1))
+    with pytest.raises(BaselineDeterministicFailure, match="分段标签"):
+        manager._validate_portrait_text("对方是电气工程背景，正在准备考研。")
+    with pytest.raises(BaselineDeterministicFailure, match="未知分段"):
+        manager._validate_portrait_text("【身份】电气工程\n【补充】别的")
     assert manager._validate_portrait_text(PORTRAIT_TEXT) == PORTRAIT_TEXT
 
 
 def test_portrait_cleaning_strips_fence_and_label():
     manager = UserBaselineManager.__new__(UserBaselineManager)
-    assert manager._clean_portrait_text("```text\n小作文：正文内容\n```") == "正文内容"
-    assert manager._clean_portrait_text("用户画像: 正文内容") == "正文内容"
+    assert manager._clean_portrait_text("```text\n【身份】正文内容\n```") == "【身份】正文内容"
+    assert manager._clean_portrait_text("  【身份】正文内容  ") == "【身份】正文内容"
 
 
 @pytest.mark.asyncio
@@ -144,7 +148,7 @@ async def test_rewrite_portrait_stores_text_and_revision(tmp_path):
         assert portrait["text"] == PORTRAIT_TEXT
         assert portrait["locked"] is False
         assert portrait["revision"] == 1
-        assert any("常驻使用的散文" in prompt for prompt in context.prompts)
+        assert any("画像卡" in prompt for prompt in context.prompts)
 
         revisions = await manager.list_portrait_revisions(user_id, "persona-a")
         assert [item["revision"] for item in revisions] == [1]
@@ -278,4 +282,6 @@ async def test_rewrite_without_entries_returns_none(tmp_path):
         )
     finally:
         await manager.close()
+
+
 

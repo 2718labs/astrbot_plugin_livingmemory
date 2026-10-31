@@ -1630,7 +1630,7 @@ async def test_persona_entries_precede_global_and_manual_save_enforces_budget(tm
         assert injection.text.index("舰长") < injection.text.index("伪造事实")
         assert injection.token_count <= BASELINE_TOKEN_BUDGET
 
-        for index in range(3):
+        for index in range(2):
             await manager.upsert_manual_entry(
                 user_id=user_id,
                 payload={
@@ -1639,13 +1639,13 @@ async def test_persona_entries_precede_global_and_manual_save_enforces_budget(tm
                     "content": ("界" * 179) + str(index),
                 },
             )
-        with pytest.raises(ValueError, match="800 token"):
+        with pytest.raises(ValueError, match="长期边界"):
             await manager.upsert_manual_entry(
                 user_id=user_id,
                 payload={
                     "persona_id": "persona-a",
                     "category": "long_term_boundary",
-                    "content": ("界" * 179) + "3",
+                    "content": ("界" * 179) + "2",
                 },
             )
     finally:
