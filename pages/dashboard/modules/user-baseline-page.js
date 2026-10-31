@@ -207,6 +207,78 @@ export class UserBaselinePage {
     if (next) next.disabled = this.page >= totalPages;
   }
 
+  async previewConsolidation(persona) {
+    const button = document.querySelector('[data-baseline-action="consolidate"][data-persona="' + persona + '"]');
+    if (button) button.disabled = true;
+    try {
+      const data = await this.api.post("user-baselines/entries/consolidate/preview", {
+        user_id: this.detail.user_id,
+        persona_id: persona,
+      });
+      this.pendingConsolidation = Array.isArray(data.operations) ? data.operations : [];
+      if (!this.pendingConsolidation.length) {
+        this.toast(window.t("baseline.consolidateEmpty"));
+        if (button) button.disabled = false;
+        return;
+      }
+      this.renderConsolidationPreview(persona, data);
+    } catch (error) {
+      if (button) button.disabled = false;
+      this.toast(error.message || window.t("baseline.consolidatePreviewFailed"), true);
+    }
+  }
+
+  renderConsolidationPreview(persona, data) {
+    this.editing = true;
+    this.state.isEditing = true;
+    const entries = Array.isArray(data.before) ? data.before : [];
+    const contentOf = entryId => {
+      const found = entries.find(item => item.entry_id === entryId);
+      return found ? found.content : entryId;
+    };
+    let html = '<div class="confirm-dialog-title">' + esc(window.t("baseline.consolidateTitle")) + "</div>";
+    html += '<div class="baseline-form-help">' + esc(window.t("baseline.consolidateHint")) + "</div>";
+    for (const operation of this.pendingConsolidation) {
+      const isMerge = operation.op === "merge";
+      html += '<section class="baseline-consolidation">';
+      html += '<div class="baseline-consolidation-head">' + esc(window.t(isMerge ? "baseline.consolidateMerge" : "baseline.consolidateRetire")) + "</div>";
+      for (const entryId of operation.entry_ids || []) {
+        html += '<div class="baseline-consolidation-before">' + esc(contentOf(entryId)) + "</div>";
+      }
+      if (isMerge) {
+        html += '<div class="baseline-consolidation-after">' + esc(operation.content) + "</div>";
+      }
+      html += "</section>";
+    }
+    html += '<div class="confirm-dialog-actions">';
+    html += '<button class="btn btn-secondary" data-baseline-action="cancel-consolidation">' + esc(window.t("common.cancel")) + "</button>";
+    html += '<button class="btn btn-primary" data-baseline-action="apply-consolidation" data-persona="' + esc(persona) + '">' + esc(window.t("baseline.consolidateApply")) + "</button>";
+    html += "</div>";
+    const body = document.getElementById("peek-body");
+    body.innerHTML = html;
+    body.onclick = event => this.handleDetailAction(event);
+    if (window.lmHydrateIcons) window.lmHydrateIcons();
+  }
+
+  async applyConsolidation(persona) {
+    if (!Array.isArray(this.pendingConsolidation) || !this.pendingConsolidation.length) {
+      return this.backToDetail();
+    }
+    try {
+      this.detail = await this.api.post("user-baselines/entries/consolidate/apply", {
+        user_id: this.detail.user_id,
+        persona_id: persona,
+        operations: this.pendingConsolidation,
+      });
+      this.pendingConsolidation = null;
+      this.toast(window.t("baseline.consolidateApplied"));
+      this.backToDetail();
+      this.fetch({ quiet: true });
+    } catch (error) {
+      this.toast(error.message || window.t("baseline.consolidateFailed"), true);
+    }
+  }
+
   async openDetail(userId) {
     try {
       this.detail = await this.api.get("user-baselines/detail", { user_id: String(userId) });
@@ -245,7 +317,11 @@ export class UserBaselinePage {
     } else {
       for (const persona of order) {
         const group = byPersona.get(persona);
-        html += '<div class="baseline-group-title">' + esc(group.label) + "</div>";
+        html += '<div class="baseline-group-title"><span>' + esc(group.label) + "</span>";
+        if (group.entries.length > 1) {
+          html += '<button class="btn btn-secondary btn-sm" data-baseline-action="consolidate" data-persona="' + esc(persona) + '"><i data-lucide="combine" aria-hidden="true"></i><span>' + esc(window.t("baseline.consolidate")) + "</span></button>";
+        }
+        html += "</div>";
         html += this.renderPortrait(persona);
         if (!group.entries.length) continue;
         html += '<div class="baseline-entry-sections">';
@@ -515,6 +591,9 @@ export class UserBaselinePage {
     if (action === "edit" && entry) return this.renderForm(entry);
     if (action === "delete-entry" && entry) return this.deleteEntry(entry);
     if (action === "delete-user") return this.deleteUser();
+    if (action === "consolidate") return this.previewConsolidation(persona);
+    if (action === "apply-consolidation") return this.applyConsolidation(persona);
+    if (action === "cancel-consolidation") return this.backToDetail();
     if (action === "edit-portrait") return this.renderPortraitForm(persona);
     if (action === "rewrite-portrait") return this.rewritePortrait(persona);
     if (action === "history-portrait") return this.showPortraitHistory(persona);
