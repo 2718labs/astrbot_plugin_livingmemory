@@ -77,10 +77,14 @@
     },
     "user_baseline": {
       "description": "User Profile",
-      "hint": "Maintain a small set of long-lived anchors for each stable user and inject them into every turn. Automatic generation requires both 8 new summarized windows and a 6-hour cooldown; the block is fixed at 12 entries and 800 tokens.",
+      "hint": "Maintain a small set of long-lived anchors for each stable user and inject them into every turn. Automatic generation requires both 8 new summarized windows and a 6-hour cooldown; entries are capped at 18 with per-category slots (identity 5, preference 4, interaction 4, relationship 2, boundary 2, constraint 1).",
       "enabled": {
         "description": "Enable User Profile",
-        "hint": "Disabled by default. When enabled, first-hand conversation text is accumulated as evidence and used to maintain the user profile automatically. Startup never calls the LLM."
+        "hint": "Disabled by default. When enabled, summary windows are used to maintain the user profile automatically. Startup never calls the LLM."
+      },
+      "portrait": {
+        "description": "Enable Portrait",
+        "hint": "Enabled by default. After entries change they are rewritten into one dense portrait card that replaces the entry list in every injection; when the portrait is missing or stale, that turn falls back to the entry list. Turn this off to inject the entry list only."
       }
     },
     "recall_engine": {
