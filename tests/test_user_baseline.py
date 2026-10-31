@@ -14,7 +14,6 @@ from astrbot_plugin_livingmemory.core.managers.user_baseline_manager import (
     BASELINE_BATCH_WINDOWS,
     BASELINE_MAX_WINDOWS_PER_SCOPE,
     BASELINE_TOKEN_BUDGET,
-    BaselineDeterministicFailure,
     BaselineInjection,
     UserBaselineManager,
 )
@@ -1596,166 +1595,6 @@ async def test_initialize_migrates_existing_baseline_schema(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_consolidation_merges_same_category_without_touching_graveyard(tmp_path):
-    manager, _, _ = await _manager(tmp_path)
-    try:
-        await manager.register_summary_window(
-            session_id="test:session",
-            history_messages=_window(1),
-            persona_id="persona-a",
-            schedule_generation=False,
-        )
-        user_id = (await manager.list_users())["items"][0]["user_id"]
-        created = []
-        for content in (
-            "用户所学专业为电气工程。",
-            "用户是准备考研的往届考生，已辞职。",
-            "用户户口从未迁移。",
-        ):
-            detail = await manager.upsert_manual_entry(
-                user_id=user_id,
-                payload={
-                    "persona_id": "persona-a",
-                    "category": "address_identity",
-                    "content": content,
-                    "allow_auto_update": True,
-                },
-            )
-            created.append(
-                next(item for item in detail["entries"] if item["content"] == content)
-            )
-
-        refs = {
-            f"E{index}": item for index, item in enumerate(created, start=1)
-        }
-        operations = manager._parse_consolidation(
-            json.dumps(
-                {
-                    "operations": [
-                        {
-                            "op": "merge",
-                            "entry_refs": ["E1", "E2"],
-                            "content": "用户电气工程专业，考研往届生，已辞职。",
-                        }
-                    ]
-                },
-                ensure_ascii=False,
-            ),
-            refs,
-        )
-        assert len(operations) == 1
-        assert operations[0]["entry_ids"] == [
-            created[0]["entry_id"],
-            created[1]["entry_id"],
-        ]
-
-        detail = await manager.apply_consolidation(
-            user_id=user_id, persona_id="persona-a", operations=operations
-        )
-        contents = sorted(item["content"] for item in detail["entries"])
-        assert contents == ["用户户口从未迁移。", "用户电气工程专业，考研往届生，已辞职。"]
-        assert detail["consolidation"]["merged"] == 1
-        async with manager.db.execute(
-            "SELECT COUNT(*) AS n FROM user_baseline_suppressions"
-        ) as cur:
-            row = await cur.fetchone()
-        assert int(row["n"]) == 0
-    finally:
-        await manager.close()
-
-
-def test_consolidation_rejects_cross_category_and_locked_sources():
-    refs = {
-        "E1": {
-            "entry_id": "a",
-            "category": "address_identity",
-            "content": "身份一",
-            "evidence": [],
-            "locked": False,
-        },
-        "E2": {
-            "entry_id": "b",
-            "category": "relationship",
-            "content": "关系一",
-            "evidence": [],
-            "locked": False,
-        },
-    }
-    with pytest.raises(BaselineDeterministicFailure, match="不同类别"):
-        UserBaselineManager._parse_consolidation(
-            json.dumps(
-                {
-                    "operations": [
-                        {"op": "merge", "entry_refs": ["E1", "E2"], "content": "合并"}
-                    ]
-                },
-                ensure_ascii=False,
-            ),
-            refs,
-        )
-    with pytest.raises(BaselineDeterministicFailure, match="不存在的条目"):
-        UserBaselineManager._parse_consolidation(
-            json.dumps(
-                {
-                    "operations": [
-                        {"op": "retire", "entry_ref": "E9"}
-                    ]
-                },
-                ensure_ascii=False,
-            ),
-            refs,
-        )
-
-
-@pytest.mark.asyncio
-async def test_consolidation_refuses_locked_entries(tmp_path):
-    manager, _, _ = await _manager(tmp_path)
-    try:
-        await manager.register_summary_window(
-            session_id="test:session",
-            history_messages=_window(1),
-            persona_id="persona-a",
-            schedule_generation=False,
-        )
-        user_id = (await manager.list_users())["items"][0]["user_id"]
-        detail = await manager.upsert_manual_entry(
-            user_id=user_id,
-            payload={
-                "persona_id": "persona-a",
-                "category": "address_identity",
-                "content": "用户锁定条目。",
-            },
-        )
-        locked = detail["entries"][0]
-        detail = await manager.upsert_manual_entry(
-            user_id=user_id,
-            payload={
-                "persona_id": "persona-a",
-                "category": "address_identity",
-                "content": "用户可改条目。",
-                "allow_auto_update": True,
-            },
-        )
-        free = next(
-            item for item in detail["entries"] if item["content"] == "用户可改条目。"
-        )
-        with pytest.raises(ValueError, match="锁定"):
-            await manager.apply_consolidation(
-                user_id=user_id,
-                persona_id="persona-a",
-                operations=[
-                    {
-                        "op": "merge",
-                        "entry_ids": [locked["entry_id"], free["entry_id"]],
-                        "content": "合并后的一条。",
-                    }
-                ],
-            )
-    finally:
-        await manager.close()
-
-
-@pytest.mark.asyncio
 async def test_persona_entries_precede_global_and_manual_save_enforces_budget(tmp_path):
     manager, _, _ = await _manager(tmp_path)
     try:
@@ -1930,4 +1769,3 @@ async def test_top_k_zero_still_injects_user_baseline():
     assert len(request.extra_user_content_parts) == 1
     assert "用户画像" in request.extra_user_content_parts[0].text
     engine.search_memories.assert_not_awaited()
-

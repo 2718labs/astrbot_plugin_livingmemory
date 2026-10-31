@@ -38,46 +38,6 @@ class UserBaselineHandler:
             logger.error("[PageAPI] 关闭用户画像告警失败", exc_info=True)
             return self.utils.error(str(exc))
 
-    async def preview_consolidation(self, manager) -> dict[str, Any]:
-        payload = await request.get_json(silent=True) or {}
-        try:
-            user_id = int(payload.get("user_id", 0))
-        except (TypeError, ValueError):
-            return self.utils.error("user_id 必须是整数")
-        if user_id <= 0:
-            return self.utils.error("缺少 user_id")
-        try:
-            data = await manager.propose_consolidation(
-                user_id=user_id, persona_id=str(payload.get("persona_id") or "")
-            )
-            return self.utils.ok(data)
-        except (ValueError, RuntimeError) as exc:
-            return self.utils.error(str(exc))
-        except Exception as exc:
-            logger.error("[PageAPI] 整理预览失败", exc_info=True)
-            return self.utils.error(str(exc))
-
-    async def apply_consolidation(self, manager) -> dict[str, Any]:
-        payload = await request.get_json(silent=True) or {}
-        try:
-            user_id = int(payload.get("user_id", 0))
-        except (TypeError, ValueError):
-            return self.utils.error("user_id 必须是整数")
-        if user_id <= 0:
-            return self.utils.error("缺少 user_id")
-        try:
-            detail = await manager.apply_consolidation(
-                user_id=user_id,
-                persona_id=str(payload.get("persona_id") or ""),
-                operations=payload.get("operations"),
-            )
-            return self.utils.ok(detail)
-        except (ValueError, RuntimeError) as exc:
-            return self.utils.error(str(exc))
-        except Exception as exc:
-            logger.error("[PageAPI] 应用整理失败", exc_info=True)
-            return self.utils.error(str(exc))
-
     async def save_portrait(self, manager) -> dict[str, Any]:
         payload = await request.get_json(silent=True) or {}
         try:

@@ -191,18 +191,6 @@ class PluginPageApi:
             "LivingMemory Page user baselines",
         )
         register(
-            f"{PAGE_API_PREFIX}/user-baselines/entries/consolidate/preview",
-            self.preview_user_baseline_consolidation,
-            ["POST"],
-            "LivingMemory Page preview user baseline consolidation",
-        )
-        register(
-            f"{PAGE_API_PREFIX}/user-baselines/entries/consolidate/apply",
-            self.apply_user_baseline_consolidation,
-            ["POST"],
-            "LivingMemory Page apply user baseline consolidation",
-        )
-        register(
             f"{PAGE_API_PREFIX}/user-baselines/portrait/save",
             self.save_user_baseline_portrait,
             ["POST"],
@@ -396,22 +384,6 @@ class PluginPageApi:
         if error:
             return error
         return await self.user_baseline_handler.list_users(
-            ready["user_baseline_manager"]
-        )
-
-    async def preview_user_baseline_consolidation(self):
-        ready, error = await self._ensure_plugin_ready()
-        if error:
-            return error
-        return await self.user_baseline_handler.preview_consolidation(
-            ready["user_baseline_manager"]
-        )
-
-    async def apply_user_baseline_consolidation(self):
-        ready, error = await self._ensure_plugin_ready()
-        if error:
-            return error
-        return await self.user_baseline_handler.apply_consolidation(
             ready["user_baseline_manager"]
         )
 
