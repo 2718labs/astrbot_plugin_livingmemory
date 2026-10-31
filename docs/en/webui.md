@@ -18,6 +18,7 @@ AstrBot `4.24.2` or later is recommended. Older versions can still run the plugi
 | Recall debugging | Enter a query and inspect returned memories and ranking |
 | Graph view | Browse entities, relationships, and memory connections |
 | System status | Review active, archived, and deleted counts plus graph, atom, importance, and session statistics |
+| User portrait | Inspect entries and the portrait per user; edit, lock, or delete each entry with an optional reason; edit or rewrite the portrait and roll back earlier versions |
 | Prompt management | Browse prompts by category, edit overrides, identify customized templates, and restore or load defaults |
 
 ## Memory details and lifecycle
@@ -30,6 +31,15 @@ AstrBot `4.24.2` or later is recommended. Older versions can still run the plugi
 ::: warning
 Deletion is permanent. Archive memories that may need to be restored later. Restoration requires a working embedding provider.
 :::
+
+## User portrait
+
+The user portrait card lists entries and the portrait for each user. Entries are the source of truth and are grouped as identity, preference, interaction, and boundary, with each group showing its used slots. The portrait is the injected profile card and can be edited directly without the model.
+
+- Entries are edited one at a time. Clearing "allow automatic updates" locks an entry; locked entries are never touched by generation and carry an amber badge.
+- Deleting an entry writes a graveyard note together with your optional reason (up to 120 characters). The generation prompt reads only the 10 most recent notes, purely to avoid regenerating the same conclusion.
+- The portrait can be edited and saved (saving locks it) or regenerated with "rewrite". Earlier versions can be rolled back, and each version records the entry fingerprint it was built from.
+- The page also shows generation progress (collected windows out of 8), remaining cooldown, and token usage. If two consecutive generation attempts fail, a banner appears at the top; that record is dismissed server-side and cleared automatically after a successful batch.
 
 ## Prompt management
 

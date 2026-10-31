@@ -73,6 +73,15 @@ The recent start rank is 1-based: `1` is the newest parent, while `3` skips the 
 
 Aliases are matched in this order: `platform:user ID`, user ID, then current username. The mapped display name is applied before summarization. Scope changes affect newly written memories only; existing memories are not migrated or re-embedded automatically.
 
+## User portrait
+
+| Key | Default | Description |
+| --- | --- | --- |
+| `user_baseline.enabled` | `false` | Enable the user portrait. Generation runs once 8 new summary windows have accumulated and 6 hours have passed since the last attempt; nothing calls the LLM at startup |
+| `user_baseline.portrait` | `true` | Inject the profile card derived from the entries; when off, only the entry list is injected |
+
+Entries are capped at 18 with per-category slots: identity 5, stable preference 4, interaction preference 4, relationship 2, long-term boundary 2, hard constraint 1. When a category is full the model may only update or merge entries in that category. Injection is bounded to 800 tokens: the portrait block itself is capped at 700 tokens / 720 characters, and if the full block (header included) would exceed 800 tokens the turn falls back to the entry list; the entry list packs entries in order until the budget is reached and never truncates a single entry's text. Batches are also bounded by the 8-window threshold and the 6-hour cooldown, independently of the summary trigger rounds.
+
 ## Reflection and lifecycle
 
 | Key | Default | Description |
